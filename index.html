@@ -6,6 +6,8 @@
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css">
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@4.2.0/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -208,7 +210,7 @@
       padding: 0.25rem 0.4rem; border: 1px solid #d0d7de; border-radius: 4px;
       font-size: 0.78rem; background: #fff;
     }
-    .summary-toolbar input[type="number"] { width: 55px; }
+    .summary-toolbar select#tb-size { min-width: 130px; }
     .summary-toolbar input[type="color"] {
       width: 30px; height: 26px; padding: 0; border: 1px solid #d0d7de;
       border-radius: 4px; cursor: pointer; background: none;
@@ -342,6 +344,9 @@
       <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="exportData()">📤 Export</button>
         <button class="sidebar-btn" onclick="importData()">📥 Import</button>
+      </div>
+      <div class="sidebar-actions">
+        <button class="sidebar-btn" onclick="exportToPDF(this)">📄 Export PDF</button>
       </div>
     </div>
     <div id="summary-tab" class="active" onclick="showSummary()">
@@ -562,7 +567,6 @@
       document.getElementById("summary-tab-name").textContent = db.summaryTitle;
       document.getElementById("context-bar").classList.remove("visible");
 
-      var s = db.summaryStyle;
       var ca = document.getElementById("content-area");
       ca.innerHTML =
         '<div id="summary-page">' +
@@ -570,29 +574,36 @@
 
           '<div class="summary-toolbar">' +
             '<label>Font:</label>' +
-            '<select id="tb-font" onchange="onSummaryStyleChange()">' +
-              '<option value="sans-serif"' + (s.fontFamily === "sans-serif" ? " selected" : "") + '>Sans-serif</option>' +
-              '<option value="serif"' + (s.fontFamily === "serif" ? " selected" : "") + '>Serif</option>' +
-              '<option value="monospace"' + (s.fontFamily === "monospace" ? " selected" : "") + '>Monospace</option>' +
-              '<option value="Georgia, serif"' + (s.fontFamily === "Georgia, serif" ? " selected" : "") + '>Georgia</option>' +
-              '<option value="Palatino, serif"' + (s.fontFamily === "Palatino, serif" ? " selected" : "") + '>Palatino</option>' +
-              '<option value="Courier New, monospace"' + (s.fontFamily === "Courier New, monospace" ? " selected" : "") + '>Courier New</option>' +
-              '<option value="Verdana, sans-serif"' + (s.fontFamily === "Verdana, sans-serif" ? " selected" : "") + '>Verdana</option>' +
-              '<option value="Trebuchet MS, sans-serif"' + (s.fontFamily === "Trebuchet MS, sans-serif" ? " selected" : "") + '>Trebuchet</option>' +
+            '<select id="tb-font" onmousedown="saveEditorSelection()" onchange="applyFontFamily(this.value)">' +
+              '<option value="sans-serif">Sans-serif</option>' +
+              '<option value="serif">Serif</option>' +
+              '<option value="monospace">Monospace</option>' +
+              '<option value="Georgia, serif">Georgia</option>' +
+              '<option value="Palatino, serif">Palatino</option>' +
+              '<option value="Courier New, monospace">Courier New</option>' +
+              '<option value="Verdana, sans-serif">Verdana</option>' +
+              '<option value="Trebuchet MS, sans-serif">Trebuchet</option>' +
             '</select>' +
 
             '<div class="toolbar-sep"></div>' +
 
             '<label>Size:</label>' +
-            '<input type="number" id="tb-size" min="10" max="36" value="' + s.fontSize + '" onchange="onSummaryStyleChange()" />' +
+            '<select id="tb-size" onmousedown="saveEditorSelection()" onchange="applyFontSize(this.value)">' +
+              '<option value="1">X-Small (10px)</option>' +
+              '<option value="2">Small (13px)</option>' +
+              '<option value="3" selected>Normal (16px)</option>' +
+              '<option value="4">Large (18px)</option>' +
+              '<option value="5">X-Large (24px)</option>' +
+              '<option value="6">XX-Large (32px)</option>' +
+            '</select>' +
 
             '<div class="toolbar-sep"></div>' +
 
             '<label>Text:</label>' +
-            '<input type="color" id="tb-text-color" value="' + s.textColor + '" onchange="onSummaryStyleChange()" title="Text color" />' +
+            '<input type="color" id="tb-text-color" value="#1f2328" onmousedown="saveEditorSelection()" onchange="applyTextColor(this.value)" title="Text color" />' +
 
-            '<label>Background:</label>' +
-            '<input type="color" id="tb-bg-color" value="' + s.bgColor + '" onchange="onSummaryStyleChange()" title="Background color" />' +
+            '<label>Highlight:</label>' +
+            '<input type="color" id="tb-bg-color" value="#ffffff" onmousedown="saveEditorSelection()" onchange="applyBgColor(this.value)" title="Highlight color" />' +
 
             '<div class="toolbar-sep"></div>' +
 
@@ -607,6 +618,10 @@
             '<button class="fmt-btn" onclick="formatText(\'bullet\')" title="Bullet list">• List</button>' +
             '<button class="fmt-btn" onclick="formatText(\'numbered\')" title="Numbered list">1. List</button>' +
             '<button class="fmt-btn" onclick="formatText(\'hr\')" title="Horizontal rule">—</button>' +
+
+            '<div class="toolbar-sep"></div>' +
+
+            '<button class="fmt-btn" onclick="exportToPDF(this)" title="Export to PDF">📄 PDF</button>' +
           '</div>' +
 
           '<p class="summary-hint">Use this page for project overview, key decisions, links, and status updates. Supports Markdown.</p>' +
@@ -620,7 +635,6 @@
 
       var editor = document.getElementById("summary-editor");
       editor.innerHTML = db.summary || "";
-      applySummaryStyle();
 
       editor.addEventListener("input", function() {
         db.summary = this.innerHTML;
@@ -632,23 +646,89 @@
       editor.focus();
     }
 
-    function applySummaryStyle() {
-      var s = db.summaryStyle;
-      var ed = document.getElementById("summary-editor");
-      if (!ed) return;
-      ed.style.fontFamily = s.fontFamily;
-      ed.style.fontSize = s.fontSize + "px";
-      ed.style.color = s.textColor;
-      ed.style.backgroundColor = s.bgColor;
+    // ===== SELECTION HELPERS =====
+    var _savedRange = null;
+
+    function saveEditorSelection() {
+      var sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) _savedRange = sel.getRangeAt(0).cloneRange();
     }
 
-    function onSummaryStyleChange() {
-      db.summaryStyle.fontFamily = document.getElementById("tb-font").value;
-      db.summaryStyle.fontSize = parseInt(document.getElementById("tb-size").value) || 16;
-      db.summaryStyle.textColor = document.getElementById("tb-text-color").value;
-      db.summaryStyle.bgColor = document.getElementById("tb-bg-color").value;
-      saveDB();
-      applySummaryStyle();
+    function restoreEditorSelection() {
+      var ed = document.getElementById("summary-editor");
+      if (!ed || !_savedRange) return;
+      ed.focus();
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(_savedRange);
+    }
+
+    // ===== PER-SELECTION FORMATTING =====
+    function applyFontFamily(value) {
+      restoreEditorSelection();
+      document.execCommand("fontName", false, value);
+      var ed = document.getElementById("summary-editor");
+      if (ed) { db.summary = ed.innerHTML; saveDB(); }
+    }
+
+    function applyFontSize(value) {
+      restoreEditorSelection();
+      document.execCommand("fontSize", false, value);
+      var ed = document.getElementById("summary-editor");
+      if (ed) { db.summary = ed.innerHTML; saveDB(); }
+    }
+
+    function applyTextColor(value) {
+      restoreEditorSelection();
+      document.execCommand("foreColor", false, value);
+      var ed = document.getElementById("summary-editor");
+      if (ed) { db.summary = ed.innerHTML; saveDB(); }
+    }
+
+    function applyBgColor(value) {
+      restoreEditorSelection();
+      // 'hiliteColor' is the standard; 'backColor' is a Firefox fallback
+      if (!document.execCommand("hiliteColor", false, value)) {
+        document.execCommand("backColor", false, value);
+      }
+      var ed = document.getElementById("summary-editor");
+      if (ed) { db.summary = ed.innerHTML; saveDB(); }
+    }
+
+    // ===== PDF EXPORT =====
+    async function exportToPDF(btn) {
+      var editor = document.getElementById("summary-editor");
+      if (!editor) { alert("Please open the Document Summary page first."); return; }
+      if (!window.html2canvas || !window.jspdf) {
+        alert("PDF libraries are still loading. Please try again in a moment.");
+        return;
+      }
+      if (btn) { btn.textContent = "⏳ Generating…"; btn.disabled = true; }
+      try {
+        var canvas = await html2canvas(editor, { scale: 2, useCORS: true, logging: false });
+        var jsPDF = window.jspdf.jsPDF;
+        var pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+        var pageWidth = pdf.internal.pageSize.getWidth();
+        var pageHeight = pdf.internal.pageSize.getHeight();
+        var imgWidth = pageWidth;
+        var imgHeight = (canvas.height * imgWidth) / canvas.width;
+        var position = 0;
+        var heightLeft = imgHeight;
+        var imgData = canvas.toDataURL("image/jpeg", 0.92);
+        pdf.addImage(imgData, "JPEG", 0, position, imgWidth, imgHeight, "", "FAST");
+        heightLeft -= pageHeight;
+        while (heightLeft > 0) {
+          position -= pageHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, "JPEG", 0, position, imgWidth, imgHeight, "", "FAST");
+          heightLeft -= pageHeight;
+        }
+        var filename = (db.summaryTitle || "document-summary").replace(/[^a-z0-9_\-]/gi, "_") + ".pdf";
+        pdf.save(filename);
+      } catch (err) {
+        alert("PDF export failed: " + err.message);
+      }
+      if (btn) { btn.textContent = "📄 PDF"; btn.disabled = false; }
     }
 
     function formatText(type) {
