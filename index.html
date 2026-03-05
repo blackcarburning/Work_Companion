@@ -121,6 +121,13 @@
     }
     #topbar h1 { font-size: 1.05rem; flex: 1; min-width: 120px; }
 
+    #provider-section { display: flex; align-items: center; gap: 0.3rem; }
+    #provider-section label { font-size: 0.78rem; font-weight: 600; color: #57606a; }
+    #provider-select {
+      padding: 0.25rem 0.4rem; border: 1px solid #d0d7de; border-radius: 6px;
+      font-size: 0.78rem; background: #fff;
+    }
+
     #model-section { display: flex; align-items: center; gap: 0.3rem; }
     #model-section label { font-size: 0.78rem; font-weight: 600; color: #57606a; }
     #model-select {
@@ -401,6 +408,14 @@
   <div id="main">
     <div id="topbar">
       <h1 id="current-job-title">Document Summary</h1>
+      <div id="provider-section">
+        <label>Provider:</label>
+        <select id="provider-select" onchange="onProviderChange()">
+          <option value="github">GitHub Models</option>
+          <option value="openai">OpenAI Direct</option>
+          <option value="anthropic">Anthropic Direct</option>
+        </select>
+      </div>
       <div id="model-section">
         <label>Model:</label>
         <select id="model-select"><option value="">Loading...</option></select>
@@ -424,10 +439,17 @@
   <script>
     var API_URL = "https://models.github.ai/inference/chat/completions";
     var MODELS_URL = "https://models.github.ai/inference/models";
+    var OPENAI_DIRECT_URL = "https://api.openai.com/v1/chat/completions";
+    var ANTHROPIC_DIRECT_URL = "https://api.anthropic.com/v1/messages";
     var selectedModel = "openai/gpt-4.1";
     var token = "";
+    var openaiToken = "";
+    var anthropicToken = "";
+    var activeProvider = "github";
     var DB_KEY = "github_chat_db";
     var TOKEN_KEY = "github_token";
+    var OPENAI_TOKEN_KEY = "openai_token";
+    var ANTHROPIC_TOKEN_KEY = "anthropic_token";
     var MODELS_CACHE_KEY = "github_models_cache";
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
@@ -466,6 +488,25 @@
       { id: "cohere/command-r-plus", name: "Command R+ (Cohere)" }
     ];
 
+    var OPENAI_MODELS = [
+      { id: "gpt-4.1", name: "GPT-4.1" },
+      { id: "gpt-4.1-mini", name: "GPT-4.1 Mini" },
+      { id: "gpt-4.1-nano", name: "GPT-4.1 Nano" },
+      { id: "gpt-4o", name: "GPT-4o" },
+      { id: "gpt-4o-mini", name: "GPT-4o Mini" },
+      { id: "o3-mini", name: "o3-mini" },
+      { id: "o1", name: "o1" },
+      { id: "o1-mini", name: "o1-mini" }
+    ];
+
+    var ANTHROPIC_MODELS = [
+      { id: "claude-opus-4-20250514", name: "Claude Opus 4" },
+      { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
+      { id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet" },
+      { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
+      { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" }
+    ];
+
     marked.setOptions({
       highlight: function(code, lang) {
         if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
@@ -485,6 +526,7 @@
           if (!db.activeView) db.activeView = "summary";
           if (!db.summaryTitle) db.summaryTitle = "Document Summary";
           if (!db.summaryStyle) db.summaryStyle = { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" };
+          if (db.activeProvider) activeProvider = db.activeProvider;
         } catch(e) {
           db = { jobs:[], activeJobId:null, activeView:"summary", summary:"", summaryTitle:"Document Summary",
             summaryStyle:{ fontFamily:"sans-serif", fontSize:16, textColor:"#1f2328", bgColor:"#ffffff" } };
@@ -497,22 +539,69 @@
     function saveToken() {
       var input = document.getElementById("tokenInput").value.trim();
       if (!input) { document.getElementById("token-status").innerHTML = '<span class="error-text">Enter token</span>'; return; }
-      token = input;
-      localStorage.setItem(TOKEN_KEY, token);
+      if (activeProvider === "github") {
+        token = input;
+        localStorage.setItem(TOKEN_KEY, token);
+        fetchModels();
+      } else if (activeProvider === "openai") {
+        openaiToken = input;
+        localStorage.setItem(OPENAI_TOKEN_KEY, openaiToken);
+      } else if (activeProvider === "anthropic") {
+        anthropicToken = input;
+        localStorage.setItem(ANTHROPIC_TOKEN_KEY, anthropicToken);
+      }
       document.getElementById("token-status").innerHTML = '<span class="saved">✅ Saved</span>';
-      fetchModels();
     }
     function loadToken() {
       var saved = localStorage.getItem(TOKEN_KEY);
-      if (saved) {
-        token = saved;
-        document.getElementById("tokenInput").value = saved;
-        document.getElementById("token-status").innerHTML = '<span class="saved">✅</span>';
+      if (saved) token = saved;
+      var savedOpenai = localStorage.getItem(OPENAI_TOKEN_KEY);
+      if (savedOpenai) openaiToken = savedOpenai;
+      var savedAnthropic = localStorage.getItem(ANTHROPIC_TOKEN_KEY);
+      if (savedAnthropic) anthropicToken = savedAnthropic;
+      updateProviderUI();
+    }
+
+    // ===== PROVIDER =====
+    function onProviderChange() {
+      activeProvider = document.getElementById("provider-select").value;
+      db.activeProvider = activeProvider;
+      saveDB();
+      updateProviderUI();
+    }
+
+    function updateProviderUI() {
+      var providerSelect = document.getElementById("provider-select");
+      var tokenInput = document.getElementById("tokenInput");
+      var tokenStatus = document.getElementById("token-status");
+      var refreshBtn = document.getElementById("model-refresh-btn");
+
+      providerSelect.value = activeProvider;
+
+      if (activeProvider === "github") {
+        tokenInput.placeholder = "ghp_xxxxxxxxxxxx";
+        tokenInput.value = token;
+        tokenStatus.innerHTML = token ? '<span class="saved">✅</span>' : '';
+        refreshBtn.style.display = "";
+        loadCachedModels();
+      } else if (activeProvider === "openai") {
+        tokenInput.placeholder = "sk-...";
+        tokenInput.value = openaiToken;
+        tokenStatus.innerHTML = openaiToken ? '<span class="saved">✅</span>' : '';
+        refreshBtn.style.display = "none";
+        populateModelSelect(OPENAI_MODELS);
+      } else if (activeProvider === "anthropic") {
+        tokenInput.placeholder = "sk-ant-...";
+        tokenInput.value = anthropicToken;
+        tokenStatus.innerHTML = anthropicToken ? '<span class="saved">✅</span>' : '';
+        refreshBtn.style.display = "none";
+        populateModelSelect(ANTHROPIC_MODELS);
       }
     }
 
     // ===== MODELS =====
     async function fetchModels() {
+      if (activeProvider !== "github") return;
       if (!token) { populateModelSelect(FALLBACK_MODELS); return; }
       var btn = document.getElementById("model-refresh-btn");
       btn.textContent = "⏳";
@@ -1148,7 +1237,14 @@
     async function sendMessage() {
       if (!db.activeJobId) return; var job = getJob(db.activeJobId); if (!job) return;
       var input = document.getElementById("userInput"), ut = input.value.trim();
-      if (!ut || !token) { if (!token) alert("Please save your GitHub token first."); return; }
+      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : anthropicToken);
+      if (!ut || !activeToken) {
+        if (!activeToken) {
+          var label = activeProvider === "github" ? "GitHub token" : (activeProvider === "openai" ? "OpenAI API key" : "Anthropic API key");
+          alert("Please save your " + label + " first.");
+        }
+        return;
+      }
 
       addMessageToDOM("user", ut, false, job.messages.length - 1);
       job.messages.push({ role: "user", content: ut }); saveDB();
@@ -1157,18 +1253,50 @@
 
       try {
         var ctx = buildContextMessages(job.messages);
-        var r = await fetch(API_URL, {
-          method: "POST",
-          headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
-          body: JSON.stringify({ model: selectedModel, messages: ctx })
-        });
-        removeTyping();
-        if (!r.ok) { var et = await r.text(); addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB(); }
-        else {
-          var d = await r.json();
-          var reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
-          job.messages.push({ role: "assistant", content: reply }); saveDB();
-          addMessageToDOM("assistant", reply, false, job.messages.length - 2);
+        var r, d, reply;
+
+        if (activeProvider === "anthropic") {
+          var sysMsg = ctx[0];
+          var convMsgs = ctx.slice(1).filter(function(m) {
+            return m.role === "user" || m.role === "assistant" || m.role === "developer";
+          }).map(function(m) {
+            return { role: m.role === "developer" ? "user" : m.role, content: m.content };
+          });
+          var systemContent = (sysMsg && sysMsg.content) || "";
+          r = await fetch(ANTHROPIC_DIRECT_URL, {
+            method: "POST",
+            headers: {
+              "x-api-key": anthropicToken,
+              "Content-Type": "application/json",
+              "anthropic-version": "2023-06-01",
+              "anthropic-dangerous-direct-browser-access": "true"
+            },
+            body: JSON.stringify({ model: selectedModel, max_tokens: 4096, system: systemContent, messages: convMsgs })
+          });
+          removeTyping();
+          if (!r.ok) { var et = await r.text(); addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB(); }
+          else {
+            d = await r.json();
+            reply = (d.content && d.content[0] && d.content[0].text) || "No response.";
+            job.messages.push({ role: "assistant", content: reply }); saveDB();
+            addMessageToDOM("assistant", reply, false, job.messages.length - 2);
+          }
+        } else {
+          var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
+          var authToken = activeProvider === "openai" ? openaiToken : token;
+          r = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
+            body: JSON.stringify({ model: selectedModel, messages: ctx })
+          });
+          removeTyping();
+          if (!r.ok) { var et = await r.text(); addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB(); }
+          else {
+            d = await r.json();
+            reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
+            job.messages.push({ role: "assistant", content: reply }); saveDB();
+            addMessageToDOM("assistant", reply, false, job.messages.length - 2);
+          }
         }
       } catch (err) { removeTyping(); addMessageToDOM("error", err.message, false); job.messages.pop(); saveDB(); }
 
@@ -1217,8 +1345,8 @@
     function escapeHtml(t) { var d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
 
     // ===== INIT =====
-    loadDB(); loadToken(); loadCachedModels(); renderSidebar(); renderView();
-    if (token) setTimeout(fetchModels, 500);
+    loadDB(); loadToken(); renderSidebar(); renderView();
+    if (activeProvider === "github" && token) setTimeout(fetchModels, 500);
       /* ===== Open all external links in a new tab ===== */
   document.addEventListener('click', function (e) {
     var link = e.target.closest('a[href]');
