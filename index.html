@@ -261,13 +261,54 @@
     .msg-copy-btn:hover { background: #d0d7de; color: #1f2328; }
     .msg-delete-btn { background: #ffebe9; border-color: #f5c6cb; color: #cf222e; }
     .msg-delete-btn:hover { background: #f5c6cb; }
-    .msg-actions { display: flex; gap: 0.3rem; }
+    .msg-actions { display: flex; gap: 0.3rem; flex-wrap: wrap; }
     .paste-to-notes-btn {
       background: #ddf4ff; border: 1px solid #a8d8f0; border-radius: 4px;
       padding: 0.15rem 0.5rem; font-size: 0.7rem; cursor: pointer;
       color: #0969da; font-weight: 600;
     }
     .paste-to-notes-btn:hover { background: #a8d8f0; }
+
+    .msg-edit-btn {
+      background: #e1e4e8; border: 1px solid #d0d7de; border-radius: 4px;
+      padding: 0.15rem 0.5rem; font-size: 0.7rem; cursor: pointer;
+      color: #57606a; font-weight: 600;
+    }
+    .msg-edit-btn:hover:not(:disabled) { background: #d0d7de; color: #1f2328; }
+    .msg-lock-btn {
+      background: #fff8c5; border: 1px solid #d4a72c; border-radius: 4px;
+      padding: 0.15rem 0.5rem; font-size: 0.7rem; cursor: pointer;
+      color: #6a5300; font-weight: 600;
+    }
+    .msg-lock-btn:hover { background: #f5e17a; }
+    .msg-move-btn {
+      background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px;
+      padding: 0.15rem 0.5rem; font-size: 0.7rem; cursor: pointer;
+      color: #57606a; font-weight: 600;
+    }
+    .msg-move-btn:hover:not(:disabled) { background: #e1e4e8; }
+    .msg-move-btn:disabled, .msg-edit-btn:disabled, .msg-delete-btn:disabled {
+      opacity: 0.4; cursor: not-allowed;
+    }
+    .message-locked { border-left: 3px solid #d4a72c !important; }
+    .msg-edit-textarea {
+      width: 100%; min-height: 150px; resize: vertical;
+      border: 2px solid #0969da; border-radius: 6px;
+      padding: 0.5rem; font-family: inherit; font-size: 0.95rem;
+      line-height: 1.6; box-sizing: border-box; display: block;
+    }
+    .msg-edit-area { margin-top: 0.5rem; }
+    .msg-edit-btns { display: flex; gap: 0.4rem; margin-top: 0.4rem; }
+    .msg-save-btn {
+      background: #2da44e; color: #fff; border: none; border-radius: 4px;
+      padding: 0.25rem 0.75rem; font-size: 0.75rem; cursor: pointer; font-weight: 600;
+    }
+    .msg-save-btn:hover { background: #218838; }
+    .msg-cancel-btn {
+      background: #e1e4e8; color: #1f2328; border: 1px solid #d0d7de; border-radius: 4px;
+      padding: 0.25rem 0.75rem; font-size: 0.75rem; cursor: pointer; font-weight: 600;
+    }
+    .msg-cancel-btn:hover { background: #d0d7de; }
 
     .message-body p { margin: 0.5em 0; }
     .message-body p:first-child { margin-top: 0; }
@@ -906,39 +947,178 @@
       updateContextBar();
     }
 
+    function enterEditMode(jobId, convIdx, msgDiv, bodyEl, editBtnEl) {
+      var job = getJob(jobId); if (!job) return;
+      var actualIndex = convIdx + 1;
+      var msg = job.messages[actualIndex]; if (!msg) return;
+
+      bodyEl.style.display = "none";
+      editBtnEl.disabled = true;
+
+      var ta = document.createElement("textarea");
+      ta.className = "msg-edit-textarea";
+      ta.value = msg.content;
+
+      var saveBtn = document.createElement("button");
+      saveBtn.className = "msg-save-btn"; saveBtn.textContent = "💾 Save";
+
+      var cancelBtn = document.createElement("button");
+      cancelBtn.className = "msg-cancel-btn"; cancelBtn.textContent = "❌ Cancel";
+
+      var btnRow = document.createElement("div"); btnRow.className = "msg-edit-btns";
+      btnRow.appendChild(saveBtn); btnRow.appendChild(cancelBtn);
+
+      var editArea = document.createElement("div"); editArea.className = "msg-edit-area";
+      editArea.appendChild(ta); editArea.appendChild(btnRow);
+      msgDiv.appendChild(editArea);
+      ta.focus();
+
+      saveBtn.onclick = function() {
+        var newContent = ta.value;
+        msg.content = newContent;
+        saveDB();
+        if (msg.role === "assistant") { bodyEl.innerHTML = marked.parse(newContent); addCopyButtons(bodyEl); }
+        else { bodyEl.textContent = newContent; }
+        bodyEl.style.display = "";
+        editBtnEl.disabled = false;
+        msgDiv.removeChild(editArea);
+      };
+      cancelBtn.onclick = function() {
+        bodyEl.style.display = "";
+        editBtnEl.disabled = false;
+        msgDiv.removeChild(editArea);
+      };
+    }
+
+    function toggleLock(jobId, convIdx) {
+      var job = getJob(jobId); if (!job) return;
+      var actualIndex = convIdx + 1;
+      var msg = job.messages[actualIndex]; if (!msg) return;
+      msg.locked = !msg.locked;
+      saveDB();
+      renderView();
+    }
+
+    function moveExchange(jobId, convIdx, dir) {
+      // job.messages layout: [0:system, 1:user, 2:asst, 3:user, 4:asst, ...]
+      // actualIndex is the assistant; actualIndex-1 is its paired user message
+      var job = getJob(jobId); if (!job) return;
+      var actualIndex = convIdx + 1; // assistant message index
+      if (dir === "up") {
+        // Previous exchange starts 3 positions back (prev-user, prev-asst, cur-user, cur-asst)
+        var prevUserIdx = actualIndex - 3;
+        if (prevUserIdx < 1) return; // already the first exchange
+        var exchange = job.messages.splice(actualIndex - 1, 2);
+        job.messages.splice(prevUserIdx, 0, exchange[0], exchange[1]);
+      } else {
+        // Next exchange: user at actualIndex+1, assistant at actualIndex+2
+        var nextUserIdx = actualIndex + 1;
+        if (nextUserIdx + 1 >= job.messages.length) return; // already the last exchange
+        var nextExchange = job.messages.splice(nextUserIdx, 2);
+        job.messages.splice(actualIndex - 1, 0, nextExchange[0], nextExchange[1]);
+      }
+      saveDB();
+      renderView();
+    }
+
     function addMessageToDOM(role, content, isTrimmed, idx) {
       var chatDiv = document.getElementById("chat"); if (!chatDiv) return;
+      var job = getJob(db.activeJobId);
+      var actualIndex = idx + 1;
+      var msg = job ? job.messages[actualIndex] : null;
+      var locked = msg ? !!msg.locked : false;
+
       var msgDiv = document.createElement("div");
-      msgDiv.className = "message message-" + role + (isTrimmed ? " message-trimmed" : "");
+      msgDiv.className = "message message-" + role + (isTrimmed ? " message-trimmed" : "") + (locked && role === "assistant" ? " message-locked" : "");
       var label = document.createElement("div"); label.className = "message-label";
       var lt = document.createElement("span");
-      lt.textContent = (role === "user" ? "You" : role === "assistant" ? "Assistant" : "Error") + (isTrimmed ? " (not in context)" : "");
+      lt.textContent = (role === "user" ? "You" : role === "assistant" ? "Assistant" : "Error") +
+        (isTrimmed ? " (not in context)" : "") + (locked && role === "assistant" ? " 🔒" : "");
       var actions = document.createElement("span"); actions.className = "msg-actions";
 
+      var editBtnRef = null;
+
       if (role === "assistant") {
+        var muBtn = document.createElement("button"); muBtn.className = "msg-move-btn"; muBtn.textContent = "⬆️ Up";
+        muBtn.disabled = !(job && actualIndex - 3 >= 1); // disabled if no previous exchange
+        (function(i) { muBtn.onclick = function() { moveExchange(db.activeJobId, i, "up"); }; })(idx);
+        actions.appendChild(muBtn);
+
+        var mdBtn = document.createElement("button"); mdBtn.className = "msg-move-btn"; mdBtn.textContent = "⬇️ Down";
+        mdBtn.disabled = !(job && actualIndex + 2 < job.messages.length); // disabled if no next exchange
+        (function(i) { mdBtn.onclick = function() { moveExchange(db.activeJobId, i, "down"); }; })(idx);
+        actions.appendChild(mdBtn);
+
+        var editBtn = document.createElement("button"); editBtn.className = "msg-edit-btn"; editBtn.textContent = "✏️ Edit";
+        if (locked) editBtn.disabled = true;
+        editBtnRef = editBtn;
+        actions.appendChild(editBtn);
+
+        var lockBtn = document.createElement("button"); lockBtn.className = "msg-lock-btn";
+        lockBtn.textContent = locked ? "🔓 Unlock" : "🔒 Lock";
+        (function(i) { lockBtn.onclick = function() { toggleLock(db.activeJobId, i); }; })(idx);
+        actions.appendChild(lockBtn);
+
         var cb = document.createElement("button"); cb.className = "msg-copy-btn"; cb.textContent = "📄 Copy";
-        cb.onclick = function() { navigator.clipboard.writeText(content); cb.textContent = "✅ Copied!"; setTimeout(function() { cb.textContent = "📄 Copy"; }, 2000); };
+        (function(i) {
+          cb.onclick = function() {
+            var j = getJob(db.activeJobId);
+            var c = j && j.messages[i + 1] ? j.messages[i + 1].content : content;
+            navigator.clipboard.writeText(c);
+            cb.textContent = "✅ Copied!"; setTimeout(function() { cb.textContent = "📄 Copy"; }, 2000);
+          };
+        })(idx);
         actions.appendChild(cb);
 
         var pb = document.createElement("button"); pb.className = "paste-to-notes-btn"; pb.textContent = "📋 To Notes";
-        pb.onclick = function() {
-          var ed = document.getElementById("notes-editor"); if (ed) {
-            ed.value += (ed.value ? "\n\n---\n\n" : "") + content;
-            var j = getJob(db.activeJobId); if (j) { j.notes = ed.value; saveDB(); }
-            pb.textContent = "✅ Pasted!"; setTimeout(function() { pb.textContent = "📋 To Notes"; }, 2000);
-          }
-        };
+        (function(i) {
+          pb.onclick = function() {
+            var ed = document.getElementById("notes-editor"); if (ed) {
+              var j = getJob(db.activeJobId);
+              var c = j && j.messages[i + 1] ? j.messages[i + 1].content : content;
+              ed.value += (ed.value ? "\n\n---\n\n" : "") + c;
+              if (j) { j.notes = ed.value; saveDB(); }
+              pb.textContent = "✅ Pasted!"; setTimeout(function() { pb.textContent = "📋 To Notes"; }, 2000);
+            }
+          };
+        })(idx);
         actions.appendChild(pb);
 
         var del = document.createElement("button"); del.className = "msg-delete-btn"; del.textContent = "🗑️ Delete";
+        if (locked) del.disabled = true;
         (function(i) { del.onclick = function() { deleteExchange(db.activeJobId, i); }; })(idx);
         actions.appendChild(del);
+
+      } else if (role === "user") {
+        var uEditBtn = document.createElement("button"); uEditBtn.className = "msg-edit-btn"; uEditBtn.textContent = "✏️ Edit";
+        editBtnRef = uEditBtn;
+        actions.appendChild(uEditBtn);
+
+        var uDel = document.createElement("button"); uDel.className = "msg-delete-btn"; uDel.textContent = "🗑️ Delete";
+        (function(i) { uDel.onclick = function() { deleteExchange(db.activeJobId, i); }; })(idx);
+        actions.appendChild(uDel);
       }
 
       label.appendChild(lt); label.appendChild(actions);
       var body = document.createElement("div"); body.className = "message-body";
-      if (role === "user") body.textContent = content;
-      else { body.innerHTML = marked.parse(content); addCopyButtons(body); }
+
+      if (role === "user") {
+        body.textContent = content;
+        if (editBtnRef) {
+          (function(i, eb, bd) {
+            eb.onclick = function() { enterEditMode(db.activeJobId, i, msgDiv, bd, eb); };
+          })(idx, editBtnRef, body);
+        }
+      } else if (role === "assistant") {
+        body.innerHTML = marked.parse(content);
+        addCopyButtons(body);
+        if (editBtnRef) {
+          (function(i, eb, bd) {
+            eb.onclick = function() { enterEditMode(db.activeJobId, i, msgDiv, bd, eb); };
+          })(idx, editBtnRef, body);
+        }
+      }
+
       msgDiv.appendChild(label); msgDiv.appendChild(body); chatDiv.appendChild(msgDiv); chatDiv.scrollTop = chatDiv.scrollHeight;
     }
 
