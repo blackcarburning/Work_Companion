@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>GitHub Models Chat</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: #f6f8fa;
+      color: #1f2328;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ===== SIDEBAR ===== */
+    #sidebar {
+      width: 260px;
+      min-width: 260px;
+      background: #24292f;
+      color: #e6edf3;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #sidebar-header {
+      padding: 1rem;
+      border-bottom: 1px solid #3d444d;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    #sidebar-header h2 { font-size: 1rem; color: #e6edf3; }
+    .sidebar-btn {
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #3d444d;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #e6edf3;
+      text-align: center;
+    }
+    #new-job-btn { background: #2da44e; border-color: #2da44e; }
+    #new-job-btn:hover { background: #218838; }
+    .sidebar-actions { display: flex; gap: 0.4rem; }
+    .sidebar-actions .sidebar-btn { flex: 1; background: #30363d; }
+    .sidebar-actions .sidebar-btn:hover { background: #484f58; }
+
+    #summary-tab {
+      padding: 0.6rem 0.75rem;
+      margin: 0.5rem 0.5rem 0;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      font-weight: 600;
+      border-left: 4px solid transparent;
+      transition: background 0.15s;
+      color: #ffa657;
+    }
+    #summary-tab:hover { background: #30363d; }
+    #summary-tab.active { background: #30363d; border-left-color: #ffa657; }
+    #summary-tab-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #summary-tab .edit-summary-btn {
+      background: none; border: none; color: #8b949e; cursor: pointer;
+      font-size: 0.8rem; padding: 0.1rem 0.3rem; border-radius: 3px;
+      opacity: 0; transition: opacity 0.15s;
+    }
+    #summary-tab:hover .edit-summary-btn { opacity: 1; }
+    #summary-tab .edit-summary-btn:hover { color: #e6edf3; background: #484f58; }
+
+    #job-list { flex: 1; overflow-y: auto; padding: 0.5rem; }
+
+    .job-tab {
+      padding: 0.6rem 0.75rem;
+      margin-bottom: 0.3rem;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      border-left: 4px solid transparent;
+      transition: background 0.15s;
+    }
+    .job-tab:hover { background: #30363d; }
+    .job-tab.active { background: #30363d; border-left-color: #58a6ff; }
+    .job-tab-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .job-tab-actions { display: flex; gap: 0.3rem; opacity: 0; transition: opacity 0.15s; }
+    .job-tab:hover .job-tab-actions { opacity: 1; }
+    .job-tab-btn {
+      background: none; border: none; color: #8b949e; cursor: pointer;
+      font-size: 0.8rem; padding: 0.1rem 0.3rem; border-radius: 3px;
+    }
+    .job-tab-btn:hover { color: #e6edf3; background: #484f58; }
+    .job-tab-btn.delete:hover { color: #f85149; }
+    .job-color-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 0.5rem; flex-shrink: 0; }
+    .job-tab-info { font-size: 0.65rem; color: #8b949e; margin-left: 0.3rem; white-space: nowrap; }
+
+    /* ===== MAIN ===== */
+    #main { flex: 1; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    #topbar {
+      padding: 0.6rem 1rem;
+      background: #fff;
+      border-bottom: 1px solid #d0d7de;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }
+    #topbar h1 { font-size: 1.05rem; flex: 1; min-width: 120px; }
+
+    #model-section { display: flex; align-items: center; gap: 0.3rem; }
+    #model-section label { font-size: 0.78rem; font-weight: 600; color: #57606a; }
+    #model-select {
+      padding: 0.25rem 0.4rem; border: 1px solid #d0d7de; border-radius: 6px;
+      font-size: 0.78rem; background: #fff; min-width: 220px;
+    }
+    #model-refresh-btn {
+      padding: 0.25rem 0.4rem; background: #f6f8fa; border: 1px solid #d0d7de;
+      border-radius: 6px; cursor: pointer; font-size: 0.78rem;
+    }
+    #model-refresh-btn:hover { background: #e1e4e8; }
+
+    #token-section { display: flex; align-items: center; gap: 0.3rem; }
+    #token-section input {
+      width: 170px; padding: 0.25rem 0.4rem;
+      border: 1px solid #d0d7de; border-radius: 6px; font-size: 0.78rem;
+    }
+    #token-section button {
+      padding: 0.25rem 0.5rem; background: #2da44e; color: #fff;
+      border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.75rem;
+    }
+    #token-section button:hover { background: #218838; }
+    #token-status { font-size: 0.75rem; }
+    .saved { color: #2da44e; }
+    .error-text { color: #cf222e; }
+
+    #context-bar {
+      padding: 0.3rem 1rem; background: #fff8c5; border-bottom: 1px solid #d4a72c;
+      font-size: 0.78rem; color: #6a5300; display: none;
+    }
+    #context-bar.visible { display: flex; align-items: center; justify-content: space-between; }
+
+    #content-area { flex: 1; display: flex; overflow: hidden; }
+
+    #chat-panel { flex: 1; display: flex; flex-direction: column; border-right: 1px solid #d0d7de; }
+    #chat { flex: 1; overflow-y: auto; padding: 1rem; }
+    #input-section {
+      padding: 0.75rem 1rem; border-top: 1px solid #d0d7de;
+      display: flex; gap: 0.5rem; background: #fff;
+    }
+    #input-section input {
+      flex: 1; padding: 0.6rem 0.8rem;
+      border: 1px solid #d0d7de; border-radius: 6px; font-size: 0.95rem;
+    }
+    #input-section input:focus { outline: 2px solid #0969da; border-color: #0969da; }
+    #input-section button {
+      padding: 0.6rem 1.2rem; background: #2da44e; color: #fff;
+      border: none; border-radius: 6px; cursor: pointer; font-weight: 600;
+    }
+    #input-section button:hover { background: #218838; }
+    #input-section button:disabled { background: #94d3a2; cursor: not-allowed; }
+
+    #notes-panel { width: 320px; min-width: 280px; display: flex; flex-direction: column; background: #fff; }
+    #notes-header {
+      padding: 0.6rem 0.75rem; border-bottom: 1px solid #d0d7de;
+      font-weight: 700; font-size: 0.85rem; display: flex;
+      justify-content: space-between; align-items: center; background: #f6f8fa;
+    }
+    #notes-header button {
+      padding: 0.25rem 0.5rem; background: #0969da; color: #fff;
+      border: none; border-radius: 4px; cursor: pointer; font-size: 0.75rem;
+    }
+    #notes-header button:hover { background: #0550ae; }
+    #notes-content { flex: 1; padding: 0.75rem; overflow-y: auto; }
+    #notes-editor {
+      width: 100%; height: 100%; border: none; resize: none;
+      font-family: inherit; font-size: 0.9rem; line-height: 1.6; outline: none;
+    }
+
+    /* ===== SUMMARY PAGE ===== */
+    #summary-page { flex: 1; overflow-y: auto; padding: 2rem; }
+
+    /* Summary toolbar */
+    .summary-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+      padding: 0.6rem 0.8rem;
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+    }
+    .summary-toolbar label { font-size: 0.78rem; font-weight: 600; color: #57606a; }
+    .summary-toolbar select, .summary-toolbar input[type="number"] {
+      padding: 0.25rem 0.4rem; border: 1px solid #d0d7de; border-radius: 4px;
+      font-size: 0.78rem; background: #fff;
+    }
+    .summary-toolbar input[type="number"] { width: 55px; }
+    .summary-toolbar input[type="color"] {
+      width: 30px; height: 26px; padding: 0; border: 1px solid #d0d7de;
+      border-radius: 4px; cursor: pointer; background: none;
+    }
+    .toolbar-sep {
+      width: 1px; height: 20px; background: #d0d7de; margin: 0 0.2rem;
+    }
+    .fmt-btn {
+      padding: 0.2rem 0.5rem; background: #f6f8fa; border: 1px solid #d0d7de;
+      border-radius: 4px; cursor: pointer; font-size: 0.82rem; font-weight: 600;
+    }
+    .fmt-btn:hover { background: #e1e4e8; }
+    .fmt-btn.active { background: #0969da; color: #fff; border-color: #0969da; }
+
+    .summary-hint { font-size: 0.82rem; color: #57606a; margin-bottom: 0.75rem; }
+
+    #summary-editor {
+      width: 100%; min-height: 500px; border: 1px solid #d0d7de; border-radius: 8px;
+      padding: 1.5rem; font-size: 1rem; line-height: 1.7;
+      outline: none; background: #fff; overflow-y: auto;
+    }
+    #summary-editor:focus { border-color: #0969da; box-shadow: 0 0 0 2px rgba(9,105,218,0.15); }
+
+    /* Messages */
+    .message { margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 8px; line-height: 1.6; }
+    .message-user { background: #ddf4ff; border: 1px solid #a8d8f0; }
+    .message-assistant { background: #f6f8fa; border: 1px solid #d0d7de; }
+    .message-error { background: #ffebe9; border: 1px solid #f5c6cb; color: #cf222e; }
+    .message-label {
+      font-weight: 700; font-size: 0.75rem; text-transform: uppercase;
+      margin-bottom: 0.4rem; letter-spacing: 0.03em;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .message-user .message-label { color: #0969da; }
+    .message-assistant .message-label { color: #1a7f37; }
+    .message-error .message-label { color: #cf222e; }
+    .message-trimmed { opacity: 0.5; border-style: dashed; }
+    .trimmed-divider {
+      text-align: center; color: #8b949e; font-size: 0.78rem;
+      padding: 0.5rem 0; margin: 0.5rem 0; border-top: 1px dashed #d0d7de;
+    }
+
+    .msg-copy-btn, .msg-delete-btn {
+      background: #e1e4e8; border: 1px solid #d0d7de; border-radius: 4px;
+      padding: 0.15rem 0.5rem; font-size: 0.7rem; cursor: pointer;
+      color: #57606a; font-weight: 600;
+    }
+    .msg-copy-btn:hover { background: #d0d7de; color: #1f2328; }
+    .msg-delete-btn { background: #ffebe9; border-color: #f5c6cb; color: #cf222e; }
+    .msg-delete-btn:hover { background: #f5c6cb; }
+    .msg-actions { display: flex; gap: 0.3rem; }
+    .paste-to-notes-btn {
+      background: #ddf4ff; border: 1px solid #a8d8f0; border-radius: 4px;
+      padding: 0.15rem 0.5rem; font-size: 0.7rem; cursor: pointer;
+      color: #0969da; font-weight: 600;
+    }
+    .paste-to-notes-btn:hover { background: #a8d8f0; }
+
+    .message-body p { margin: 0.5em 0; }
+    .message-body p:first-child { margin-top: 0; }
+    .message-body p:last-child { margin-bottom: 0; }
+    .message-body ul, .message-body ol { margin: 0.5em 0; padding-left: 1.5em; }
+    .message-body li { margin: 0.25em 0; }
+    .message-body h1, .message-body h2, .message-body h3 {
+      margin: 0.75em 0 0.25em; padding-bottom: 0.2em; border-bottom: 1px solid #d0d7de;
+    }
+    .message-body h1 { font-size: 1.3em; }
+    .message-body h2 { font-size: 1.15em; }
+    .message-body h3 { font-size: 1.05em; border: none; }
+    .message-body code {
+      background: #eff1f3; padding: 0.15em 0.4em; border-radius: 4px;
+      font-size: 0.88em; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+    .message-body pre {
+      background: #161b22; color: #e6edf3; padding: 1rem;
+      border-radius: 6px; overflow-x: auto; margin: 0.75em 0;
+    }
+    .message-body pre code { background: none; padding: 0; color: inherit; font-size: 0.85em; line-height: 1.5; }
+    .code-wrapper { position: relative; }
+    .copy-btn {
+      position: absolute; top: 0.5rem; right: 0.5rem; background: #30363d;
+      color: #e6edf3; border: 1px solid #484f58; border-radius: 4px;
+      padding: 0.2rem 0.5rem; font-size: 0.75rem; cursor: pointer;
+    }
+    .copy-btn:hover { background: #484f58; }
+    .message-body table { border-collapse: collapse; width: 100%; margin: 0.75em 0; }
+    .message-body th, .message-body td { border: 1px solid #d0d7de; padding: 0.4rem 0.75rem; text-align: left; }
+    .message-body th { background: #f6f8fa; font-weight: 600; }
+    .message-body blockquote { border-left: 3px solid #d0d7de; padding-left: 1rem; color: #57606a; margin: 0.5em 0; }
+
+    .typing-dot {
+      display: inline-block; width: 8px; height: 8px; background: #57606a;
+      border-radius: 50%; margin: 0 2px; animation: blink 1.4s infinite both;
+    }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
+
+    .modal-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5); display: flex;
+      align-items: center; justify-content: center; z-index: 100;
+    }
+    .modal {
+      background: #fff; border-radius: 10px; padding: 1.5rem;
+      width: 420px; box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+    }
+    .modal h3 { margin-bottom: 0.5rem; }
+    .modal p { font-size: 0.85rem; color: #57606a; margin-bottom: 0.75rem; }
+    .modal input, .modal textarea {
+      width: 100%; padding: 0.5rem; border: 1px solid #d0d7de;
+      border-radius: 6px; font-size: 0.95rem; margin-bottom: 1rem; font-family: inherit;
+    }
+    .modal textarea { height: 80px; resize: vertical; }
+    .modal-btns { display: flex; justify-content: flex-end; gap: 0.5rem; }
+    .modal-btns button {
+      padding: 0.4rem 1rem; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;
+    }
+    .modal-btns .cancel { background: #e1e4e8; color: #1f2328; }
+    .modal-btns .confirm { background: #2da44e; color: #fff; }
+    .modal-btns .cancel:hover { background: #d0d7de; }
+    .modal-btns .confirm:hover { background: #218838; }
+  </style>
+</head>
+<body>
+
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h2>💬 Chat Jobs</h2>
+      <button class="sidebar-btn" id="new-job-btn" onclick="createNewJob()">+ New Job Section</button>
+      <div class="sidebar-actions">
+        <button class="sidebar-btn" onclick="exportData()">📤 Export</button>
+        <button class="sidebar-btn" onclick="importData()">📥 Import</button>
+      </div>
+    </div>
+    <div id="summary-tab" class="active" onclick="showSummary()">
+      <span>📄</span>&nbsp;
+      <span id="summary-tab-name">Document Summary</span>
+      <button class="edit-summary-btn" onclick="event.stopPropagation();renameSummary()" title="Rename">✏️</button>
+    </div>
+    <div id="job-list"></div>
+  </div>
+
+  <div id="main">
+    <div id="topbar">
+      <h1 id="current-job-title">Document Summary</h1>
+      <div id="model-section">
+        <label>Model:</label>
+        <select id="model-select"><option value="">Loading...</option></select>
+        <button id="model-refresh-btn" onclick="fetchModels()" title="Refresh models">🔄</button>
+      </div>
+      <div id="token-section">
+        <input type="password" id="tokenInput" placeholder="ghp_xxxxxxxxxxxx" />
+        <button onclick="saveToken()">Save</button>
+        <span id="token-status"></span>
+      </div>
+    </div>
+    <div id="context-bar">
+      <span id="context-bar-text"></span>
+      <button onclick="editSystemPrompt()" style="background:none;border:none;cursor:pointer;font-size:0.78rem;color:#6a5300;text-decoration:underline;">Edit System Prompt</button>
+    </div>
+    <div id="content-area"></div>
+  </div>
+
+  <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImport(event)" />
+
+  <script>
+    var API_URL = "https://models.github.ai/inference/chat/completions";
+    var MODELS_URL = "https://models.github.ai/inference/models";
+    var selectedModel = "openai/gpt-4.1";
+    var token = "";
+    var DB_KEY = "github_chat_db";
+    var TOKEN_KEY = "github_token";
+    var MODELS_CACHE_KEY = "github_models_cache";
+    var KEEP_FIRST = 5;
+    var KEEP_LAST = 15;
+
+    var db = {
+      jobs: [], activeJobId: null, activeView: "summary",
+      summary: "", summaryTitle: "Document Summary",
+      summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" }
+    };
+
+    var TAB_COLORS = [
+      "#58a6ff","#f78166","#d2a8ff","#7ee787",
+      "#ffa657","#ff7b72","#79c0ff","#56d364",
+      "#e3b341","#db61a2","#3fb950","#388bfd"
+    ];
+
+    var FALLBACK_MODELS = [
+      { id: "openai/gpt-4.1", name: "GPT-4.1 (OpenAI)" },
+      { id: "openai/gpt-4.1-mini", name: "GPT-4.1 Mini (OpenAI)" },
+      { id: "openai/gpt-4.1-nano", name: "GPT-4.1 Nano (OpenAI)" },
+      { id: "openai/gpt-4o", name: "GPT-4o (OpenAI)" },
+      { id: "openai/gpt-4o-mini", name: "GPT-4o Mini (OpenAI)" },
+      { id: "openai/o3-mini", name: "o3-mini (OpenAI)" },
+      { id: "openai/o1", name: "o1 (OpenAI)" },
+      { id: "openai/o1-mini", name: "o1-mini (OpenAI)" },
+      { id: "anthropic/claude-opus-4", name: "Claude Opus 4 (Anthropic) ⭐" },
+      { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4 (Anthropic) ⭐" },
+      { id: "anthropic/claude-3.7-sonnet", name: "Claude 3.7 Sonnet (Anthropic)" },
+      { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet (Anthropic)" },
+      { id: "anthropic/claude-3.5-haiku", name: "Claude 3.5 Haiku (Anthropic)" },
+      { id: "meta/llama-3.1-405b-instruct", name: "Llama 3.1 405B (Meta)" },
+      { id: "meta/llama-3.1-70b-instruct", name: "Llama 3.1 70B (Meta)" },
+      { id: "microsoft/phi-4", name: "Phi-4 (Microsoft)" },
+      { id: "mistral-ai/mistral-large", name: "Mistral Large (Mistral)" },
+      { id: "deepseek/deepseek-r1", name: "DeepSeek R1" },
+      { id: "cohere/command-r-plus", name: "Command R+ (Cohere)" }
+    ];
+
+    marked.setOptions({
+      highlight: function(code, lang) {
+        if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
+        return hljs.highlightAuto(code).value;
+      },
+      breaks: true
+    });
+
+    // ===== DB =====
+    function saveDB() { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+    function loadDB() {
+      var raw = localStorage.getItem(DB_KEY);
+      if (raw) {
+        try {
+          db = JSON.parse(raw);
+          if (!db.summary) db.summary = "";
+          if (!db.activeView) db.activeView = "summary";
+          if (!db.summaryTitle) db.summaryTitle = "Document Summary";
+          if (!db.summaryStyle) db.summaryStyle = { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" };
+        } catch(e) {
+          db = { jobs:[], activeJobId:null, activeView:"summary", summary:"", summaryTitle:"Document Summary",
+            summaryStyle:{ fontFamily:"sans-serif", fontSize:16, textColor:"#1f2328", bgColor:"#ffffff" } };
+        }
+      }
+    }
+    function getJob(id) { return db.jobs.find(function(j) { return j.id === id; }); }
+
+    // ===== TOKEN =====
+    function saveToken() {
+      var input = document.getElementById("tokenInput").value.trim();
+      if (!input) { document.getElementById("token-status").innerHTML = '<span class="error-text">Enter token</span>'; return; }
+      token = input;
+      localStorage.setItem(TOKEN_KEY, token);
+      document.getElementById("token-status").innerHTML = '<span class="saved">✅ Saved</span>';
+      fetchModels();
+    }
+    function loadToken() {
+      var saved = localStorage.getItem(TOKEN_KEY);
+      if (saved) {
+        token = saved;
+        document.getElementById("tokenInput").value = saved;
+        document.getElementById("token-status").innerHTML = '<span class="saved">✅</span>';
+      }
+    }
+
+    // ===== MODELS =====
+    async function fetchModels() {
+      if (!token) { populateModelSelect(FALLBACK_MODELS); return; }
+      var btn = document.getElementById("model-refresh-btn");
+      btn.textContent = "⏳";
+      try {
+        var r = await fetch(MODELS_URL, {
+          headers: { "Authorization": "Bearer " + token, "Accept": "application/json" }
+        });
+        if (!r.ok) { populateModelSelect(FALLBACK_MODELS); btn.textContent = "🔄"; return; }
+        var data = await r.json();
+        var models = [];
+        var list = Array.isArray(data) ? data : (data.data || data.models || []);
+        list.forEach(function(m) {
+          var id = m.id || m.name || "";
+          if (!id) return;
+          if (m.task && m.task !== "chat-completion") return;
+          var label = m.friendly_name || m.display_name || id;
+          if (m.publisher) label += " (" + m.publisher + ")";
+          models.push({ id: id, name: label });
+        });
+        if (models.length === 0) models = FALLBACK_MODELS;
+        models.sort(function(a, b) { return a.name.localeCompare(b.name); });
+        localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(models));
+        populateModelSelect(models);
+      } catch(e) { populateModelSelect(FALLBACK_MODELS); }
+      btn.textContent = "🔄";
+    }
+
+    function populateModelSelect(models) {
+      var sel = document.getElementById("model-select");
+      sel.innerHTML = "";
+      models.forEach(function(m) {
+        var o = document.createElement("option");
+        o.value = m.id; o.textContent = m.name;
+        if (m.id === selectedModel) o.selected = true;
+        sel.appendChild(o);
+      });
+      if (sel.value) selectedModel = sel.value;
+      sel.onchange = function() { selectedModel = this.value; };
+    }
+
+    function loadCachedModels() {
+      var c = localStorage.getItem(MODELS_CACHE_KEY);
+      if (c) { try { var m = JSON.parse(c); if (m.length) { populateModelSelect(m); return; } } catch(e) {} }
+      populateModelSelect(FALLBACK_MODELS);
+    }
+
+    // ===== SLIDING WINDOW =====
+    function buildContextMessages(all) {
+      var sys = all[0], conv = all.slice(1);
+      var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2;
+      if (conv.length <= fc + lc) return [sys].concat(conv);
+      var first = conv.slice(0, fc), last = conv.slice(-lc);
+      var skip = conv.length - fc - lc;
+      var note = { role: "developer", content: "[Note: " + skip + " messages omitted. First " + KEEP_FIRST + " and last " + KEEP_LAST + " exchanges included.]" };
+      return [sys].concat(first).concat([note]).concat(last);
+    }
+
+    // ===== MODAL =====
+    function showModal(title, subtitle, val, isTA, cb) {
+      var ov = document.createElement("div"); ov.className = "modal-overlay";
+      var ih = isTA ? '<textarea id="modal-input">' + escapeHtml(val || '') + '</textarea>'
+        : '<input type="text" id="modal-input" value="' + escapeHtml(val || '') + '" />';
+      ov.innerHTML = '<div class="modal"><h3>' + title + '</h3>' + (subtitle ? '<p>' + subtitle + '</p>' : '') + ih +
+        '<div class="modal-btns"><button class="cancel" id="modal-cancel">Cancel</button>' +
+        '<button class="confirm" id="modal-confirm">OK</button></div></div>';
+      document.body.appendChild(ov);
+      var inp = document.getElementById("modal-input"); inp.focus(); if (!isTA) inp.select();
+      document.getElementById("modal-confirm").onclick = function() { var v = inp.value.trim(); document.body.removeChild(ov); cb(v); };
+      document.getElementById("modal-cancel").onclick = function() { document.body.removeChild(ov); };
+      if (!isTA) inp.addEventListener("keydown", function(e) {
+        if (e.key === "Enter") document.getElementById("modal-confirm").click();
+        if (e.key === "Escape") document.getElementById("modal-cancel").click();
+      });
+    }
+
+    // ===== SUMMARY =====
+    function showSummary() {
+      saveCurrentNotes(); db.activeView = "summary"; db.activeJobId = null; saveDB(); renderSidebar(); renderView();
+    }
+
+    function renameSummary() {
+      showModal("Rename Summary Page", "", db.summaryTitle, false, function(v) {
+        if (!v) return;
+        db.summaryTitle = v;
+        saveDB();
+        renderSidebar();
+        if (db.activeView === "summary") renderView();
+      });
+    }
+
+    function renderSummaryPage() {
+      document.getElementById("current-job-title").textContent = db.summaryTitle;
+      document.getElementById("summary-tab-name").textContent = db.summaryTitle;
+      document.getElementById("context-bar").classList.remove("visible");
+
+      var s = db.summaryStyle;
+      var ca = document.getElementById("content-area");
+      ca.innerHTML =
+        '<div id="summary-page">' +
+          '<h2 id="summary-heading">' + escapeHtml(db.summaryTitle) + '</h2>' +
+
+          '<div class="summary-toolbar">' +
+            '<label>Font:</label>' +
+            '<select id="tb-font" onchange="onSummaryStyleChange()">' +
+              '<option value="sans-serif"' + (s.fontFamily === "sans-serif" ? " selected" : "") + '>Sans-serif</option>' +
+              '<option value="serif"' + (s.fontFamily === "serif" ? " selected" : "") + '>Serif</option>' +
+              '<option value="monospace"' + (s.fontFamily === "monospace" ? " selected" : "") + '>Monospace</option>' +
+              '<option value="Georgia, serif"' + (s.fontFamily === "Georgia, serif" ? " selected" : "") + '>Georgia</option>' +
+              '<option value="Palatino, serif"' + (s.fontFamily === "Palatino, serif" ? " selected" : "") + '>Palatino</option>' +
+              '<option value="Courier New, monospace"' + (s.fontFamily === "Courier New, monospace" ? " selected" : "") + '>Courier New</option>' +
+              '<option value="Verdana, sans-serif"' + (s.fontFamily === "Verdana, sans-serif" ? " selected" : "") + '>Verdana</option>' +
+              '<option value="Trebuchet MS, sans-serif"' + (s.fontFamily === "Trebuchet MS, sans-serif" ? " selected" : "") + '>Trebuchet</option>' +
+            '</select>' +
+
+            '<div class="toolbar-sep"></div>' +
+
+            '<label>Size:</label>' +
+            '<input type="number" id="tb-size" min="10" max="36" value="' + s.fontSize + '" onchange="onSummaryStyleChange()" />' +
+
+            '<div class="toolbar-sep"></div>' +
+
+            '<label>Text:</label>' +
+            '<input type="color" id="tb-text-color" value="' + s.textColor + '" onchange="onSummaryStyleChange()" title="Text color" />' +
+
+            '<label>Background:</label>' +
+            '<input type="color" id="tb-bg-color" value="' + s.bgColor + '" onchange="onSummaryStyleChange()" title="Background color" />' +
+
+            '<div class="toolbar-sep"></div>' +
+
+            '<button class="fmt-btn" onclick="formatText(\'bold\')" title="Bold"><b>B</b></button>' +
+            '<button class="fmt-btn" onclick="formatText(\'italic\')" title="Italic"><i>I</i></button>' +
+            '<button class="fmt-btn" onclick="formatText(\'underline\')" title="Underline"><u>U</u></button>' +
+            '<button class="fmt-btn" onclick="formatText(\'strikethrough\')" title="Strikethrough"><s>S</s></button>' +
+
+            '<div class="toolbar-sep"></div>' +
+
+            '<button class="fmt-btn" onclick="formatText(\'heading\')" title="Heading">H</button>' +
+            '<button class="fmt-btn" onclick="formatText(\'bullet\')" title="Bullet list">• List</button>' +
+            '<button class="fmt-btn" onclick="formatText(\'numbered\')" title="Numbered list">1. List</button>' +
+            '<button class="fmt-btn" onclick="formatText(\'hr\')" title="Horizontal rule">—</button>' +
+          '</div>' +
+
+          '<p class="summary-hint">Use this page for project overview, key decisions, links, and status updates. Supports Markdown.</p>' +
+
+          '<div id="summary-editor" contenteditable="true"></div>' +
+
+          '<div style="margin-top:0.75rem;font-size:0.78rem;color:#8b949e;">' +
+            '<span id="summary-word-count"></span>' +
+          '</div>' +
+        '</div>';
+
+      var editor = document.getElementById("summary-editor");
+      editor.innerHTML = db.summary || "";
+      applySummaryStyle();
+
+      editor.addEventListener("input", function() {
+        db.summary = this.innerHTML;
+        saveDB();
+        updateWordCount();
+      });
+
+      updateWordCount();
+      editor.focus();
+    }
+
+    function applySummaryStyle() {
+      var s = db.summaryStyle;
+      var ed = document.getElementById("summary-editor");
+      if (!ed) return;
+      ed.style.fontFamily = s.fontFamily;
+      ed.style.fontSize = s.fontSize + "px";
+      ed.style.color = s.textColor;
+      ed.style.backgroundColor = s.bgColor;
+    }
+
+    function onSummaryStyleChange() {
+      db.summaryStyle.fontFamily = document.getElementById("tb-font").value;
+      db.summaryStyle.fontSize = parseInt(document.getElementById("tb-size").value) || 16;
+      db.summaryStyle.textColor = document.getElementById("tb-text-color").value;
+      db.summaryStyle.bgColor = document.getElementById("tb-bg-color").value;
+      saveDB();
+      applySummaryStyle();
+    }
+
+    function formatText(type) {
+      var ed = document.getElementById("summary-editor");
+      if (!ed) return;
+      ed.focus();
+
+      switch (type) {
+        case "bold": document.execCommand("bold"); break;
+        case "italic": document.execCommand("italic"); break;
+        case "underline": document.execCommand("underline"); break;
+        case "strikethrough": document.execCommand("strikethrough"); break;
+        case "heading":
+          var sel = window.getSelection();
+          if (sel.rangeCount) {
+            var text = sel.toString();
+            document.execCommand("insertHTML", false, "<h3>" + escapeHtml(text || "Heading") + "</h3>");
+          }
+          break;
+        case "bullet": document.execCommand("insertUnorderedList"); break;
+        case "numbered": document.execCommand("insertOrderedList"); break;
+        case "hr": document.execCommand("insertHTML", false, "<hr>"); break;
+      }
+
+      db.summary = ed.innerHTML;
+      saveDB();
+    }
+
+    function updateWordCount() {
+      var ed = document.getElementById("summary-editor");
+      var wc = document.getElementById("summary-word-count");
+      if (!ed || !wc) return;
+      var text = ed.innerText || "";
+      var words = text.trim().split(/\s+/).filter(function(w) { return w.length > 0; });
+      wc.textContent = words.length + " words · " + text.length + " characters";
+    }
+
+    // ===== JOBS =====
+    function createNewJob() {
+      showModal("New Job Section", "Give this job a name", "", false, function(name) {
+        if (!name) return;
+        showModal("System Prompt", "Sets the AI's role. Sent with every message.", "You are a helpful assistant.", true, function(sp) {
+          var job = {
+            id: Date.now().toString(), name: name, color: TAB_COLORS[db.jobs.length % TAB_COLORS.length],
+            messages: [{ role: "system", content: sp || "You are a helpful assistant." }], notes: ""
+          };
+          db.jobs.push(job); db.activeJobId = job.id; db.activeView = "job"; saveDB(); renderSidebar(); renderView();
+        });
+      });
+    }
+    function switchJob(id) { saveCurrentNotes(); db.activeJobId = id; db.activeView = "job"; saveDB(); renderSidebar(); renderView(); }
+    function renameJob(id) {
+      var j = getJob(id); if (!j) return;
+      showModal("Rename Job", "", j.name, false, function(n) { if (!n) return; j.name = n; saveDB(); renderSidebar(); renderView(); });
+    }
+    function deleteJob(id) {
+      if (!confirm("Delete this job section?")) return;
+      db.jobs = db.jobs.filter(function(j) { return j.id !== id; });
+      if (db.activeJobId === id) { db.activeJobId = db.jobs.length ? db.jobs[0].id : null; if (!db.activeJobId) db.activeView = "summary"; }
+      saveDB(); renderSidebar(); renderView();
+    }
+    function editSystemPrompt() {
+      if (!db.activeJobId) return; var j = getJob(db.activeJobId); if (!j) return;
+      showModal("Edit System Prompt", "Sent with every message.", j.messages[0].content, true, function(v) {
+        j.messages[0].content = v || "You are a helpful assistant."; saveDB(); updateContextBar();
+      });
+    }
+
+    function deleteExchange(jobId, msgIndex) {
+      var job = getJob(jobId);
+      if (!job) return;
+
+      // msgIndex is the index in conversation (0-based, excluding system)
+      // actual index in job.messages = msgIndex + 1
+      var actualIndex = msgIndex + 1;
+      var msg = job.messages[actualIndex];
+      if (!msg) return;
+
+      if (msg.role === "assistant") {
+        // Delete the assistant reply AND the user question before it
+        var prevIndex = actualIndex - 1;
+        if (prevIndex >= 1 && job.messages[prevIndex].role === "user") {
+          if (!confirm("Delete this exchange (your question + the assistant reply)?")) return;
+          job.messages.splice(prevIndex, 2); // remove both
+        } else {
+          if (!confirm("Delete this assistant reply?")) return;
+          job.messages.splice(actualIndex, 1);
+        }
+      } else {
+        if (!confirm("Delete this message?")) return;
+        job.messages.splice(actualIndex, 1);
+      }
+
+      saveDB();
+      renderView();
+    }
+
+    function saveCurrentNotes() {
+      if (!db.activeJobId) return;
+      var ed = document.getElementById("notes-editor");
+      if (ed) { var j = getJob(db.activeJobId); if (j) { j.notes = ed.value; saveDB(); } }
+    }
+
+    // ===== CONTEXT BAR =====
+    function updateContextBar() {
+      var bar = document.getElementById("context-bar"), txt = document.getElementById("context-bar-text");
+      if (!db.activeJobId || db.activeView !== "job") { bar.classList.remove("visible"); return; }
+      var j = getJob(db.activeJobId); if (!j) { bar.classList.remove("visible"); return; }
+      var te = Math.floor((j.messages.length - 1) / 2), conv = j.messages.slice(1);
+      var trimmed = conv.length > (KEEP_FIRST + KEEP_LAST) * 2;
+      var sp = j.messages[0].content.substring(0, 80); if (j.messages[0].content.length > 80) sp += "…";
+      var info = '🧠 "' + sp + '" | 💬 ' + te + ' exchanges';
+      if (trimmed) { var sk = Math.floor((conv.length - (KEEP_FIRST + KEEP_LAST) * 2) / 2); info += ' | ✂️ First ' + KEEP_FIRST + ' + Last ' + KEEP_LAST + ' (' + sk + ' skipped)'; }
+      else info += ' | ✅ Full history sent';
+      txt.textContent = info; bar.classList.add("visible");
+    }
+
+    // ===== RENDER =====
+    function renderView() { if (db.activeView === "summary" || !db.activeJobId) renderSummaryPage(); else renderActiveJob(); }
+
+    function renderSidebar() {
+      document.getElementById("summary-tab").className = (db.activeView === "summary" || !db.activeJobId) ? "active" : "";
+      document.getElementById("summary-tab-name").textContent = db.summaryTitle;
+      var list = document.getElementById("job-list"); list.innerHTML = "";
+      db.jobs.forEach(function(job) {
+        var mc = Math.floor((job.messages.length - 1) / 2);
+        var tab = document.createElement("div");
+        tab.className = "job-tab" + (job.id === db.activeJobId && db.activeView === "job" ? " active" : "");
+        tab.innerHTML =
+          '<span class="job-color-dot" style="background:' + job.color + '"></span>' +
+          '<span class="job-tab-name">' + escapeHtml(job.name) + '</span>' +
+          '<span class="job-tab-info">' + mc + '</span>' +
+          '<span class="job-tab-actions">' +
+            '<button class="job-tab-btn" title="Rename" data-action="rename" data-id="' + job.id + '">✏️</button>' +
+            '<button class="job-tab-btn delete" title="Delete" data-action="delete" data-id="' + job.id + '">🗑️</button></span>';
+        tab.addEventListener("click", function(e) {
+          if (e.target.dataset.action === "rename") { renameJob(e.target.dataset.id); return; }
+          if (e.target.dataset.action === "delete") { deleteJob(e.target.dataset.id); return; }
+          switchJob(job.id);
+        });
+        list.appendChild(tab);
+      });
+    }
+
+    function renderActiveJob() {
+      var ca = document.getElementById("content-area"), tl = document.getElementById("current-job-title");
+      if (!db.activeJobId) { renderSummaryPage(); return; }
+      var job = getJob(db.activeJobId); if (!job) return;
+      tl.textContent = job.name;
+
+      ca.innerHTML =
+        '<div id="chat-panel"><div id="chat"></div>' +
+        '<div id="input-section"><input type="text" id="userInput" placeholder="Ask a question..." />' +
+        '<button onclick="sendMessage()" id="sendBtn">Send</button></div></div>' +
+        '<div id="notes-panel"><div id="notes-header"><span>📋 Notes / Clipboard</span>' +
+        '<button onclick="clearNotes()">Clear</button></div>' +
+        '<div id="notes-content"><textarea id="notes-editor" placeholder="Paste or type notes here..."></textarea></div></div>';
+
+      var chatDiv = document.getElementById("chat"), conv = job.messages.slice(1);
+      var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2, trim = conv.length > fc + lc;
+      conv.forEach(function(msg, i) {
+        var inCtx = !trim || (i < fc) || (i >= conv.length - lc);
+        addMessageToDOM(msg.role, msg.content, !inCtx, i);
+        if (trim && i === fc - 1) {
+          var d = document.createElement("div"); d.className = "trimmed-divider";
+          d.textContent = "✂️ " + (conv.length - fc - lc) + " messages not sent to AI";
+          chatDiv.appendChild(d);
+        }
+      });
+
+      document.getElementById("notes-editor").value = job.notes || "";
+      document.getElementById("notes-editor").addEventListener("input", function() { job.notes = this.value; saveDB(); });
+      document.getElementById("userInput").addEventListener("keydown", function(e) { if (e.key === "Enter") sendMessage(); });
+      document.getElementById("userInput").focus();
+      updateContextBar();
+    }
+
+    function addMessageToDOM(role, content, isTrimmed, idx) {
+      var chatDiv = document.getElementById("chat"); if (!chatDiv) return;
+      var msgDiv = document.createElement("div");
+      msgDiv.className = "message message-" + role + (isTrimmed ? " message-trimmed" : "");
+      var label = document.createElement("div"); label.className = "message-label";
+      var lt = document.createElement("span");
+      lt.textContent = (role === "user" ? "You" : role === "assistant" ? "Assistant" : "Error") + (isTrimmed ? " (not in context)" : "");
+      var actions = document.createElement("span"); actions.className = "msg-actions";
+
+      if (role === "assistant") {
+        var cb = document.createElement("button"); cb.className = "msg-copy-btn"; cb.textContent = "📄 Copy";
+        cb.onclick = function() { navigator.clipboard.writeText(content); cb.textContent = "✅ Copied!"; setTimeout(function() { cb.textContent = "📄 Copy"; }, 2000); };
+        actions.appendChild(cb);
+
+        var pb = document.createElement("button"); pb.className = "paste-to-notes-btn"; pb.textContent = "📋 To Notes";
+        pb.onclick = function() {
+          var ed = document.getElementById("notes-editor"); if (ed) {
+            ed.value += (ed.value ? "\n\n---\n\n" : "") + content;
+            var j = getJob(db.activeJobId); if (j) { j.notes = ed.value; saveDB(); }
+            pb.textContent = "✅ Pasted!"; setTimeout(function() { pb.textContent = "📋 To Notes"; }, 2000);
+          }
+        };
+        actions.appendChild(pb);
+
+        var del = document.createElement("button"); del.className = "msg-delete-btn"; del.textContent = "🗑️ Delete";
+        (function(i) { del.onclick = function() { deleteExchange(db.activeJobId, i); }; })(idx);
+        actions.appendChild(del);
+      }
+
+      label.appendChild(lt); label.appendChild(actions);
+      var body = document.createElement("div"); body.className = "message-body";
+      if (role === "user") body.textContent = content;
+      else { body.innerHTML = marked.parse(content); addCopyButtons(body); }
+      msgDiv.appendChild(label); msgDiv.appendChild(body); chatDiv.appendChild(msgDiv); chatDiv.scrollTop = chatDiv.scrollHeight;
+    }
+
+    function addCopyButtons(c) {
+      c.querySelectorAll("pre").forEach(function(pre) {
+        var w = document.createElement("div"); w.className = "code-wrapper"; pre.parentNode.insertBefore(w, pre); w.appendChild(pre);
+        var b = document.createElement("button"); b.className = "copy-btn"; b.textContent = "Copy";
+        b.onclick = function() { var code = pre.querySelector("code"); navigator.clipboard.writeText(code ? code.textContent : pre.textContent); b.textContent = "Copied!"; setTimeout(function() { b.textContent = "Copy"; }, 2000); };
+        w.appendChild(b);
+      });
+    }
+
+    function clearNotes() {
+      if (!confirm("Clear all notes?")) return; var ed = document.getElementById("notes-editor"); if (ed) ed.value = "";
+      var j = getJob(db.activeJobId); if (j) { j.notes = ""; saveDB(); }
+    }
+
+    // ===== CHAT =====
+    function showTyping() { var c = document.getElementById("chat"); if (!c) return; var m = document.createElement("div"); m.className = "message message-assistant"; m.id = "typing-indicator"; m.innerHTML = '<div class="message-label"><span>Assistant</span></div><div><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>'; c.appendChild(m); c.scrollTop = c.scrollHeight; }
+    function removeTyping() { var e = document.getElementById("typing-indicator"); if (e) e.remove(); }
+
+    async function sendMessage() {
+      if (!db.activeJobId) return; var job = getJob(db.activeJobId); if (!job) return;
+      var input = document.getElementById("userInput"), ut = input.value.trim();
+      if (!ut || !token) { if (!token) alert("Please save your GitHub token first."); return; }
+
+      addMessageToDOM("user", ut, false, job.messages.length - 1);
+      job.messages.push({ role: "user", content: ut }); saveDB();
+      input.value = ""; input.disabled = true; document.getElementById("sendBtn").disabled = true;
+      showTyping();
+
+      try {
+        var ctx = buildContextMessages(job.messages);
+        var r = await fetch(API_URL, {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: selectedModel, messages: ctx })
+        });
+        removeTyping();
+        if (!r.ok) { var et = await r.text(); addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB(); }
+        else {
+          var d = await r.json();
+          var reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
+          job.messages.push({ role: "assistant", content: reply }); saveDB();
+          addMessageToDOM("assistant", reply, false, job.messages.length - 2);
+        }
+      } catch (err) { removeTyping(); addMessageToDOM("error", err.message, false); job.messages.pop(); saveDB(); }
+
+      input.disabled = false; document.getElementById("sendBtn").disabled = false; input.focus();
+      updateContextBar(); renderSidebar();
+    }
+
+    // ===== EXPORT =====
+    async function exportData() {
+      saveCurrentNotes();
+      var se = document.getElementById("summary-editor"); if (se) db.summary = se.innerHTML;
+      var json = JSON.stringify(db, null, 2);
+      var defName = "github-chat-" + new Date().toISOString().slice(0, 10) + ".json";
+
+      if (window.showSaveFilePicker) {
+        try {
+          var handle = await window.showSaveFilePicker({ suggestedName: defName, types: [{ description: "JSON Files", accept: { "application/json": [".json"] } }] });
+          var w = await handle.createWritable(); await w.write(json); await w.close(); return;
+        } catch (err) { if (err.name === "AbortError") return; }
+      }
+      var blob = new Blob([json], { type: "application/json" }); var url = URL.createObjectURL(blob);
+      var a = document.createElement("a"); a.href = url; a.download = defName; a.click(); URL.revokeObjectURL(url);
+    }
+
+    function importData() { document.getElementById("import-file").click(); }
+    function handleImport(event) {
+      var file = event.target.files[0]; if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          var imp = JSON.parse(e.target.result);
+          if (!imp.jobs || !Array.isArray(imp.jobs)) { alert("Invalid format."); return; }
+          if (confirm("Replace all current data?")) {
+            db = imp;
+            if (!db.summary) db.summary = "";
+            if (!db.activeView) db.activeView = "summary";
+            if (!db.summaryTitle) db.summaryTitle = "Document Summary";
+            if (!db.summaryStyle) db.summaryStyle = { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" };
+            saveDB(); renderSidebar(); renderView();
+          }
+        } catch (err) { alert("Failed to parse: " + err.message); }
+      };
+      reader.readAsText(file); event.target.value = "";
+    }
+
+    function escapeHtml(t) { var d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
+
+    // ===== INIT =====
+    loadDB(); loadToken(); loadCachedModels(); renderSidebar(); renderView();
+    if (token) setTimeout(fetchModels, 500);
+  </script>
+</body>
+</html>
