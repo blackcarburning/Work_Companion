@@ -683,6 +683,10 @@
         updateWordCount();
       });
 
+      editor.addEventListener("blur", function() {
+        saveEditorSelection();
+      });
+
       updateWordCount();
       editor.focus();
     }
@@ -697,8 +701,9 @@
 
     function restoreEditorSelection() {
       var ed = document.getElementById("summary-editor");
-      if (!ed || !_savedRange) return;
+      if (!ed) return;
       ed.focus();
+      if (!_savedRange) return;
       var sel = window.getSelection();
       sel.removeAllRanges();
       sel.addRange(_savedRange);
