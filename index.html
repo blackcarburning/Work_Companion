@@ -1219,6 +1219,19 @@
     // ===== INIT =====
     loadDB(); loadToken(); loadCachedModels(); renderSidebar(); renderView();
     if (token) setTimeout(fetchModels, 500);
+      /* ===== Open all external links in a new tab ===== */
+  document.addEventListener('click', function (e) {
+    var link = e.target.closest('a[href]');
+    if (!link) return;
+    var href = link.getAttribute('href');
+    // Skip internal hash links (sidebar navigation)
+    if (href && href.charAt(0) === '#') return;
+    // Open all other links in a new tab
+    if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
+      e.preventDefault();
+      window.open(href, '_blank', 'noopener,noreferrer');
+    }
+  });
   </script>
 </body>
 </html>
