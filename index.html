@@ -487,6 +487,7 @@
       </div>
       <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="exportToPDF(this)">📄 Export PDF</button>
+        <button class="sidebar-btn" onclick="exportToWord(this)">📝 Export Word</button>
         <button class="sidebar-btn" onclick="openPdfThemeEditor()">🎨 PDF Theme</button>
       </div>
     </div>
@@ -1755,6 +1756,222 @@
         alert("PDF export failed: " + err.message);
       }
       if (btn) { btn.textContent = "📄 PDF"; btn.disabled = false; }
+    }
+
+    // ===== WORD EXPORT =====
+    function escapeXml(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+    }
+
+    function rgbToWordHex(rgbArray) {
+      return rgbArray.map(function(v) {
+        return ("0" + Math.max(0, Math.min(255, Math.round(v))).toString(16)).slice(-2);
+      }).join("").toUpperCase();
+    }
+
+    async function exportToWord(btn) {
+      if (!window.JSZip) {
+        alert("JSZip library is still loading. Please try again in a moment.");
+        return;
+      }
+      if (btn) { btn.textContent = "⏳ Generating…"; btn.disabled = true; }
+      try {
+        saveCurrentNotes();
+        var se = document.getElementById("summary-editor");
+        if (se) db.summary = se.innerHTML;
+
+        var theme = getActivePdfTheme();
+        var headingColor = rgbToWordHex(theme.colors.heading);
+        var bodyColor = rgbToWordHex(theme.colors.body);
+        var secondaryColor = rgbToWordHex(theme.colors.secondary);
+        var headingFont = escapeXml(theme.fonts.heading || "Calibri");
+        var bodyFont = escapeXml(theme.fonts.body || "Calibri");
+        // Word font sizes are in half-points (multiply pt by 2)
+        var titleSz = Math.round((theme.sizes.title || 28) * 2);
+        var h1Sz = Math.round((theme.sizes.h1 || 18) * 2);
+        var h2Sz = Math.round((theme.sizes.h2 || 14) * 2);
+        var h3Sz = Math.round((theme.sizes.h3 || 11) * 2);
+        var bodySz = Math.round((theme.sizes.body || 10) * 2);
+
+        var now = new Date();
+        var yyyy = now.getFullYear();
+        var mm = String(now.getMonth() + 1).padStart(2, "0");
+        var dd = String(now.getDate()).padStart(2, "0");
+        var dateStr = yyyy + "-" + mm + "-" + dd;
+        var docTitle = db.summaryTitle || "Document Summary";
+
+        var totalJobs = db.jobs.length;
+        var totalExchanges = db.jobs.reduce(function(acc, job) {
+          return acc + Math.max(0, job.messages.length - 1);
+        }, 0);
+
+        // Helper to make a styled paragraph
+        function para(text, opts) {
+          opts = opts || {};
+          var pPr = "";
+          if (opts.style) pPr += '<w:pStyle w:val="' + opts.style + '"/>';
+          if (opts.spacing) pPr += '<w:spacing w:after="' + opts.spacing + '"/>';
+          if (opts.border) {
+            pPr += '<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="D0D7DE"/></w:pBdr>';
+          }
+          if (opts.center) pPr += '<w:jc w:val="center"/>';
+          var rPr = "";
+          if (opts.bold) rPr += "<w:b/>";
+          if (opts.sz) rPr += '<w:sz w:val="' + opts.sz + '"/><w:szCs w:val="' + opts.sz + '"/>';
+          if (opts.color) rPr += '<w:color w:val="' + opts.color + '"/>';
+          if (opts.font) rPr += '<w:rFonts w:ascii="' + opts.font + '" w:hAnsi="' + opts.font + '"/>';
+          var pPrXml = pPr ? "<w:pPr>" + pPr + "</w:pPr>" : "";
+          var rPrXml = rPr ? "<w:rPr>" + rPr + "</w:rPr>" : "";
+          // Handle newlines within text — split into multiple runs with <w:br/>
+          var rawLines = (text || "").split("\n");
+          var runs = rawLines.map(function(line, i) {
+            var lineRpr = rPrXml;
+            var t = escapeXml(line);
+            // preserve leading/trailing spaces
+            var tAttr = (line !== line.trim()) ? ' xml:space="preserve"' : '';
+            var run = "<w:r>" + lineRpr + "<w:t" + tAttr + ">" + t + "</w:t></w:r>";
+            if (i < rawLines.length - 1) run += "<w:r><w:br/></w:r>";
+            return run;
+          }).join("");
+          return "<w:p>" + pPrXml + runs + "</w:p>";
+        }
+
+        function pageBreak() {
+          return "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>";
+        }
+
+        function hRule() {
+          return "<w:p><w:pPr><w:pBdr><w:bottom w:val=\"single\" w:sz=\"6\" w:space=\"1\" w:color=\"D0D7DE\"/></w:pBdr></w:pPr></w:p>";
+        }
+
+        function emptyPara() {
+          return "<w:p><w:pPr><w:spacing w:after=\"0\"/></w:pPr></w:p>";
+        }
+
+        var bodyXml = "";
+
+        // ===== COVER PAGE =====
+        bodyXml += para(docTitle, { bold: true, sz: titleSz, color: headingColor, font: headingFont, center: true, spacing: "120" });
+        bodyXml += para(dateStr, { sz: h3Sz, color: secondaryColor, font: bodyFont, center: true, spacing: "80" });
+        bodyXml += emptyPara();
+        bodyXml += para("Job Sections: " + totalJobs, { sz: bodySz, color: bodyColor, font: bodyFont, center: true });
+        bodyXml += para("Total Exchanges: " + totalExchanges, { sz: bodySz, color: bodyColor, font: bodyFont, center: true });
+        bodyXml += pageBreak();
+
+        // ===== TABLE OF CONTENTS =====
+        bodyXml += para("Table of Contents", { bold: true, sz: h1Sz, color: headingColor, font: headingFont, spacing: "80" });
+        bodyXml += hRule();
+        bodyXml += emptyPara();
+        bodyXml += para("Document Summary", { sz: bodySz, color: bodyColor, font: bodyFont, spacing: "40" });
+        db.jobs.forEach(function(job) {
+          bodyXml += para("Job: " + job.name, { sz: bodySz, color: bodyColor, font: bodyFont, spacing: "40" });
+          if (job.notes && job.notes.trim()) {
+            bodyXml += para("    Notes: " + job.name, { sz: bodySz, color: secondaryColor, font: bodyFont, spacing: "40" });
+          }
+        });
+        bodyXml += pageBreak();
+
+        // ===== DOCUMENT SUMMARY =====
+        bodyXml += para(docTitle, { bold: true, sz: h1Sz, color: headingColor, font: headingFont, spacing: "80" });
+        bodyXml += hRule();
+        bodyXml += emptyPara();
+        var summaryText = stripHtmlToText(db.summary || "").trim() || "No summary content.";
+        bodyXml += para(summaryText, { sz: bodySz, color: bodyColor, font: bodyFont, spacing: "80" });
+
+        // ===== JOB SECTIONS =====
+        db.jobs.forEach(function(job) {
+          bodyXml += pageBreak();
+          bodyXml += para(job.name, { bold: true, sz: h1Sz, color: headingColor, font: headingFont, spacing: "80" });
+          bodyXml += hRule();
+          bodyXml += emptyPara();
+
+          job.messages.slice(1).forEach(function(msg) {
+            if (msg.isDocument) {
+              bodyXml += para("[Document]: " + (msg.documentName || "attachment"), { sz: bodySz, color: "0969DA", font: bodyFont, spacing: "60" });
+            } else if (msg.isImage) {
+              bodyXml += para("[Image]: " + (msg.imageName || "image"), { sz: bodySz, color: "FF8000", font: bodyFont, spacing: "60" });
+            } else if (msg.isManualContent) {
+              var label = "[Content]: " + (msg.contentTitle || "content");
+              if (msg.contentType) label += " (" + msg.contentType + ")";
+              bodyXml += para(label, { sz: bodySz, color: "2DA44E", font: bodyFont, spacing: "60" });
+            } else if (msg.role === "user") {
+              var userText = (msg.content || "").trim();
+              if (userText) bodyXml += para(userText, { sz: bodySz, color: bodyColor, font: bodyFont, spacing: "60" });
+            } else if (msg.role === "assistant") {
+              var assistantText = stripMarkdown(msg.content || "").trim();
+              if (assistantText) bodyXml += para(assistantText, { sz: bodySz, color: bodyColor, font: bodyFont, spacing: "60" });
+            }
+          });
+
+          if (job.notes && job.notes.trim()) {
+            bodyXml += emptyPara();
+            bodyXml += para("Notes for " + job.name, { bold: true, sz: h2Sz, color: headingColor, font: headingFont, spacing: "60" });
+            bodyXml += hRule();
+            bodyXml += para(job.notes.trim(), { sz: bodySz, color: bodyColor, font: bodyFont, spacing: "80" });
+          }
+        });
+
+        // Required .docx XML parts
+        var contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+          '<Default Extension="xml" ContentType="application/xml"/>' +
+          '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+          '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+          '</Types>';
+
+        var rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+          '</Relationships>';
+
+        var wordRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+          '</Relationships>';
+
+        var stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+          '<w:docDefaults><w:rPrDefault><w:rPr>' +
+          '<w:rFonts w:ascii="' + bodyFont + '" w:hAnsi="' + bodyFont + '"/>' +
+          '<w:sz w:val="' + bodySz + '"/><w:szCs w:val="' + bodySz + '"/>' +
+          '</w:rPr></w:rPrDefault></w:docDefaults>' +
+          '</w:styles>';
+
+        var documentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+          '<w:body>' + bodyXml +
+          '<w:sectPr>' +
+          '<w:pgSz w:w="12240" w:h="15840"/>' +
+          '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>' +
+          '</w:sectPr>' +
+          '</w:body></w:document>';
+
+        var zip = new window.JSZip();
+        zip.file("[Content_Types].xml", contentTypes);
+        zip.file("_rels/.rels", rootRels);
+        zip.file("word/_rels/document.xml.rels", wordRels);
+        zip.file("word/document.xml", documentXml);
+        zip.file("word/styles.xml", stylesXml);
+
+        var blob = await zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+        var filename = (db.summaryTitle || "document-summary").replace(/[^a-z0-9_\-]/gi, "_") + "_" + dateStr + ".docx";
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        alert("Word export failed: " + err.message);
+      }
+      if (btn) { btn.textContent = "📝 Word"; btn.disabled = false; }
     }
 
     // ===== PDF THEME EDITOR =====
