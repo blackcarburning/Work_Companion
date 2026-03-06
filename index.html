@@ -1374,10 +1374,23 @@
             labelColor = [26, 127, 55]; label = "[Content] " + (msg.contentTitle || "content");
             contentText = null;
           } else if (msg.role === "user") {
-            return; // User messages are for the app only, not exported to PDF
+            bgColor = null; label = null; contentText = msg.content || "";
           } else if (msg.role === "assistant") {
-            return; // Assistant messages are for the app only, not exported to PDF
+            bgColor = null; label = null; contentText = msg.content || "";
           } else {
+            return; // Unknown message type — skip
+          }
+
+          if (!bgColor) {
+            // Plain text rendering (no card) for user/assistant messages
+            if (contentText) {
+              if (msg.role === "assistant") {
+                y = pdfRenderMarkdown(contentText, marginL, y, contentW);
+              } else {
+                writeWrapped(contentText, theme.sizes.body, "normal");
+              }
+              y += theme.spacing.paragraphGap;
+            }
             return;
           }
 
@@ -1606,10 +1619,7 @@
             y += 5;
           }
 
-          // Styled job section header: background bar + colored dot + job name
-          var headerBgH = lh(theme.sizes.h1) + 8;
-          pdf.setFillColor(246, 248, 250);
-          pdf.rect(0, y - 4, pageW, headerBgH, 'F');
+          // Styled job section header: colored dot + job name
           // Colored dot (job color)
           var dotColor = job.color || "#58a6ff";
           var dc = hexToRgbLocal(dotColor);
@@ -1620,36 +1630,10 @@
           pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
           var jLines = pdf.splitTextToSize(job.name, contentW - 10);
           jLines.forEach(function(line) { pdf.text(line, marginL + 8, y); y += lh(theme.sizes.h1); });
-          y = Math.max(y, marginT + headerBgH - 4) + 2;
+          y += 2;
           if (theme.decorations.showSectionDividers) { hRule(); }
 
-          // Exchange count (styled, muted)
-          var exCount = Math.floor((job.messages.length - 1) / 2);
-          var msgCount = job.messages.length - 1;
-          if (theme.decorations.showExchangeNumbers) {
-            var mc = theme.colors.muted;
-            setStyle(theme.sizes.small, "normal", mc[0], mc[1], mc[2]);
-            var countLine = exCount + " exchange" + (exCount !== 1 ? "s" : "") +
-              " \u00b7 " + msgCount + " message" + (msgCount !== 1 ? "s" : "");
-            pdf.text(countLine, marginL, y);
-            pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
-          }
-          y += lh(theme.sizes.small) + 3;
-
-          // System prompt (italic, muted, capped at 5 lines)
-          var sysMsg = job.messages[0];
-          if (sysMsg && sysMsg.content) {
-            var mc = theme.colors.muted;
-            setStyle(theme.sizes.small, "italic", mc[0], mc[1], mc[2]);
-            var spLines = pdf.splitTextToSize("System prompt: " + sysMsg.content, contentW);
-            var showLines = spLines.slice(0, 5);
-            showLines.forEach(function(line) { checkBreak(lh(theme.sizes.small)); pdf.text(line, marginL, y); y += lh(theme.sizes.small); });
-            if (spLines.length > 5) { pdf.text("[...]", marginL, y); y += lh(theme.sizes.small); }
-            pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
-            y += 3;
-          }
-
-          // Chat messages — rendered as styled cards
+          // Chat messages — rendered as plain text
           job.messages.slice(1).forEach(function(msg) {
             renderMessageCard(msg);
           });
