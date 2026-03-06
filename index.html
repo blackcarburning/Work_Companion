@@ -360,6 +360,20 @@
     .message-body th { background: #f6f8fa; font-weight: 600; }
     .message-body blockquote { border-left: 3px solid #d0d7de; padding-left: 1rem; color: #57606a; margin: 0.5em 0; }
 
+    .message-document { background: #f0f6ff; border: 1px solid #a8d8f0; border-left: 3px solid #0969da; }
+    .document-indicator { font-size: 0.95rem; font-weight: 600; color: #0969da; }
+    .document-toggle-btn {
+      margin-top: 0.4rem; background: #ddf4ff; border: 1px solid #a8d8f0; border-radius: 4px;
+      padding: 0.15rem 0.6rem; font-size: 0.75rem; cursor: pointer; color: #0969da; font-weight: 600; display: block;
+    }
+    .document-toggle-btn:hover { background: #a8d8f0; }
+    .document-content {
+      max-height: 300px; overflow-y: auto; background: #f6f8fa; border: 1px solid #d0d7de;
+      border-radius: 6px; padding: 0.75rem; font-family: monospace; font-size: 0.82rem;
+      white-space: pre-wrap; margin-top: 0.5rem; display: none;
+    }
+    .document-content.visible { display: block; }
+
     .typing-dot {
       display: inline-block; width: 8px; height: 8px; background: #57606a;
       border-radius: 50%; margin: 0 2px; animation: blink 1.4s infinite both;
@@ -974,9 +988,11 @@
       if (!db.activeJobId || db.activeView !== "job") { bar.classList.remove("visible"); return; }
       var j = getJob(db.activeJobId); if (!j) { bar.classList.remove("visible"); return; }
       var te = Math.floor((j.messages.length - 1) / 2), conv = j.messages.slice(1);
+      var docCount = j.messages.filter(function(m) { return m.isDocument; }).length;
       var trimmed = conv.length > (KEEP_FIRST + KEEP_LAST) * 2;
       var sp = j.messages[0].content.substring(0, 80); if (j.messages[0].content.length > 80) sp += "…";
       var info = '🧠 "' + sp + '" | 💬 ' + te + ' exchanges';
+      if (docCount > 0) info += ' | 📎 ' + docCount + ' document' + (docCount !== 1 ? 's' : '') + ' attached';
       if (trimmed) { var sk = Math.floor((conv.length - (KEEP_FIRST + KEEP_LAST) * 2) / 2); info += ' | ✂️ First ' + KEEP_FIRST + ' + Last ' + KEEP_LAST + ' (' + sk + ' skipped)'; }
       else info += ' | ✅ Full history sent';
       txt.textContent = info; bar.classList.add("visible");
@@ -1199,11 +1215,39 @@
       var body = document.createElement("div"); body.className = "message-body";
 
       if (role === "user") {
-        body.textContent = content;
-        if (editBtnRef) {
-          (function(i, eb, bd) {
-            eb.onclick = function() { enterEditMode(db.activeJobId, i, msgDiv, bd, eb); };
-          })(idx, editBtnRef, body);
+        if (msg && msg.isDocument) {
+          msgDiv.classList.add("message-document");
+          var indicator = document.createElement("div");
+          indicator.className = "document-indicator";
+          indicator.textContent = "📎 Document attached: \"" + msg.documentName + "\"" + (msg.documentInfo ? " (" + msg.documentInfo + ")" : "");
+          body.appendChild(indicator);
+          var toggleBtn = document.createElement("button");
+          toggleBtn.className = "document-toggle-btn";
+          toggleBtn.textContent = "👁️ View Content";
+          toggleBtn.setAttribute("aria-expanded", "false");
+          var contentDiv = document.createElement("div");
+          contentDiv.className = "document-content";
+          contentDiv.setAttribute("role", "region");
+          contentDiv.setAttribute("aria-label", "Document content for " + msg.documentName);
+          contentDiv.textContent = content;
+          (function(tb, cd) {
+            tb.onclick = function() {
+              cd.classList.toggle("visible");
+              var expanded = cd.classList.contains("visible");
+              tb.setAttribute("aria-expanded", expanded ? "true" : "false");
+              tb.textContent = expanded ? "🔼 Hide Content" : "👁️ View Content";
+            };
+          })(toggleBtn, contentDiv);
+          body.appendChild(toggleBtn);
+          body.appendChild(contentDiv);
+          if (editBtnRef) { editBtnRef.disabled = true; editBtnRef.title = "Document messages cannot be edited"; }
+        } else {
+          body.textContent = content;
+          if (editBtnRef) {
+            (function(i, eb, bd) {
+              eb.onclick = function() { enterEditMode(db.activeJobId, i, msgDiv, bd, eb); };
+            })(idx, editBtnRef, body);
+          }
         }
       } else if (role === "assistant") {
         body.innerHTML = marked.parse(content);
@@ -1365,10 +1409,12 @@
         var buffer = e.target.result;
         try {
           var extractedText = "";
+          var documentInfo = "";
 
           if (ext === "xlsx" || ext === "xls" || ext === "csv") {
             var workbook = XLSX.read(buffer, { type: "array" });
             var parts = ['📊 Uploaded spreadsheet: "' + filename + '"'];
+            var sheetCount = workbook.SheetNames.length, totalRows = 0;
             workbook.SheetNames.forEach(function(sheetName) {
               var sheet = workbook.Sheets[sheetName];
               var csv = XLSX.utils.sheet_to_csv(sheet);
@@ -1378,12 +1424,16 @@
                 rows = range.e.r - range.s.r + 1;
                 cols = range.e.c - range.s.c + 1;
               }
+              totalRows += rows;
               parts.push("\n--- Sheet: " + sheetName + " (" + rows + " rows × " + cols + " columns) ---\n" + csv);
             });
             extractedText = parts.join("\n");
+            documentInfo = sheetCount + " sheet" + (sheetCount !== 1 ? "s" : "") + ", " + totalRows.toLocaleString() + " rows";
           } else if (ext === "docx") {
             mammoth.extractRawText({ arrayBuffer: buffer }).then(function(result) {
               var text = result.value;
+              var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+              var docInfo = wordCount.toLocaleString() + " words";
               var header = '📄 Uploaded document: "' + filename + '"';
               var fullText = header + "\n\n" + text;
               if (fullText.length > MAX_DOC_CHARS) {
@@ -1391,7 +1441,7 @@
                 fullText = fullText.substring(0, MAX_DOC_CHARS) +
                   "\n[Content truncated at 50,000 characters. The full document contained approximately " + origLen + " characters.]";
               }
-              injectDocumentMessage(job, filename, fullText);
+              injectDocumentMessage(job, filename, fullText, docInfo);
               if (uploadBtn) uploadBtn.textContent = "📎";
             }).catch(function(err) {
               injectDocumentError(job, filename, err.message);
@@ -1408,7 +1458,7 @@
             extractedText = extractedText.substring(0, MAX_DOC_CHARS) +
               "\n[Content truncated at 50,000 characters. The full document contained approximately " + fullLen + " characters.]";
           }
-          injectDocumentMessage(job, filename, extractedText);
+          injectDocumentMessage(job, filename, extractedText, documentInfo);
           if (uploadBtn) uploadBtn.textContent = "📎";
         } catch (err) {
           injectDocumentError(job, filename, err.message);
@@ -1424,9 +1474,9 @@
       reader.readAsArrayBuffer(file);
     }
 
-    function injectDocumentMessage(job, filename, extractedText) {
+    function injectDocumentMessage(job, filename, extractedText, documentInfo) {
       var contentMessage = "I've uploaded a file called '" + filename + "'. Please analyze it.\n\n" + extractedText;
-      job.messages.push({ role: "user", content: contentMessage });
+      job.messages.push({ role: "user", content: contentMessage, isDocument: true, documentName: filename, documentInfo: documentInfo || "" });
       saveDB();
       addMessageToDOM("user", contentMessage, false, job.messages.length - 2);
       updateContextBar();
