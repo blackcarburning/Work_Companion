@@ -182,12 +182,12 @@
     #input-section button:hover { background: #218838; }
     #input-section button:disabled { background: #94d3a2; cursor: not-allowed; }
     #upload-btn {
-      padding: 0.6rem 0.8rem;
+      padding: 0.5rem 0.6rem;
       background: #f6f8fa;
       border: 1px solid #d0d7de;
       border-radius: 6px;
       cursor: pointer;
-      font-size: 1rem;
+      font-size: 0.95rem;
     }
     #upload-btn:hover { background: #e1e4e8; }
 
@@ -374,6 +374,51 @@
     }
     .document-content.visible { display: block; }
 
+    .message-manual-content { background: #f0fff4; border: 1px solid #a7f3d0; border-left: 3px solid #2da44e; }
+    .manual-content-indicator { font-size: 0.95rem; font-weight: 600; color: #2da44e; }
+    .manual-content-toggle-btn {
+      margin-top: 0.4rem; background: #dcfce7; border: 1px solid #a7f3d0; border-radius: 4px;
+      padding: 0.15rem 0.6rem; font-size: 0.75rem; cursor: pointer; color: #2da44e; font-weight: 600; display: block;
+    }
+    .manual-content-toggle-btn:hover { background: #a7f3d0; }
+    .manual-content-display {
+      max-height: 300px; overflow-y: auto; border-radius: 6px;
+      padding: 0.75rem; font-size: 0.82rem; margin-top: 0.5rem; display: none;
+    }
+    .manual-content-display.visible { display: block; }
+    .manual-content-terminal {
+      background: #161b22; color: #e6edf3;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      white-space: pre-wrap; border: 1px solid #30363d;
+    }
+    .manual-content-text { background: #f6f8fa; border: 1px solid #d0d7de; font-family: inherit; white-space: pre-wrap; }
+
+    .message-image { background: #fff8f0; border: 1px solid #fed8b1; border-left: 3px solid #ffa657; }
+    .image-indicator { font-size: 0.95rem; font-weight: 600; color: #e87b00; }
+    .image-toggle-btn {
+      margin-top: 0.4rem; background: #fff0d9; border: 1px solid #fed8b1; border-radius: 4px;
+      padding: 0.15rem 0.6rem; font-size: 0.75rem; cursor: pointer; color: #e87b00; font-weight: 600; display: block;
+    }
+    .image-toggle-btn:hover { background: #fed8b1; }
+    .image-preview {
+      max-width: 100%; max-height: 400px; border-radius: 6px; border: 1px solid #d0d7de;
+      margin-top: 0.5rem; display: none; cursor: pointer;
+    }
+    .image-preview.visible { display: block; }
+
+    .input-attach-group { display: flex; gap: 0.3rem; }
+    #input-section .input-attach-btn {
+      padding: 0.5rem 0.6rem; background: #f6f8fa; border: 1px solid #d0d7de;
+      border-radius: 6px; cursor: pointer; font-size: 0.95rem; line-height: 1; color: inherit; font-weight: normal;
+    }
+    #input-section .input-attach-btn:hover { background: #e1e4e8; }
+    #input-section .input-attach-btn:active { background: #d0d7de; }
+
+    .manual-content-modal .modal { width: 520px; }
+    .manual-content-modal .modal textarea { height: 200px; }
+    .manual-content-modal label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem; color: #1f2328; }
+    .manual-content-modal input, .manual-content-modal select { width: 100%; padding: 0.5rem; border: 1px solid #d0d7de; border-radius: 6px; font-size: 0.95rem; margin-bottom: 0.75rem; font-family: inherit; box-sizing: border-box; }
+
     .typing-dot {
       display: inline-block; width: 8px; height: 8px; background: #57606a;
       border-radius: 50%; margin: 0 2px; animation: blink 1.4s infinite both;
@@ -461,6 +506,7 @@
 
   <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImport(event)" />
   <input type="file" id="doc-upload-file" accept=".xlsx,.xls,.csv,.docx" style="display:none" onchange="handleDocumentUpload(event)" />
+  <input type="file" id="image-upload-file" accept="image/*" style="display:none" onchange="handleImageUpload(event)" />
 
   <script>
     var API_URL = "https://models.github.ai/inference/chat/completions";
@@ -667,11 +713,28 @@
     function buildContextMessages(all) {
       var sys = all[0], conv = all.slice(1);
       var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2;
-      if (conv.length <= fc + lc) return [sys].concat(conv);
-      var first = conv.slice(0, fc), last = conv.slice(-lc);
-      var skip = conv.length - fc - lc;
-      var note = { role: "developer", content: "[Note: " + skip + " messages omitted. First " + KEEP_FIRST + " and last " + KEEP_LAST + " exchanges included.]" };
-      return [sys].concat(first).concat([note]).concat(last);
+      var msgs;
+      if (conv.length <= fc + lc) { msgs = [sys].concat(conv); }
+      else {
+        var first = conv.slice(0, fc), last = conv.slice(-lc);
+        var skip = conv.length - fc - lc;
+        var note = { role: "developer", content: "[Note: " + skip + " messages omitted. First " + KEEP_FIRST + " and last " + KEEP_LAST + " exchanges included.]" };
+        msgs = [sys].concat(first).concat([note]).concat(last);
+      }
+      // Convert image messages to vision multipart format for supported providers
+      var isVisionCapable = (activeProvider === "openai" || activeProvider === "github");
+      return msgs.map(function(m) {
+        if (m.isImage && m.imageData && isVisionCapable) {
+          return {
+            role: "user",
+            content: [
+              { type: "text", text: "I've attached a screenshot for analysis." },
+              { type: "image_url", image_url: { url: m.imageData } }
+            ]
+          };
+        }
+        return { role: m.role, content: m.content };
+      });
     }
 
     // ===== MODAL =====
@@ -1033,7 +1096,12 @@
 
       ca.innerHTML =
         '<div id="chat-panel"><div id="chat"></div>' +
-        '<div id="input-section"><button id="upload-btn" onclick="document.getElementById(\'doc-upload-file\').click()" title="Upload document">📎</button>' +
+        '<div id="input-section">' +
+        '<div class="input-attach-group">' +
+        '<button class="input-attach-btn" id="upload-btn" onclick="document.getElementById(\'doc-upload-file\').click()" title="Upload Document">📎</button>' +
+        '<button class="input-attach-btn" id="manual-content-btn" onclick="openManualContentModal()" title="Add Content">📋</button>' +
+        '<button class="input-attach-btn" id="image-btn" onclick="openImagePicker()" title="Add Screenshot">📷</button>' +
+        '</div>' +
         '<input type="text" id="userInput" placeholder="Ask a question..." />' +
         '<button onclick="sendMessage()" id="sendBtn">Send</button></div></div>' +
         '<div id="notes-panel"><div id="notes-header"><span>📋 Notes / Clipboard</span>' +
@@ -1241,6 +1309,56 @@
           body.appendChild(toggleBtn);
           body.appendChild(contentDiv);
           if (editBtnRef) { editBtnRef.disabled = true; editBtnRef.title = "Document messages cannot be edited"; }
+        } else if (msg && msg.isManualContent) {
+          msgDiv.classList.add("message-manual-content");
+          var mcIndicator = document.createElement("div");
+          mcIndicator.className = "manual-content-indicator";
+          mcIndicator.textContent = "📋 Manual content: \"" + msg.contentTitle + "\" (" + msg.contentType + (msg.contentInfo ? ", " + msg.contentInfo : "") + ")";
+          body.appendChild(mcIndicator);
+          var mcToggleBtn = document.createElement("button");
+          mcToggleBtn.className = "manual-content-toggle-btn";
+          mcToggleBtn.textContent = "👁️ View Content";
+          var isTerminal = ["Command Output", "Log Output", "Code", "Error Message"].indexOf(msg.contentType) !== -1;
+          var mcContentDiv = document.createElement("div");
+          mcContentDiv.className = "manual-content-display " + (isTerminal ? "manual-content-terminal" : "manual-content-text");
+          var rawContent = content;
+          var headerEnd = rawContent.indexOf(":\n\n");
+          if (headerEnd !== -1) rawContent = rawContent.substring(headerEnd + 3);
+          mcContentDiv.textContent = rawContent;
+          (function(tb, cd) {
+            tb.onclick = function() {
+              cd.classList.toggle("visible");
+              tb.textContent = cd.classList.contains("visible") ? "🔼 Hide Content" : "👁️ View Content";
+            };
+          })(mcToggleBtn, mcContentDiv);
+          body.appendChild(mcToggleBtn);
+          body.appendChild(mcContentDiv);
+          if (editBtnRef) { editBtnRef.disabled = true; editBtnRef.title = "Manual content messages cannot be edited"; }
+        } else if (msg && msg.isImage) {
+          msgDiv.classList.add("message-image");
+          var imgIndicator = document.createElement("div");
+          imgIndicator.className = "image-indicator";
+          imgIndicator.textContent = "🖼️ Image attached: \"" + msg.imageName + "\"" + (msg.imageInfo ? " (" + msg.imageInfo + ")" : "");
+          body.appendChild(imgIndicator);
+          var imgToggleBtn = document.createElement("button");
+          imgToggleBtn.className = "image-toggle-btn";
+          imgToggleBtn.textContent = "👁️ View Image";
+          var imgEl = document.createElement("img");
+          imgEl.className = "image-preview";
+          imgEl.src = msg.imageData;
+          imgEl.alt = msg.imageName;
+          (function(im) {
+            im.onclick = function() { window.open(im.src, "_blank"); };
+          })(imgEl);
+          (function(tb, im) {
+            tb.onclick = function() {
+              im.classList.toggle("visible");
+              tb.textContent = im.classList.contains("visible") ? "🔼 Hide Image" : "👁️ View Image";
+            };
+          })(imgToggleBtn, imgEl);
+          body.appendChild(imgToggleBtn);
+          body.appendChild(imgEl);
+          if (editBtnRef) { editBtnRef.disabled = true; editBtnRef.title = "Image messages cannot be edited"; }
         } else {
           body.textContent = content;
           if (editBtnRef) {
@@ -1490,6 +1608,143 @@
       var chat = document.getElementById("chat");
       if (chat) chat.scrollTop = chat.scrollHeight;
     }
+
+    // ===== MANUAL CONTENT =====
+    function openManualContentModal() {
+      if (!db.activeJobId) { alert("Please select or create a job first."); return; }
+      var ov = document.createElement("div");
+      ov.className = "modal-overlay manual-content-modal";
+      ov.innerHTML =
+        '<div class="modal" style="width:520px">' +
+        '<h3>📋 Add Content</h3>' +
+        '<label for="mc-title">Content Title</label>' +
+        '<input type="text" id="mc-title" placeholder="e.g. Server Logs, Error Output, Config File" />' +
+        '<label for="mc-type">Content Type</label>' +
+        '<select id="mc-type" style="width:100%;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.95rem;margin-bottom:0.75rem;font-family:inherit;box-sizing:border-box">' +
+        '<option>Command Output</option><option>Log Output</option><option>Code</option>' +
+        '<option>Error Message</option><option>Plain Text</option><option>Other</option>' +
+        '</select>' +
+        '<label for="mc-content">Content</label>' +
+        '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem" placeholder="Paste your content here..."></textarea>' +
+        '<div class="modal-btns"><button class="cancel" id="mc-cancel">Cancel</button><button class="confirm" id="mc-ok">Add Content</button></div>' +
+        '</div>';
+      document.body.appendChild(ov);
+      var titleInput = document.getElementById("mc-title");
+      titleInput.focus();
+      document.getElementById("mc-cancel").onclick = function() { document.body.removeChild(ov); };
+      document.getElementById("mc-ok").onclick = function() {
+        var title = titleInput.value.trim() || "Untitled";
+        var type = document.getElementById("mc-type").value;
+        var content = document.getElementById("mc-content").value;
+        if (!content.trim()) { alert("Please paste some content."); return; }
+        document.body.removeChild(ov);
+        handleManualContent(title, type, content);
+      };
+    }
+
+    function handleManualContent(title, type, content) {
+      if (!db.activeJobId) return;
+      var job = getJob(db.activeJobId); if (!job) return;
+      var lineCount = content.split("\n").length;
+      var contentInfo = lineCount + " line" + (lineCount !== 1 ? "s" : "");
+      var fullContent = "Manual content titled '" + title + "' (" + type + "):\n\n" + content;
+      job.messages.push({
+        role: "user", content: fullContent,
+        isManualContent: true, contentTitle: title, contentType: type, contentInfo: contentInfo
+      });
+      saveDB();
+      addMessageToDOM("user", fullContent, false, job.messages.length - 2);
+      updateContextBar();
+      var chat = document.getElementById("chat");
+      if (chat) chat.scrollTop = chat.scrollHeight;
+    }
+
+    // ===== IMAGE HANDLING =====
+    function openImagePicker() {
+      if (!db.activeJobId) { alert("Please select or create a job first."); return; }
+      if (navigator.clipboard && navigator.clipboard.read) {
+        navigator.clipboard.read().then(function(items) {
+          for (var i = 0; i < items.length; i++) {
+            var imageType = items[i].types.find(function(t) { return t.indexOf("image/") === 0; });
+            if (imageType) {
+              items[i].getType(imageType).then(function(blob) {
+                handleImageFile(blob, "clipboard_" + Date.now() + ".png");
+              });
+              return;
+            }
+          }
+          document.getElementById("image-upload-file").click();
+        }).catch(function() {
+          document.getElementById("image-upload-file").click();
+        });
+      } else {
+        document.getElementById("image-upload-file").click();
+      }
+    }
+
+    function handleImageUpload(event) {
+      var file = event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+      handleImageFile(file, file.name);
+    }
+
+    function handleImageFile(blob, name) {
+      if (!db.activeJobId) return;
+      var job = getJob(db.activeJobId); if (!job) return;
+      var MAX_WIDTH = 1920;
+      var JPEG_QUALITY = 0.85;
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        var dataUrl = e.target.result;
+        var img = new Image();
+        img.onload = function() {
+          var w = img.width, h = img.height;
+          var canvas, ctx, finalUrl;
+          if (w > MAX_WIDTH) {
+            var ratio = MAX_WIDTH / w;
+            canvas = document.createElement("canvas");
+            canvas.width = MAX_WIDTH; canvas.height = Math.round(h * ratio);
+            ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            finalUrl = canvas.toDataURL("image/jpeg", JPEG_QUALITY);
+            w = canvas.width; h = canvas.height;
+          } else {
+            finalUrl = dataUrl;
+          }
+          // base64 strings are ~4/3 larger than binary; multiply by 0.75 to estimate actual byte size
+          var sizeKB = Math.round(finalUrl.length * 0.75 / 1024);
+          var imageInfo = w + "×" + h + ", " + sizeKB + " KB";
+          var contentText = "I've attached a screenshot/image for analysis.";
+          job.messages.push({
+            role: "user", content: contentText,
+            isImage: true, imageData: finalUrl, imageName: name, imageInfo: imageInfo
+          });
+          saveDB();
+          addMessageToDOM("user", contentText, false, job.messages.length - 2);
+          updateContextBar();
+          var chat = document.getElementById("chat");
+          if (chat) chat.scrollTop = chat.scrollHeight;
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(blob);
+    }
+
+    // ===== CLIPBOARD PASTE SUPPORT =====
+    document.addEventListener("paste", function(e) {
+      if (!db.activeJobId || db.activeView !== "job") return;
+      var items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf("image") !== -1) {
+          e.preventDefault();
+          var blob = items[i].getAsFile();
+          handleImageFile(blob, "clipboard_paste_" + Date.now() + ".png");
+          return;
+        }
+      }
+    });
 
     function escapeHtml(t) { var d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
 
