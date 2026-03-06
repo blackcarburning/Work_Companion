@@ -909,34 +909,275 @@
     }
 
     // ===== PDF EXPORT =====
+    function stripHtmlToText(html) {
+      var tmp = document.createElement("div");
+      tmp.innerHTML = html;
+      return tmp.textContent || tmp.innerText || "";
+    }
+
+    function stripMarkdown(text) {
+      if (!text) return "";
+      return text
+        .replace(/```[\w]*\n?([\s\S]*?)```/g, "$1")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/\*\*([^*]+)\*\*/g, "$1")
+        .replace(/\*([^*]+)\*/g, "$1")
+        .replace(/#{1,6}\s+/g, "")
+        .replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi, "$2 ($1)")
+        .replace(/<[^>]+>/g, "");
+    }
+
     async function exportToPDF(btn) {
-      var editor = document.getElementById("summary-editor");
-      if (!editor) { alert("Please open the Document Summary page first."); return; }
-      if (!window.html2canvas || !window.jspdf) {
-        alert("PDF libraries are still loading. Please try again in a moment.");
+      if (!window.jspdf) {
+        alert("PDF library is still loading. Please try again in a moment.");
         return;
       }
       if (btn) { btn.textContent = "⏳ Generating…"; btn.disabled = true; }
       try {
-        var canvas = await html2canvas(editor, { scale: 2, useCORS: true, logging: false });
+        saveCurrentNotes();
+        var se = document.getElementById("summary-editor");
+        if (se) db.summary = se.innerHTML;
+
         var jsPDF = window.jspdf.jsPDF;
         var pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-        var pageWidth = pdf.internal.pageSize.getWidth();
-        var pageHeight = pdf.internal.pageSize.getHeight();
-        var imgWidth = pageWidth;
-        var imgHeight = (canvas.height * imgWidth) / canvas.width;
-        var position = 0;
-        var heightLeft = imgHeight;
-        var imgData = canvas.toDataURL("image/jpeg", 0.92);
-        pdf.addImage(imgData, "JPEG", 0, position, imgWidth, imgHeight, "", "FAST");
-        heightLeft -= pageHeight;
-        while (heightLeft > 0) {
-          position -= pageHeight;
-          pdf.addPage();
-          pdf.addImage(imgData, "JPEG", 0, position, imgWidth, imgHeight, "", "FAST");
-          heightLeft -= pageHeight;
+        var totalPagesAlias = "{total_pages_count_string}";
+
+        var pageW = pdf.internal.pageSize.getWidth();
+        var pageH = pdf.internal.pageSize.getHeight();
+        var marginL = 15, marginT = 20, marginB = 20;
+        var contentW = pageW - marginL * 2;
+        var y = marginT;
+
+        // Line height in mm from font size in pt
+        function lh(fs) { return fs * 0.45; }
+
+        function newPage() { pdf.addPage(); y = marginT; }
+
+        function checkBreak(needed) {
+          if (y + needed > pageH - marginB) { newPage(); }
         }
-        var filename = (db.summaryTitle || "document-summary").replace(/[^a-z0-9_\-]/gi, "_") + ".pdf";
+
+        function setStyle(fs, style, r, g, b) {
+          pdf.setFontSize(fs);
+          pdf.setFont("helvetica", style || "normal");
+          if (r !== undefined) { pdf.setTextColor(r, g, b); } else { pdf.setTextColor(0, 0, 0); }
+        }
+
+        function writeWrapped(text, fs, style, indent, r, g, b) {
+          if (!text) return;
+          setStyle(fs, style, r, g, b);
+          var x = marginL + (indent || 0);
+          var w = contentW - (indent || 0);
+          var lines = pdf.splitTextToSize(text, w);
+          var lineH = lh(fs);
+          for (var i = 0; i < lines.length; i++) {
+            checkBreak(lineH);
+            pdf.text(lines[i], x, y);
+            y += lineH;
+          }
+          if (r !== undefined) { pdf.setTextColor(0, 0, 0); }
+        }
+
+        function hRule(thickness) {
+          checkBreak(3);
+          pdf.setLineWidth(thickness || 0.3);
+          pdf.line(marginL, y, pageW - marginL, y);
+          y += 2;
+        }
+
+        var docTitle = db.summaryTitle || "Document Summary";
+        var totalJobs = db.jobs.length;
+        var totalExchanges = db.jobs.reduce(function(acc, j) {
+          return acc + Math.floor((j.messages.length - 1) / 2);
+        }, 0);
+        var sectionPages = {};
+        var now = new Date();
+        var dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+        var dateFileStr = now.toISOString().slice(0, 10);
+
+        // ===== PAGE 1: COVER =====
+        pdf.setFillColor(41, 182, 246);
+        pdf.rect(0, 0, pageW, 65, "F");
+        pdf.setTextColor(255, 255, 255);
+        pdf.setFontSize(24);
+        pdf.setFont("helvetica", "bold");
+        var titleLines = pdf.splitTextToSize(docTitle, contentW);
+        var ty = 28;
+        titleLines.forEach(function(line) {
+          pdf.text(line, pageW / 2, ty, { align: "center" });
+          ty += lh(24);
+        });
+        pdf.setFontSize(12);
+        pdf.setFont("helvetica", "normal");
+        pdf.text(dateStr, pageW / 2, ty + 4, { align: "center" });
+        pdf.setTextColor(0, 0, 0);
+        y = 80;
+        pdf.setFontSize(11);
+        pdf.setFont("helvetica", "normal");
+        pdf.text("Job Sections: " + totalJobs, pageW / 2, y, { align: "center" });
+        y += 8;
+        pdf.text("Total Exchanges: " + totalExchanges, pageW / 2, y, { align: "center" });
+
+        // ===== PAGE 2: TABLE OF CONTENTS (placeholder) =====
+        pdf.addPage();
+        var tocPage = pdf.internal.getCurrentPageInfo().pageNumber;
+        // Content will be filled in after all sections are rendered
+
+        // ===== PAGE 3+: DOCUMENT SUMMARY =====
+        pdf.addPage();
+        sectionPages["summary"] = pdf.internal.getCurrentPageInfo().pageNumber;
+        y = marginT;
+        setStyle(16, "bold");
+        pdf.text(docTitle, marginL, y);
+        y += lh(16) + 2;
+        hRule();
+        y += 2;
+        var summaryText = stripHtmlToText(db.summary || "").trim();
+        if (!summaryText) { summaryText = "No summary content."; }
+        writeWrapped(summaryText, 10, "normal");
+        y += 5;
+
+        // ===== JOB SECTIONS =====
+        db.jobs.forEach(function(job) {
+          pdf.addPage();
+          sectionPages["job_" + job.id] = pdf.internal.getCurrentPageInfo().pageNumber;
+          y = marginT;
+
+          // Job heading
+          setStyle(16, "bold");
+          var jLines = pdf.splitTextToSize("Job: " + job.name, contentW);
+          jLines.forEach(function(line) { pdf.text(line, marginL, y); y += lh(16); });
+          y += 2;
+          hRule();
+          y += 2;
+
+          // System prompt (italic, muted, capped at 5 lines)
+          var sysMsg = job.messages[0];
+          if (sysMsg && sysMsg.content) {
+            setStyle(8, "italic", 100, 100, 100);
+            var spLines = pdf.splitTextToSize("System prompt: " + sysMsg.content, contentW);
+            var showLines = spLines.slice(0, 5);
+            showLines.forEach(function(line) { checkBreak(lh(8)); pdf.text(line, marginL, y); y += lh(8); });
+            if (spLines.length > 5) { pdf.text("[...]", marginL, y); y += lh(8); }
+            pdf.setTextColor(0, 0, 0);
+            y += 3;
+          }
+
+          // Exchange / message count line
+          var exCount = Math.floor((job.messages.length - 1) / 2);
+          var msgCount = job.messages.length - 1;
+          setStyle(8, "normal", 120, 120, 120);
+          pdf.text(
+            exCount + " exchange" + (exCount !== 1 ? "s" : "") +
+            " \u00b7 " + msgCount + " message" + (msgCount !== 1 ? "s" : ""),
+            marginL, y
+          );
+          pdf.setTextColor(0, 0, 0);
+          y += lh(8) + 5;
+
+          // Chat messages
+          job.messages.slice(1).forEach(function(msg) {
+            if (msg.role === "user") {
+              checkBreak(lh(10) * 3);
+              setStyle(10, "bold");
+              pdf.text("YOU:", marginL, y);
+              y += lh(10);
+              var txt;
+              if (msg.isDocument) {
+                txt = "[Document]: " + (msg.documentName || "attachment");
+              } else if (msg.isImage) {
+                txt = "[Image]: " + (msg.imageName || "image");
+              } else if (msg.isManualContent) {
+                txt = "[Content]: " + (msg.contentTitle || "content") + " (" + (msg.contentType || "text") + ")";
+              } else {
+                txt = msg.content || "";
+              }
+              writeWrapped(txt, 10, "normal", 5);
+              y += 4;
+            } else if (msg.role === "assistant") {
+              checkBreak(lh(10) * 3);
+              setStyle(10, "bold");
+              pdf.text("ASSISTANT:", marginL, y);
+              y += lh(10);
+              writeWrapped(stripMarkdown(msg.content || ""), 10, "normal", 5);
+              y += 4;
+            }
+          });
+
+          // Notes sub-section
+          if (job.notes && job.notes.trim()) {
+            checkBreak(20);
+            sectionPages["notes_" + job.id] = pdf.internal.getCurrentPageInfo().pageNumber;
+            y += 5;
+            setStyle(13, "bold");
+            var nhLines = pdf.splitTextToSize("Notes for " + job.name, contentW);
+            nhLines.forEach(function(line) { pdf.text(line, marginL, y); y += lh(13); });
+            y += 1;
+            hRule(0.2);
+            y += 2;
+            writeWrapped(job.notes.trim(), 10, "normal");
+            y += 5;
+          }
+        });
+
+        // ===== PAGE HEADERS & FOOTERS =====
+        var totalPages = pdf.internal.getNumberOfPages();
+        for (var p = 1; p <= totalPages; p++) {
+          pdf.setPage(p);
+          pdf.setFontSize(8);
+          pdf.setFont("helvetica", "normal");
+          pdf.setTextColor(120, 120, 120);
+          pdf.text("Page " + p + " of " + totalPagesAlias, pageW / 2, pageH - 8, { align: "center" });
+          if (p > 1) {
+            pdf.text(docTitle, marginL, 10);
+            pdf.setLineWidth(0.2);
+            pdf.line(marginL, 12, pageW - marginL, 12);
+          }
+          pdf.setTextColor(0, 0, 0);
+        }
+
+        // ===== FILL IN TABLE OF CONTENTS =====
+        pdf.setPage(tocPage);
+        y = marginT;
+        setStyle(16, "bold");
+        pdf.text("Table of Contents", marginL, y);
+        y += lh(16) + 2;
+        pdf.setLineWidth(0.3);
+        pdf.line(marginL, y, pageW - marginL, y);
+        y += 6;
+
+        function tocEntry(label, pgNum, indent) {
+          indent = indent || 0;
+          pdf.setFontSize(10);
+          pdf.setFont("helvetica", "normal");
+          var pgStr = pgNum !== undefined ? ("" + pgNum) : "?";
+          var xL = marginL + indent;
+          var xR = pageW - marginL;
+          var availW = contentW - indent;
+          var labelW = pdf.getTextWidth(label + "  ");
+          var pgW = pdf.getTextWidth("  " + pgStr);
+          var dotsAvail = availW - labelW - pgW;
+          var dotW = pdf.getTextWidth(".");
+          var numDots = Math.max(3, Math.floor(dotsAvail / dotW));
+          var dots = ".".repeat(numDots);
+          pdf.text(label, xL, y);
+          pdf.text(dots, xL + labelW, y);
+          pdf.text(pgStr, xR, y, { align: "right" });
+          y += lh(10) + 2;
+        }
+
+        tocEntry("Document Summary", sectionPages["summary"]);
+        y += 2;
+        db.jobs.forEach(function(job) {
+          tocEntry("Job: " + job.name, sectionPages["job_" + job.id]);
+          if (job.notes && job.notes.trim() && sectionPages["notes_" + job.id]) {
+            tocEntry("Notes: " + job.name, sectionPages["notes_" + job.id], 5);
+          }
+        });
+
+        // Resolve total pages placeholder and save
+        pdf.putTotalPages(totalPagesAlias);
+        var filename = (db.summaryTitle || "document-summary").replace(/[^a-z0-9_\-]/gi, "_") + "_" + dateFileStr + ".pdf";
         pdf.save(filename);
       } catch (err) {
         alert("PDF export failed: " + err.message);
