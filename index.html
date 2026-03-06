@@ -723,15 +723,38 @@
       }
       // Convert image messages to vision multipart format for supported providers
       var isVisionCapable = (activeProvider === "openai" || activeProvider === "github");
+      var isAnthropic = (activeProvider === "anthropic");
       return msgs.map(function(m) {
-        if (m.isImage && m.imageData && isVisionCapable) {
-          return {
-            role: "user",
-            content: [
-              { type: "text", text: "I've attached a screenshot for analysis." },
-              { type: "image_url", image_url: { url: m.imageData } }
-            ]
-          };
+        if (m.isImage && m.imageData) {
+          if (isVisionCapable) {
+            return {
+              role: "user",
+              content: [
+                { type: "text", text: "I've attached a screenshot for analysis." },
+                { type: "image_url", image_url: { url: m.imageData } }
+              ]
+            };
+          } else if (isAnthropic) {
+            var imgParts = m.imageData.split(",");
+            var mediaTypeMatch = imgParts[0] && imgParts[0].match(/data:(.*?);/);
+            var rawBase64 = imgParts[1];
+            if (mediaTypeMatch && rawBase64) {
+              return {
+                role: "user",
+                content: [
+                  { type: "text", text: "I've attached a screenshot for analysis." },
+                  {
+                    type: "image",
+                    source: {
+                      type: "base64",
+                      media_type: mediaTypeMatch[1],
+                      data: rawBase64
+                    }
+                  }
+                ]
+              };
+            }
+          }
         }
         return { role: m.role, content: m.content };
       });
