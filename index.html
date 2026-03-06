@@ -451,6 +451,27 @@
     .modal-btns .confirm { background: #2da44e; color: #fff; }
     .modal-btns .cancel:hover { background: #d0d7de; }
     .modal-btns .confirm:hover { background: #218838; }
+
+    .pdf-theme-modal .modal { width: 580px; max-height: 85vh; overflow-y: auto; }
+    .theme-section { margin-bottom: 1rem; }
+    .theme-section-title { font-size: 0.82rem; font-weight: 700; color: #57606a; margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    .theme-field { display: flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; }
+    .theme-field label { min-width: 100px; color: #1f2328; }
+    .theme-field input[type="color"] { width: 36px; height: 28px; border: 1px solid #d0d7de; border-radius: 4px; cursor: pointer; padding: 0; }
+    .theme-field select, .theme-field input[type="text"], .theme-field input[type="number"] {
+      padding: 0.25rem 0.4rem; border: 1px solid #d0d7de; border-radius: 4px; font-size: 0.82rem; flex: 1;
+    }
+    .theme-preview-bar { display: flex; gap: 0; height: 8px; border-radius: 4px; overflow: hidden; margin: 0.5rem 0; }
+    .theme-preview-swatch { flex: 1; }
+    .theme-checkbox { display: flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; }
+    .theme-checkbox input[type="checkbox"] { width: 16px; height: 16px; }
+    .theme-import-export { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
+    .theme-import-export button {
+      padding: 0.3rem 0.6rem; font-size: 0.78rem; border: 1px solid #d0d7de;
+      border-radius: 4px; cursor: pointer; background: #f6f8fa; font-weight: 600;
+    }
+    .theme-import-export button:hover { background: #e1e4e8; }
   </style>
 </head>
 <body>
@@ -465,6 +486,7 @@
       </div>
       <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="exportToPDF(this)">📄 Export PDF</button>
+        <button class="sidebar-btn" onclick="openPdfThemeEditor()">🎨 PDF Theme</button>
       </div>
     </div>
     <div id="summary-tab" class="active" onclick="showSummary()">
@@ -507,6 +529,7 @@
   <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImport(event)" />
   <input type="file" id="doc-upload-file" accept=".xlsx,.xls,.csv,.docx" style="display:none" onchange="handleDocumentUpload(event)" />
   <input type="file" id="image-upload-file" accept="image/*" style="display:none" onchange="handleImageUpload(event)" />
+  <input type="file" id="theme-import-file" accept=".json" style="display:none" onchange="handleThemeImport(event)" />
 
   <script>
     var API_URL = "https://models.github.ai/inference/chat/completions";
@@ -529,7 +552,111 @@
     var db = {
       jobs: [], activeJobId: null, activeView: "summary",
       summary: "", summaryTitle: "Document Summary",
-      summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" }
+      summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" },
+      pdfTheme: "professional", customPdfTheme: null
+    };
+
+    var PDF_THEMES = {
+      "professional": {
+        name: "Professional",
+        fonts: { heading: "helvetica", body: "helvetica", mono: "courier" },
+        sizes: { title: 28, h1: 18, h2: 14, h3: 12, body: 10, small: 8, footer: 8 },
+        colors: {
+          primary: [9, 105, 218], secondary: [87, 96, 106], accent: [45, 164, 78],
+          title: [31, 35, 40], heading: [31, 35, 40], body: [31, 35, 40],
+          muted: [139, 148, 158], userLabel: [9, 105, 218], assistantLabel: [26, 127, 55],
+          headerLine: [208, 215, 222], coverBg: [255, 255, 255], pageBg: [255, 255, 255],
+          tocDots: [208, 215, 222], sectionDivider: [208, 215, 222], notesBg: [246, 248, 250]
+        },
+        spacing: { marginLeft: 20, marginRight: 20, marginTop: 25, marginBottom: 20, lineHeight: 1.4, paragraphGap: 4, sectionGap: 12, headerHeight: 12 },
+        decorations: {
+          coverStyle: "centered", showHeaderLine: true, showFooterLine: true,
+          showSectionDividers: true, tocStyle: "dotted",
+          userMsgPrefix: "YOU:", assistantMsgPrefix: "ASSISTANT:",
+          showExchangeNumbers: true, showTimestamp: true,
+          coverAccentBar: true, accentBarColor: [9, 105, 218]
+        }
+      },
+      "modern-dark": {
+        name: "Modern Dark",
+        fonts: { heading: "helvetica", body: "helvetica", mono: "courier" },
+        sizes: { title: 30, h1: 20, h2: 15, h3: 12, body: 10, small: 8, footer: 8 },
+        colors: {
+          primary: [88, 166, 255], secondary: [139, 148, 158], accent: [126, 231, 135],
+          title: [230, 237, 243], heading: [230, 237, 243], body: [201, 209, 217],
+          muted: [110, 118, 129], userLabel: [88, 166, 255], assistantLabel: [126, 231, 135],
+          headerLine: [48, 54, 61], coverBg: [13, 17, 23], pageBg: [22, 27, 34],
+          tocDots: [48, 54, 61], sectionDivider: [48, 54, 61], notesBg: [22, 27, 34]
+        },
+        spacing: { marginLeft: 20, marginRight: 20, marginTop: 25, marginBottom: 20, lineHeight: 1.5, paragraphGap: 5, sectionGap: 14, headerHeight: 12 },
+        decorations: {
+          coverStyle: "centered", showHeaderLine: true, showFooterLine: true,
+          showSectionDividers: true, tocStyle: "dotted",
+          userMsgPrefix: "YOU:", assistantMsgPrefix: "ASSISTANT:",
+          showExchangeNumbers: true, showTimestamp: true,
+          coverAccentBar: true, accentBarColor: [88, 166, 255]
+        }
+      },
+      "corporate": {
+        name: "Corporate Blue",
+        fonts: { heading: "times", body: "times", mono: "courier" },
+        sizes: { title: 26, h1: 17, h2: 13, h3: 11, body: 10, small: 8, footer: 8 },
+        colors: {
+          primary: [0, 51, 102], secondary: [102, 102, 102], accent: [0, 102, 153],
+          title: [0, 51, 102], heading: [0, 51, 102], body: [51, 51, 51],
+          muted: [128, 128, 128], userLabel: [0, 51, 102], assistantLabel: [0, 102, 51],
+          headerLine: [0, 51, 102], coverBg: [255, 255, 255], pageBg: [255, 255, 255],
+          tocDots: [180, 180, 180], sectionDivider: [0, 51, 102], notesBg: [245, 245, 250]
+        },
+        spacing: { marginLeft: 25, marginRight: 25, marginTop: 25, marginBottom: 25, lineHeight: 1.5, paragraphGap: 4, sectionGap: 10, headerHeight: 14 },
+        decorations: {
+          coverStyle: "left-aligned", showHeaderLine: true, showFooterLine: true,
+          showSectionDividers: true, tocStyle: "lined",
+          userMsgPrefix: "Question:", assistantMsgPrefix: "Response:",
+          showExchangeNumbers: true, showTimestamp: true,
+          coverAccentBar: true, accentBarColor: [0, 51, 102]
+        }
+      },
+      "minimal": {
+        name: "Minimal Clean",
+        fonts: { heading: "helvetica", body: "helvetica", mono: "courier" },
+        sizes: { title: 22, h1: 16, h2: 12, h3: 11, body: 10, small: 8, footer: 7 },
+        colors: {
+          primary: [0, 0, 0], secondary: [100, 100, 100], accent: [0, 0, 0],
+          title: [0, 0, 0], heading: [0, 0, 0], body: [40, 40, 40],
+          muted: [150, 150, 150], userLabel: [0, 0, 0], assistantLabel: [60, 60, 60],
+          headerLine: [200, 200, 200], coverBg: [255, 255, 255], pageBg: [255, 255, 255],
+          tocDots: [200, 200, 200], sectionDivider: [220, 220, 220], notesBg: [250, 250, 250]
+        },
+        spacing: { marginLeft: 20, marginRight: 20, marginTop: 20, marginBottom: 15, lineHeight: 1.35, paragraphGap: 3, sectionGap: 8, headerHeight: 10 },
+        decorations: {
+          coverStyle: "minimal", showHeaderLine: false, showFooterLine: false,
+          showSectionDividers: false, tocStyle: "plain",
+          userMsgPrefix: "Q:", assistantMsgPrefix: "A:",
+          showExchangeNumbers: false, showTimestamp: false,
+          coverAccentBar: false, accentBarColor: [0, 0, 0]
+        }
+      },
+      "warm": {
+        name: "Warm Earth",
+        fonts: { heading: "times", body: "helvetica", mono: "courier" },
+        sizes: { title: 26, h1: 18, h2: 14, h3: 12, body: 10, small: 8, footer: 8 },
+        colors: {
+          primary: [139, 69, 19], secondary: [101, 67, 33], accent: [184, 115, 51],
+          title: [80, 40, 10], heading: [101, 67, 33], body: [60, 50, 40],
+          muted: [160, 140, 120], userLabel: [139, 69, 19], assistantLabel: [34, 100, 34],
+          headerLine: [210, 180, 140], coverBg: [255, 253, 248], pageBg: [255, 255, 255],
+          tocDots: [210, 180, 140], sectionDivider: [210, 180, 140], notesBg: [255, 250, 240]
+        },
+        spacing: { marginLeft: 22, marginRight: 22, marginTop: 25, marginBottom: 20, lineHeight: 1.5, paragraphGap: 4, sectionGap: 12, headerHeight: 12 },
+        decorations: {
+          coverStyle: "centered", showHeaderLine: true, showFooterLine: true,
+          showSectionDividers: true, tocStyle: "dotted",
+          userMsgPrefix: "YOU:", assistantMsgPrefix: "ASSISTANT:",
+          showExchangeNumbers: true, showTimestamp: true,
+          coverAccentBar: true, accentBarColor: [139, 69, 19]
+        }
+      }
     };
 
     var TAB_COLORS = [
@@ -587,10 +714,13 @@
           if (!db.activeView) db.activeView = "summary";
           if (!db.summaryTitle) db.summaryTitle = "Document Summary";
           if (!db.summaryStyle) db.summaryStyle = { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" };
+          if (!db.pdfTheme) db.pdfTheme = "professional";
+          if (db.customPdfTheme === undefined) db.customPdfTheme = null;
           if (db.activeProvider) activeProvider = db.activeProvider;
         } catch(e) {
           db = { jobs:[], activeJobId:null, activeView:"summary", summary:"", summaryTitle:"Document Summary",
-            summaryStyle:{ fontFamily:"sans-serif", fontSize:16, textColor:"#1f2328", bgColor:"#ffffff" } };
+            summaryStyle:{ fontFamily:"sans-serif", fontSize:16, textColor:"#1f2328", bgColor:"#ffffff" },
+            pdfTheme:"professional", customPdfTheme:null };
         }
       }
     }
@@ -927,6 +1057,11 @@
         .replace(/<[^>]+>/g, "");
     }
 
+    function getActivePdfTheme() {
+      if (db.pdfTheme === "custom" && db.customPdfTheme) return db.customPdfTheme;
+      return PDF_THEMES[db.pdfTheme] || PDF_THEMES["professional"];
+    }
+
     async function exportToPDF(btn) {
       if (!window.jspdf) {
         alert("PDF library is still loading. Please try again in a moment.");
@@ -938,14 +1073,18 @@
         var se = document.getElementById("summary-editor");
         if (se) db.summary = se.innerHTML;
 
+        var theme = getActivePdfTheme();
+
         var jsPDF = window.jspdf.jsPDF;
         var pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
         var totalPagesAlias = "{total_pages_count_string}";
 
         var pageW = pdf.internal.pageSize.getWidth();
         var pageH = pdf.internal.pageSize.getHeight();
-        var marginL = 15, marginT = 20, marginB = 20;
-        var contentW = pageW - marginL * 2;
+        var marginL = theme.spacing.marginLeft;
+        var marginT = theme.spacing.marginTop;
+        var marginB = theme.spacing.marginBottom;
+        var contentW = pageW - marginL - theme.spacing.marginRight;
         var y = marginT;
 
         // Line height in mm from font size in pt
@@ -959,8 +1098,8 @@
 
         function setStyle(fs, style, r, g, b) {
           pdf.setFontSize(fs);
-          pdf.setFont("helvetica", style || "normal");
-          if (r !== undefined) { pdf.setTextColor(r, g, b); } else { pdf.setTextColor(0, 0, 0); }
+          pdf.setFont(theme.fonts.body, style || "normal");
+          if (r !== undefined) { pdf.setTextColor(r, g, b); } else { pdf.setTextColor(...theme.colors.body); }
         }
 
         function writeWrapped(text, fs, style, indent, r, g, b) {
@@ -975,13 +1114,16 @@
             pdf.text(lines[i], x, y);
             y += lineH;
           }
-          if (r !== undefined) { pdf.setTextColor(0, 0, 0); }
+          if (r !== undefined) { pdf.setTextColor(...theme.colors.body); }
         }
 
-        function hRule(thickness) {
+        function hRule(thickness, colorArr) {
           checkBreak(3);
           pdf.setLineWidth(thickness || 0.3);
-          pdf.line(marginL, y, pageW - marginL, y);
+          var c = colorArr || theme.colors.sectionDivider;
+          pdf.setDrawColor(c[0], c[1], c[2]);
+          pdf.line(marginL, y, pageW - theme.spacing.marginRight, y);
+          pdf.setDrawColor(0, 0, 0);
           y += 2;
         }
 
@@ -996,27 +1138,91 @@
         var dateFileStr = now.toISOString().slice(0, 10);
 
         // ===== PAGE 1: COVER =====
-        pdf.setFillColor(41, 182, 246);
-        pdf.rect(0, 0, pageW, 65, "F");
-        pdf.setTextColor(255, 255, 255);
-        pdf.setFontSize(24);
-        pdf.setFont("helvetica", "bold");
-        var titleLines = pdf.splitTextToSize(docTitle, contentW);
-        var ty = 28;
-        titleLines.forEach(function(line) {
-          pdf.text(line, pageW / 2, ty, { align: "center" });
-          ty += lh(24);
-        });
-        pdf.setFontSize(12);
-        pdf.setFont("helvetica", "normal");
-        pdf.text(dateStr, pageW / 2, ty + 4, { align: "center" });
-        pdf.setTextColor(0, 0, 0);
-        y = 80;
-        pdf.setFontSize(11);
-        pdf.setFont("helvetica", "normal");
-        pdf.text("Job Sections: " + totalJobs, pageW / 2, y, { align: "center" });
-        y += 8;
-        pdf.text("Total Exchanges: " + totalExchanges, pageW / 2, y, { align: "center" });
+        var coverStyle = theme.decorations.coverStyle || "centered";
+        if (coverStyle === "left-aligned") {
+          // Accent bar on left side
+          if (theme.decorations.coverAccentBar) {
+            var abc = theme.decorations.accentBarColor;
+            pdf.setFillColor(abc[0], abc[1], abc[2]);
+            pdf.rect(0, 0, 8, pageH, "F");
+          }
+          pdf.setFillColor(...theme.colors.coverBg);
+          pdf.rect(8, 0, pageW - 8, pageH, "F");
+          var ty = pageH * 0.38;
+          pdf.setFont(theme.fonts.heading, "bold");
+          pdf.setFontSize(theme.sizes.title);
+          pdf.setTextColor(...theme.colors.title);
+          var titleLines = pdf.splitTextToSize(docTitle, contentW - 10);
+          titleLines.forEach(function(line) {
+            pdf.text(line, marginL + 8, ty);
+            ty += lh(theme.sizes.title) + 1;
+          });
+          ty += 4;
+          pdf.setFontSize(theme.sizes.h3);
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setTextColor(...theme.colors.secondary);
+          if (theme.decorations.showTimestamp) { pdf.text(dateStr, marginL + 8, ty); ty += lh(theme.sizes.h3) + 3; }
+          pdf.setTextColor(...theme.colors.muted);
+          pdf.setFontSize(theme.sizes.small);
+          pdf.text("Job Sections: " + totalJobs, marginL + 8, ty); ty += lh(theme.sizes.small) + 2;
+          pdf.text("Total Exchanges: " + totalExchanges, marginL + 8, ty);
+        } else if (coverStyle === "minimal") {
+          pdf.setFillColor(...theme.colors.coverBg);
+          pdf.rect(0, 0, pageW, pageH, "F");
+          var ty = pageH * 0.42;
+          pdf.setFont(theme.fonts.heading, "bold");
+          pdf.setFontSize(theme.sizes.title);
+          pdf.setTextColor(...theme.colors.title);
+          var titleLines = pdf.splitTextToSize(docTitle, contentW);
+          titleLines.forEach(function(line) {
+            pdf.text(line, pageW / 2, ty, { align: "center" });
+            ty += lh(theme.sizes.title) + 1;
+          });
+          ty += 4;
+          if (theme.decorations.showTimestamp) {
+            pdf.setFontSize(theme.sizes.body);
+            pdf.setFont(theme.fonts.body, "normal");
+            pdf.setTextColor(...theme.colors.muted);
+            pdf.text(dateStr, pageW / 2, ty, { align: "center" });
+          }
+        } else {
+          // centered (default)
+          if (theme.decorations.coverAccentBar) {
+            var abc = theme.decorations.accentBarColor;
+            pdf.setFillColor(abc[0], abc[1], abc[2]);
+            pdf.rect(0, 0, pageW, 3, "F");
+          }
+          pdf.setFillColor(...theme.colors.coverBg);
+          pdf.rect(0, 3, pageW, pageH - 3, "F");
+          // Cover accent bar below header area
+          if (theme.decorations.coverAccentBar) {
+            var abc = theme.decorations.accentBarColor;
+            pdf.setFillColor(abc[0], abc[1], abc[2]);
+            pdf.rect(0, 55, pageW, 4, "F");
+          }
+          pdf.setFont(theme.fonts.heading, "bold");
+          pdf.setFontSize(theme.sizes.title);
+          pdf.setTextColor(...theme.colors.title);
+          var titleLines = pdf.splitTextToSize(docTitle, contentW);
+          var ty = 28;
+          titleLines.forEach(function(line) {
+            pdf.text(line, pageW / 2, ty, { align: "center" });
+            ty += lh(theme.sizes.title);
+          });
+          if (theme.decorations.showTimestamp) {
+            pdf.setFontSize(theme.sizes.h3);
+            pdf.setFont(theme.fonts.body, "normal");
+            pdf.setTextColor(...theme.colors.secondary);
+            pdf.text(dateStr, pageW / 2, ty + 4, { align: "center" });
+          }
+          pdf.setTextColor(...theme.colors.body);
+          y = 72;
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.text("Job Sections: " + totalJobs, pageW / 2, y, { align: "center" });
+          y += 8;
+          pdf.text("Total Exchanges: " + totalExchanges, pageW / 2, y, { align: "center" });
+        }
 
         // ===== PAGE 2: TABLE OF CONTENTS (placeholder) =====
         pdf.addPage();
@@ -1027,15 +1233,17 @@
         pdf.addPage();
         sectionPages["summary"] = pdf.internal.getCurrentPageInfo().pageNumber;
         y = marginT;
-        setStyle(16, "bold");
+        pdf.setFont(theme.fonts.heading, "bold");
+        pdf.setFontSize(theme.sizes.h1);
+        pdf.setTextColor(...theme.colors.heading);
         pdf.text(docTitle, marginL, y);
-        y += lh(16) + 2;
+        y += lh(theme.sizes.h1) + 2;
         hRule();
         y += 2;
         var summaryText = stripHtmlToText(db.summary || "").trim();
         if (!summaryText) { summaryText = "No summary content."; }
-        writeWrapped(summaryText, 10, "normal");
-        y += 5;
+        writeWrapped(summaryText, theme.sizes.body, "normal");
+        y += theme.spacing.paragraphGap;
 
         // ===== JOB SECTIONS =====
         db.jobs.forEach(function(job) {
@@ -1044,44 +1252,53 @@
           y = marginT;
 
           // Job heading
-          setStyle(16, "bold");
+          pdf.setFont(theme.fonts.heading, "bold");
+          pdf.setFontSize(theme.sizes.h1);
+          pdf.setTextColor(...theme.colors.heading);
           var jLines = pdf.splitTextToSize("Job: " + job.name, contentW);
-          jLines.forEach(function(line) { pdf.text(line, marginL, y); y += lh(16); });
+          jLines.forEach(function(line) { pdf.text(line, marginL, y); y += lh(theme.sizes.h1); });
           y += 2;
-          hRule();
+          if (theme.decorations.showSectionDividers) { hRule(); }
           y += 2;
 
           // System prompt (italic, muted, capped at 5 lines)
           var sysMsg = job.messages[0];
           if (sysMsg && sysMsg.content) {
-            setStyle(8, "italic", 100, 100, 100);
+            var mc = theme.colors.muted;
+            setStyle(theme.sizes.small, "italic", mc[0], mc[1], mc[2]);
             var spLines = pdf.splitTextToSize("System prompt: " + sysMsg.content, contentW);
             var showLines = spLines.slice(0, 5);
-            showLines.forEach(function(line) { checkBreak(lh(8)); pdf.text(line, marginL, y); y += lh(8); });
-            if (spLines.length > 5) { pdf.text("[...]", marginL, y); y += lh(8); }
-            pdf.setTextColor(0, 0, 0);
+            showLines.forEach(function(line) { checkBreak(lh(theme.sizes.small)); pdf.text(line, marginL, y); y += lh(theme.sizes.small); });
+            if (spLines.length > 5) { pdf.text("[...]", marginL, y); y += lh(theme.sizes.small); }
+            pdf.setTextColor(...theme.colors.body);
             y += 3;
           }
 
           // Exchange / message count line
           var exCount = Math.floor((job.messages.length - 1) / 2);
           var msgCount = job.messages.length - 1;
-          setStyle(8, "normal", 120, 120, 120);
-          pdf.text(
-            exCount + " exchange" + (exCount !== 1 ? "s" : "") +
-            " \u00b7 " + msgCount + " message" + (msgCount !== 1 ? "s" : ""),
-            marginL, y
-          );
-          pdf.setTextColor(0, 0, 0);
-          y += lh(8) + 5;
+          var mc = theme.colors.muted;
+          setStyle(theme.sizes.small, "normal", mc[0], mc[1], mc[2]);
+          var countLine = "";
+          if (theme.decorations.showExchangeNumbers) {
+            countLine = exCount + " exchange" + (exCount !== 1 ? "s" : "") +
+              " \u00b7 " + msgCount + " message" + (msgCount !== 1 ? "s" : "");
+          }
+          if (countLine) { pdf.text(countLine, marginL, y); }
+          pdf.setTextColor(...theme.colors.body);
+          y += lh(theme.sizes.small) + 5;
 
           // Chat messages
           job.messages.slice(1).forEach(function(msg) {
             if (msg.role === "user") {
-              checkBreak(lh(10) * 3);
-              setStyle(10, "bold");
-              pdf.text("YOU:", marginL, y);
-              y += lh(10);
+              checkBreak(lh(theme.sizes.body) * 3);
+              var ulc = theme.colors.userLabel;
+              pdf.setFont(theme.fonts.body, "bold");
+              pdf.setFontSize(theme.sizes.body);
+              pdf.setTextColor(ulc[0], ulc[1], ulc[2]);
+              pdf.text(theme.decorations.userMsgPrefix, marginL, y);
+              y += lh(theme.sizes.body);
+              pdf.setTextColor(...theme.colors.body);
               var txt;
               if (msg.isDocument) {
                 txt = "[Document]: " + (msg.documentName || "attachment");
@@ -1092,15 +1309,19 @@
               } else {
                 txt = msg.content || "";
               }
-              writeWrapped(txt, 10, "normal", 5);
-              y += 4;
+              writeWrapped(txt, theme.sizes.body, "normal", 5);
+              y += theme.spacing.paragraphGap;
             } else if (msg.role === "assistant") {
-              checkBreak(lh(10) * 3);
-              setStyle(10, "bold");
-              pdf.text("ASSISTANT:", marginL, y);
-              y += lh(10);
-              writeWrapped(stripMarkdown(msg.content || ""), 10, "normal", 5);
-              y += 4;
+              checkBreak(lh(theme.sizes.body) * 3);
+              var alc = theme.colors.assistantLabel;
+              pdf.setFont(theme.fonts.body, "bold");
+              pdf.setFontSize(theme.sizes.body);
+              pdf.setTextColor(alc[0], alc[1], alc[2]);
+              pdf.text(theme.decorations.assistantMsgPrefix, marginL, y);
+              y += lh(theme.sizes.body);
+              pdf.setTextColor(...theme.colors.body);
+              writeWrapped(stripMarkdown(msg.content || ""), theme.sizes.body, "normal", 5);
+              y += theme.spacing.paragraphGap;
             }
           });
 
@@ -1109,14 +1330,16 @@
             checkBreak(20);
             sectionPages["notes_" + job.id] = pdf.internal.getCurrentPageInfo().pageNumber;
             y += 5;
-            setStyle(13, "bold");
+            pdf.setFont(theme.fonts.heading, "bold");
+            pdf.setFontSize(theme.sizes.h3);
+            pdf.setTextColor(...theme.colors.heading);
             var nhLines = pdf.splitTextToSize("Notes for " + job.name, contentW);
-            nhLines.forEach(function(line) { pdf.text(line, marginL, y); y += lh(13); });
+            nhLines.forEach(function(line) { pdf.text(line, marginL, y); y += lh(theme.sizes.h3); });
             y += 1;
-            hRule(0.2);
+            if (theme.decorations.showSectionDividers) { hRule(0.2); }
             y += 2;
-            writeWrapped(job.notes.trim(), 10, "normal");
-            y += 5;
+            writeWrapped(job.notes.trim(), theme.sizes.body, "normal");
+            y += theme.spacing.sectionGap;
           }
         });
 
@@ -1124,46 +1347,77 @@
         var totalPages = pdf.internal.getNumberOfPages();
         for (var p = 1; p <= totalPages; p++) {
           pdf.setPage(p);
-          pdf.setFontSize(8);
-          pdf.setFont("helvetica", "normal");
-          pdf.setTextColor(120, 120, 120);
-          pdf.text("Page " + p + " of " + totalPagesAlias, pageW / 2, pageH - 8, { align: "center" });
-          if (p > 1) {
-            pdf.text(docTitle, marginL, 10);
-            pdf.setLineWidth(0.2);
-            pdf.line(marginL, 12, pageW - marginL, 12);
+          pdf.setFontSize(theme.sizes.footer);
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setTextColor(...theme.colors.muted);
+          if (theme.decorations.showFooterLine) {
+            pdf.text("Page " + p + " of " + totalPagesAlias, pageW / 2, pageH - 8, { align: "center" });
           }
-          pdf.setTextColor(0, 0, 0);
+          if (p > 1 && theme.decorations.showHeaderLine) {
+            pdf.text(docTitle, marginL, theme.spacing.headerHeight - 2);
+            pdf.setLineWidth(0.2);
+            var hlc = theme.colors.headerLine;
+            pdf.setDrawColor(hlc[0], hlc[1], hlc[2]);
+            pdf.line(marginL, theme.spacing.headerHeight, pageW - theme.spacing.marginRight, theme.spacing.headerHeight);
+            pdf.setDrawColor(0, 0, 0);
+          }
+          pdf.setTextColor(...theme.colors.body);
         }
 
         // ===== FILL IN TABLE OF CONTENTS =====
         pdf.setPage(tocPage);
         y = marginT;
-        setStyle(16, "bold");
+        pdf.setFont(theme.fonts.heading, "bold");
+        pdf.setFontSize(theme.sizes.h1);
+        pdf.setTextColor(...theme.colors.heading);
         pdf.text("Table of Contents", marginL, y);
-        y += lh(16) + 2;
+        y += lh(theme.sizes.h1) + 2;
+        var hlc = theme.colors.headerLine;
         pdf.setLineWidth(0.3);
-        pdf.line(marginL, y, pageW - marginL, y);
+        pdf.setDrawColor(hlc[0], hlc[1], hlc[2]);
+        pdf.line(marginL, y, pageW - theme.spacing.marginRight, y);
+        pdf.setDrawColor(0, 0, 0);
         y += 6;
 
         function tocEntry(label, pgNum, indent) {
           indent = indent || 0;
-          pdf.setFontSize(10);
-          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setTextColor(...theme.colors.body);
           var pgStr = pgNum !== undefined ? ("" + pgNum) : "?";
           var xL = marginL + indent;
-          var xR = pageW - marginL;
+          var xR = pageW - theme.spacing.marginRight;
           var availW = contentW - indent;
           var labelW = pdf.getTextWidth(label + "  ");
           var pgW = pdf.getTextWidth("  " + pgStr);
           var dotsAvail = availW - labelW - pgW;
           var dotW = pdf.getTextWidth(".");
           var numDots = Math.max(3, Math.floor(dotsAvail / dotW));
-          var dots = ".".repeat(numDots);
-          pdf.text(label, xL, y);
-          pdf.text(dots, xL + labelW, y);
-          pdf.text(pgStr, xR, y, { align: "right" });
-          y += lh(10) + 2;
+          var tocStyle = theme.decorations.tocStyle || "dotted";
+          if (tocStyle === "plain") {
+            pdf.text(label, xL, y);
+            pdf.text(pgStr, xR, y, { align: "right" });
+          } else if (tocStyle === "lined") {
+            pdf.text(label, xL, y);
+            pdf.text(pgStr, xR, y, { align: "right" });
+            var dc = theme.colors.tocDots;
+            pdf.setDrawColor(dc[0], dc[1], dc[2]);
+            pdf.setLineWidth(0.1);
+            pdf.line(xL + labelW, y + 0.5, xR - pgW, y + 0.5);
+            pdf.setDrawColor(0, 0, 0);
+          } else {
+            // dotted (default)
+            var dc = theme.colors.tocDots;
+            pdf.setTextColor(dc[0], dc[1], dc[2]);
+            var dots = ".".repeat(numDots);
+            pdf.setTextColor(...theme.colors.body);
+            pdf.text(label, xL, y);
+            pdf.setTextColor(dc[0], dc[1], dc[2]);
+            pdf.text(dots, xL + labelW, y);
+            pdf.setTextColor(...theme.colors.body);
+            pdf.text(pgStr, xR, y, { align: "right" });
+          }
+          y += lh(theme.sizes.body) + 2;
         }
 
         tocEntry("Document Summary", sectionPages["summary"]);
@@ -1183,6 +1437,258 @@
         alert("PDF export failed: " + err.message);
       }
       if (btn) { btn.textContent = "📄 PDF"; btn.disabled = false; }
+    }
+
+    // ===== PDF THEME EDITOR =====
+    function rgbToHex(arr) {
+      return "#" + arr.map(function(v) {
+        return ("0" + Math.max(0, Math.min(255, v)).toString(16)).slice(-2);
+      }).join("");
+    }
+
+    function hexToRgb(hex) {
+      var r = parseInt(hex.slice(1, 3), 16);
+      var g = parseInt(hex.slice(3, 5), 16);
+      var b = parseInt(hex.slice(5, 7), 16);
+      return [r, g, b];
+    }
+
+    function openPdfThemeEditor() {
+      var currentTheme = JSON.parse(JSON.stringify(getActivePdfTheme()));
+      var ov = document.createElement("div");
+      ov.className = "modal-overlay pdf-theme-modal";
+
+      function buildPreviewBar(t) {
+        return '<div class="theme-preview-bar">' +
+          '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.primary) + '" title="Primary"></div>' +
+          '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.accent) + '" title="Accent"></div>' +
+          '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.heading) + '" title="Heading"></div>' +
+          '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.body) + '" title="Body"></div>' +
+          '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.userLabel) + '" title="User Label"></div>' +
+          '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.assistantLabel) + '" title="Assistant Label"></div>' +
+          '</div>';
+      }
+
+      function buildPresetOptions() {
+        var html = "";
+        Object.keys(PDF_THEMES).forEach(function(key) {
+          var sel = (db.pdfTheme === key && db.pdfTheme !== "custom") ? ' selected' : '';
+          html += '<option value="' + key + '"' + sel + '>' + PDF_THEMES[key].name + '</option>';
+        });
+        html += '<option value="custom"' + (db.pdfTheme === "custom" ? ' selected' : '') + '>Custom</option>';
+        return html;
+      }
+
+      function buildEditorHTML(t) {
+        return (
+          '<div class="modal" style="width:580px;max-height:85vh;overflow-y:auto">' +
+          '<h3>🎨 PDF Theme Editor</h3>' +
+          '<p>Customize the visual style of your exported PDF.</p>' +
+
+          '<div class="theme-section">' +
+          '<div class="theme-section-title">Preset</div>' +
+          '<div class="theme-field">' +
+          '<label>Theme Preset</label>' +
+          '<select id="theme-preset" style="flex:1">' + buildPresetOptions() + '</select>' +
+          '</div>' +
+          buildPreviewBar(t) +
+          '</div>' +
+
+          '<div class="theme-section">' +
+          '<div class="theme-section-title">Colors</div>' +
+          '<div class="theme-grid">' +
+          '<div class="theme-field"><label>Primary</label><input type="color" id="tc-primary" value="' + rgbToHex(t.colors.primary) + '"></div>' +
+          '<div class="theme-field"><label>Accent</label><input type="color" id="tc-accent" value="' + rgbToHex(t.colors.accent) + '"></div>' +
+          '<div class="theme-field"><label>Heading</label><input type="color" id="tc-heading" value="' + rgbToHex(t.colors.heading) + '"></div>' +
+          '<div class="theme-field"><label>Body Text</label><input type="color" id="tc-body" value="' + rgbToHex(t.colors.body) + '"></div>' +
+          '<div class="theme-field"><label>User Label</label><input type="color" id="tc-userLabel" value="' + rgbToHex(t.colors.userLabel) + '"></div>' +
+          '<div class="theme-field"><label>Asst. Label</label><input type="color" id="tc-assistantLabel" value="' + rgbToHex(t.colors.assistantLabel) + '"></div>' +
+          '<div class="theme-field"><label>Header Line</label><input type="color" id="tc-headerLine" value="' + rgbToHex(t.colors.headerLine) + '"></div>' +
+          '<div class="theme-field"><label>Section Divider</label><input type="color" id="tc-sectionDivider" value="' + rgbToHex(t.colors.sectionDivider) + '"></div>' +
+          '<div class="theme-field"><label>Accent Bar</label><input type="color" id="tc-accentBarColor" value="' + rgbToHex(t.decorations.accentBarColor) + '"></div>' +
+          '<div class="theme-field"><label>Cover BG</label><input type="color" id="tc-coverBg" value="' + rgbToHex(t.colors.coverBg) + '"></div>' +
+          '</div></div>' +
+
+          '<div class="theme-section">' +
+          '<div class="theme-section-title">Fonts</div>' +
+          '<div class="theme-grid">' +
+          '<div class="theme-field"><label>Heading Font</label>' +
+          '<select id="tf-heading">' +
+          '<option value="helvetica"' + (t.fonts.heading === "helvetica" ? " selected" : "") + '>Helvetica</option>' +
+          '<option value="times"' + (t.fonts.heading === "times" ? " selected" : "") + '>Times</option>' +
+          '<option value="courier"' + (t.fonts.heading === "courier" ? " selected" : "") + '>Courier</option>' +
+          '</select></div>' +
+          '<div class="theme-field"><label>Body Font</label>' +
+          '<select id="tf-body">' +
+          '<option value="helvetica"' + (t.fonts.body === "helvetica" ? " selected" : "") + '>Helvetica</option>' +
+          '<option value="times"' + (t.fonts.body === "times" ? " selected" : "") + '>Times</option>' +
+          '<option value="courier"' + (t.fonts.body === "courier" ? " selected" : "") + '>Courier</option>' +
+          '</select></div>' +
+          '</div></div>' +
+
+          '<div class="theme-section">' +
+          '<div class="theme-section-title">Spacing &amp; Margins</div>' +
+          '<div class="theme-grid">' +
+          '<div class="theme-field"><label>Margin Left (mm)</label><input type="number" id="ts-marginLeft" value="' + t.spacing.marginLeft + '" min="5" max="50"></div>' +
+          '<div class="theme-field"><label>Margin Right (mm)</label><input type="number" id="ts-marginRight" value="' + t.spacing.marginRight + '" min="5" max="50"></div>' +
+          '<div class="theme-field"><label>Margin Top (mm)</label><input type="number" id="ts-marginTop" value="' + t.spacing.marginTop + '" min="5" max="50"></div>' +
+          '<div class="theme-field"><label>Margin Bottom (mm)</label><input type="number" id="ts-marginBottom" value="' + t.spacing.marginBottom + '" min="5" max="50"></div>' +
+          '<div class="theme-field"><label>Line Height</label><input type="number" id="ts-lineHeight" value="' + t.spacing.lineHeight + '" min="1" max="3" step="0.05"></div>' +
+          '</div></div>' +
+
+          '<div class="theme-section">' +
+          '<div class="theme-section-title">Decorations</div>' +
+          '<div class="theme-grid">' +
+          '<div class="theme-checkbox"><input type="checkbox" id="td-showHeaderLine"' + (t.decorations.showHeaderLine ? " checked" : "") + '><label for="td-showHeaderLine">Show header line</label></div>' +
+          '<div class="theme-checkbox"><input type="checkbox" id="td-showFooterLine"' + (t.decorations.showFooterLine ? " checked" : "") + '><label for="td-showFooterLine">Show footer line / page number</label></div>' +
+          '<div class="theme-checkbox"><input type="checkbox" id="td-showSectionDividers"' + (t.decorations.showSectionDividers ? " checked" : "") + '><label for="td-showSectionDividers">Show section dividers</label></div>' +
+          '<div class="theme-checkbox"><input type="checkbox" id="td-showExchangeNumbers"' + (t.decorations.showExchangeNumbers ? " checked" : "") + '><label for="td-showExchangeNumbers">Show exchange count</label></div>' +
+          '<div class="theme-checkbox"><input type="checkbox" id="td-coverAccentBar"' + (t.decorations.coverAccentBar ? " checked" : "") + '><label for="td-coverAccentBar">Cover accent bar</label></div>' +
+          '<div class="theme-checkbox"><input type="checkbox" id="td-showTimestamp"' + (t.decorations.showTimestamp ? " checked" : "") + '><label for="td-showTimestamp">Show date on cover</label></div>' +
+          '</div>' +
+          '<div style="margin-top:0.5rem">' +
+          '<div class="theme-field" style="margin-bottom:0.4rem"><label>Cover Style</label>' +
+          '<select id="td-coverStyle">' +
+          '<option value="centered"' + (t.decorations.coverStyle === "centered" ? " selected" : "") + '>Centered</option>' +
+          '<option value="left-aligned"' + (t.decorations.coverStyle === "left-aligned" ? " selected" : "") + '>Left-Aligned</option>' +
+          '<option value="minimal"' + (t.decorations.coverStyle === "minimal" ? " selected" : "") + '>Minimal</option>' +
+          '</select></div>' +
+          '<div class="theme-field" style="margin-bottom:0.4rem"><label>TOC Style</label>' +
+          '<select id="td-tocStyle">' +
+          '<option value="dotted"' + (t.decorations.tocStyle === "dotted" ? " selected" : "") + '>Dotted</option>' +
+          '<option value="lined"' + (t.decorations.tocStyle === "lined" ? " selected" : "") + '>Lined</option>' +
+          '<option value="plain"' + (t.decorations.tocStyle === "plain" ? " selected" : "") + '>Plain</option>' +
+          '</select></div>' +
+          '<div class="theme-field" style="margin-bottom:0.4rem"><label>User Prefix</label><input type="text" id="td-userMsgPrefix" value="' + escapeHtml(t.decorations.userMsgPrefix) + '"></div>' +
+          '<div class="theme-field"><label>Asst. Prefix</label><input type="text" id="td-assistantMsgPrefix" value="' + escapeHtml(t.decorations.assistantMsgPrefix) + '"></div>' +
+          '</div></div>' +
+
+          '<div class="theme-import-export">' +
+          '<button onclick="exportPdfTheme()">⬇ Export Theme</button>' +
+          '<button onclick="document.getElementById(\'theme-import-file\').click()">⬆ Import Theme</button>' +
+          '</div>' +
+
+          '<div class="modal-btns" style="margin-top:1rem">' +
+          '<button class="cancel" id="theme-cancel">Cancel</button>' +
+          '<button class="confirm" id="theme-save">Save Theme</button>' +
+          '</div></div>'
+        );
+      }
+
+      ov.innerHTML = buildEditorHTML(currentTheme);
+      document.body.appendChild(ov);
+
+      // Preset change handler: load preset values into fields
+      document.getElementById("theme-preset").onchange = function() {
+        var key = this.value;
+        if (key === "custom") return;
+        var t = JSON.parse(JSON.stringify(PDF_THEMES[key]));
+        currentTheme = t;
+        // Replace editor contents
+        ov.innerHTML = buildEditorHTML(t);
+        document.getElementById("theme-preset").value = key;
+        rebindHandlers();
+      };
+
+      function rebindHandlers() {
+        document.getElementById("theme-preset").onchange = function() {
+          var key = this.value;
+          if (key === "custom") return;
+          var t = JSON.parse(JSON.stringify(PDF_THEMES[key]));
+          currentTheme = t;
+          ov.innerHTML = buildEditorHTML(t);
+          document.getElementById("theme-preset").value = key;
+          rebindHandlers();
+        };
+        document.getElementById("theme-cancel").onclick = function() { document.body.removeChild(ov); };
+        document.getElementById("theme-save").onclick = saveTheme;
+      }
+
+      function readThemeFromForm() {
+        var t = JSON.parse(JSON.stringify(currentTheme));
+        t.colors.primary = hexToRgb(document.getElementById("tc-primary").value);
+        t.colors.accent = hexToRgb(document.getElementById("tc-accent").value);
+        t.colors.heading = hexToRgb(document.getElementById("tc-heading").value);
+        t.colors.body = hexToRgb(document.getElementById("tc-body").value);
+        t.colors.userLabel = hexToRgb(document.getElementById("tc-userLabel").value);
+        t.colors.assistantLabel = hexToRgb(document.getElementById("tc-assistantLabel").value);
+        t.colors.headerLine = hexToRgb(document.getElementById("tc-headerLine").value);
+        t.colors.sectionDivider = hexToRgb(document.getElementById("tc-sectionDivider").value);
+        t.decorations.accentBarColor = hexToRgb(document.getElementById("tc-accentBarColor").value);
+        t.colors.coverBg = hexToRgb(document.getElementById("tc-coverBg").value);
+        t.fonts.heading = document.getElementById("tf-heading").value;
+        t.fonts.body = document.getElementById("tf-body").value;
+        t.spacing.marginLeft = parseFloat(document.getElementById("ts-marginLeft").value) || 20;
+        t.spacing.marginRight = parseFloat(document.getElementById("ts-marginRight").value) || 20;
+        t.spacing.marginTop = parseFloat(document.getElementById("ts-marginTop").value) || 25;
+        t.spacing.marginBottom = parseFloat(document.getElementById("ts-marginBottom").value) || 20;
+        t.spacing.lineHeight = parseFloat(document.getElementById("ts-lineHeight").value) || 1.4;
+        t.decorations.showHeaderLine = document.getElementById("td-showHeaderLine").checked;
+        t.decorations.showFooterLine = document.getElementById("td-showFooterLine").checked;
+        t.decorations.showSectionDividers = document.getElementById("td-showSectionDividers").checked;
+        t.decorations.showExchangeNumbers = document.getElementById("td-showExchangeNumbers").checked;
+        t.decorations.coverAccentBar = document.getElementById("td-coverAccentBar").checked;
+        t.decorations.showTimestamp = document.getElementById("td-showTimestamp").checked;
+        t.decorations.coverStyle = document.getElementById("td-coverStyle").value;
+        t.decorations.tocStyle = document.getElementById("td-tocStyle").value;
+        t.decorations.userMsgPrefix = document.getElementById("td-userMsgPrefix").value || "YOU:";
+        t.decorations.assistantMsgPrefix = document.getElementById("td-assistantMsgPrefix").value || "ASSISTANT:";
+        return t;
+      }
+
+      function saveTheme() {
+        var presetKey = document.getElementById("theme-preset").value;
+        var t = readThemeFromForm();
+        var isModified = JSON.stringify(t) !== JSON.stringify(presetKey !== "custom" ? PDF_THEMES[presetKey] : currentTheme);
+        if (presetKey !== "custom" && !isModified) {
+          db.pdfTheme = presetKey;
+          db.customPdfTheme = null;
+        } else {
+          db.pdfTheme = "custom";
+          db.customPdfTheme = t;
+        }
+        saveDB();
+        document.body.removeChild(ov);
+      }
+
+      document.getElementById("theme-cancel").onclick = function() { document.body.removeChild(ov); };
+      document.getElementById("theme-save").onclick = saveTheme;
+    }
+
+    function exportPdfTheme() {
+      var theme = getActivePdfTheme();
+      var json = JSON.stringify(theme, null, 2);
+      var blob = new Blob([json], { type: "application/json" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "pdf-theme-" + (theme.name || "custom").replace(/[^a-z0-9_\-]/gi, "_") + ".json";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function handleThemeImport(event) {
+      var file = event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          var t = JSON.parse(e.target.result);
+          // Basic validation
+          if (!t.colors || !t.fonts || !t.sizes || !t.spacing || !t.decorations) {
+            alert("Invalid theme file: missing required sections (colors, fonts, sizes, spacing, decorations).");
+            return;
+          }
+          db.pdfTheme = "custom";
+          db.customPdfTheme = t;
+          saveDB();
+          alert("Theme imported successfully! It has been set as your active theme.");
+        } catch (err) {
+          alert("Failed to import theme: " + err.message);
+        }
+      };
+      reader.readAsText(file);
     }
 
     function formatText(type) {
