@@ -1375,26 +1375,14 @@
             labelColor = [26, 127, 55]; label = "[Content] " + (msg.contentTitle || "content");
             contentText = null;
           } else if (msg.role === "user") {
-            bgColor = null; label = null; contentText = msg.content || "";
+            return; // Skip user message text
           } else if (msg.role === "assistant") {
-            bgColor = null; label = null; contentText = msg.content || "";
+            return; // Skip assistant message text
           } else {
             return; // Unknown message type — skip
           }
 
-          if (!bgColor) {
-            // Plain text rendering (no card) for user/assistant messages
-            if (contentText) {
-              if (msg.role === "assistant") {
-                y = pdfRenderMarkdown(contentText, marginL, y, contentW);
-              } else {
-                writeWrapped(contentText, theme.sizes.body, "normal");
-              }
-              y += theme.spacing.paragraphGap;
-            }
-            return;
-          }
-
+          // Remaining code handles special message types (Document / Image / Content) with colored cards
           var labelLineH = lh(theme.sizes.body) + 1;
           var bodyLineH = lh(theme.sizes.body);
           var pageMaxH = pageH - marginT - marginB - 10;
@@ -2110,17 +2098,13 @@
             label = "[Content] " + (msg.contentTitle || "content");
             if (msg.contentType) label += " (" + msg.contentType + ")";
           } else if (msg.role === "user") {
-            var userText = (msg.content || "").trim();
-            if (!userText) return "";
-            return para(userText, { sz: bodySz, color: bodyColor, font: bodyFont, spacing: "60" });
+            return ""; // Skip user message text
           } else if (msg.role === "assistant") {
-            var assistantText = (msg.content || "").trim();
-            if (!assistantText) return "";
-            return wordRenderMarkdown(assistantText);
+            return ""; // Skip assistant message text
           } else {
             return "";
           }
-          // Colored card table for Document / Image / Content
+          // Remaining code handles special message types (Document / Image / Content) with colored cards
           var labelRPr = '<w:b/><w:color w:val="' + labelColorHex + '"/>' +
             '<w:sz w:val="' + bodySz + '"/><w:szCs w:val="' + bodySz + '"/>' +
             '<w:rFonts w:ascii="' + bodyFont + '" w:hAnsi="' + bodyFont + '"/>';
