@@ -487,6 +487,7 @@
       </div>
       <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="exportToPDF(this)">📄 Export PDF</button>
+        <button class="sidebar-btn" onclick="exportToWord(this)">📝 Export Word</button>
         <button class="sidebar-btn" onclick="openPdfThemeEditor()">🎨 PDF Theme</button>
       </div>
     </div>
@@ -1755,6 +1756,247 @@
         alert("PDF export failed: " + err.message);
       }
       if (btn) { btn.textContent = "📄 PDF"; btn.disabled = false; }
+    }
+
+    // ===== WORD EXPORT HELPERS =====
+    function escapeXml(str) {
+      return String(str || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+    }
+
+    function rgbToWordHex(arr) {
+      return arr.map(function(v) {
+        return ("0" + Math.max(0, Math.min(255, v)).toString(16)).slice(-2).toUpperCase();
+      }).join("");
+    }
+
+    async function exportToWord(btn) {
+      if (!window.JSZip) {
+        alert("JSZip library is still loading. Please try again in a moment.");
+        return;
+      }
+      var origLabel = btn ? btn.textContent : null;
+      if (btn) { btn.textContent = "⏳ Generating…"; btn.disabled = true; }
+      try {
+        saveCurrentNotes();
+        var se = document.getElementById("summary-editor");
+        if (se) db.summary = se.innerHTML;
+
+        var theme = getActivePdfTheme();
+        var primaryHex = rgbToWordHex(theme.colors.primary);
+        var headingHex = rgbToWordHex(theme.colors.heading);
+        var bodyHex    = rgbToWordHex(theme.colors.body);
+        var mutedHex   = rgbToWordHex(theme.colors.muted);
+        var accentHex  = rgbToWordHex(theme.colors.accent);
+        var dividerHex = rgbToWordHex(theme.colors.sectionDivider);
+
+        // Word half-point sizes (pt * 2)
+        var titleSz  = Math.round((theme.sizes.title  || 28) * 2);
+        var h1Sz     = Math.round((theme.sizes.h1     || 18) * 2);
+        var h2Sz     = Math.round((theme.sizes.h2     || 14) * 2);
+        var h3Sz     = Math.round((theme.sizes.h3     || 12) * 2);
+        var bodySz   = Math.round((theme.sizes.body   || 10) * 2);
+        var headFont = escapeXml(theme.fonts.heading || "Arial");
+        var bodyFont = escapeXml(theme.fonts.body    || "Arial");
+
+        var docTitle = db.summaryTitle || "Document Summary";
+        var totalJobs = db.jobs.length;
+        var totalExchanges = db.jobs.reduce(function(acc, j) {
+          return acc + Math.floor((j.messages.length - 1) / 2);
+        }, 0);
+        var now = new Date();
+        var dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+        var dateFileStr = now.toISOString().slice(0, 10);
+
+        // --- XML building helpers ---
+        function para(runs, pStyle, extraPPr) {
+          var pPr = "";
+          if (pStyle || extraPPr) {
+            pPr = "<w:pPr>";
+            if (pStyle) pPr += '<w:pStyle w:val="' + pStyle + '"/>';
+            if (extraPPr) pPr += extraPPr;
+            pPr += "</w:pPr>";
+          }
+          return "<w:p>" + pPr + (runs || "") + "</w:p>";
+        }
+
+        function run(text, bold, sz, colorHex, font) {
+          var rPr = "<w:rPr>";
+          if (font) rPr += '<w:rFonts w:ascii="' + font + '" w:hAnsi="' + font + '"/>';
+          if (bold) rPr += "<w:b/>";
+          if (sz)   rPr += '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>';
+          if (colorHex) rPr += '<w:color w:val="' + colorHex + '"/>';
+          rPr += "</w:rPr>";
+          return "<w:r>" + rPr + "<w:t xml:space=\"preserve\">" + escapeXml(text) + "</w:t></w:r>";
+        }
+
+        function pageBreak() {
+          return "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>";
+        }
+
+        function hRule() {
+          return '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="' + dividerHex + '"/></w:pBdr></w:pPr></w:p>';
+        }
+
+        function emptyPara() {
+          return "<w:p/>";
+        }
+
+        function headingPara(text, level) {
+          var sz   = level === 1 ? h1Sz : (level === 2 ? h2Sz : h3Sz);
+          var r    = run(text, true, sz, headingHex, headFont);
+          var pPr  = "";
+          if (level <= 2) {
+            pPr = '<w:pBdr><w:bottom w:val="single" w:sz="4" w:space="1" w:color="' + dividerHex + '"/></w:pBdr>';
+          }
+          return para(r, null, pPr);
+        }
+
+        function bodyParas(text) {
+          if (!text) return "";
+          return text.split("\n").map(function(line) {
+            return para(run(line, false, bodySz, bodyHex, bodyFont));
+          }).join("");
+        }
+
+        // --- Build document body XML ---
+        var bodyXml = "";
+
+        // ===== COVER PAGE =====
+        bodyXml += para(run(docTitle, true, titleSz, headingHex, headFont));
+        bodyXml += emptyPara();
+        bodyXml += para(run(dateStr, false, bodySz, mutedHex, bodyFont));
+        bodyXml += emptyPara();
+        bodyXml += para(run("Job Sections: " + totalJobs, false, bodySz, bodyHex, bodyFont));
+        bodyXml += para(run("Total Exchanges: " + totalExchanges, false, bodySz, bodyHex, bodyFont));
+        bodyXml += pageBreak();
+
+        // ===== TABLE OF CONTENTS =====
+        bodyXml += headingPara("Table of Contents", 1);
+        bodyXml += hRule();
+        bodyXml += emptyPara();
+        bodyXml += para(run("Document Summary", false, bodySz, bodyHex, bodyFont));
+        db.jobs.forEach(function(job) {
+          bodyXml += para(run("Job: " + job.name, false, bodySz, bodyHex, bodyFont));
+          if (job.notes && job.notes.trim()) {
+            bodyXml += para(
+              run("Notes: " + job.name, false, bodySz, mutedHex, bodyFont),
+              null,
+              '<w:ind w:left="720"/>'
+            );
+          }
+        });
+        bodyXml += pageBreak();
+
+        // ===== DOCUMENT SUMMARY =====
+        bodyXml += headingPara(docTitle, 1);
+        bodyXml += hRule();
+        bodyXml += emptyPara();
+        var summaryText = stripHtmlToText(db.summary || "").trim() || "No summary content.";
+        bodyXml += bodyParas(summaryText);
+
+        // ===== JOB SECTIONS =====
+        db.jobs.forEach(function(job) {
+          bodyXml += pageBreak();
+          bodyXml += headingPara(job.name, 1);
+          bodyXml += hRule();
+          bodyXml += emptyPara();
+
+          job.messages.slice(1).forEach(function(msg) {
+            if (msg.isDocument) {
+              bodyXml += para(run("[Document]: " + (msg.documentName || "attachment"), true, bodySz, "0969DA", bodyFont));
+            } else if (msg.isImage) {
+              bodyXml += para(run("[Image]: " + (msg.imageName || "image"), true, bodySz, "FF8000", bodyFont));
+            } else if (msg.isManualContent) {
+              var label = "[Content]: " + (msg.contentTitle || "content");
+              if (msg.contentType) label += " (" + msg.contentType + ")";
+              bodyXml += para(run(label, true, bodySz, "2DA44E", bodyFont));
+            } else if (msg.role === "user") {
+              bodyXml += bodyParas(msg.content || "");
+              bodyXml += emptyPara();
+            } else if (msg.role === "assistant") {
+              var plain = stripMarkdown(msg.content || "");
+              bodyXml += bodyParas(plain);
+              bodyXml += emptyPara();
+            }
+          });
+
+          // Notes sub-section
+          if (job.notes && job.notes.trim()) {
+            bodyXml += hRule();
+            bodyXml += headingPara("Notes for " + job.name, 3);
+            bodyXml += bodyParas(job.notes.trim());
+          }
+        });
+
+        // Required: section properties at end of body
+        bodyXml += '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>';
+
+        // --- Assemble .docx ZIP ---
+        var zip = new window.JSZip();
+
+        zip.file("[Content_Types].xml",
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+            '<Default Extension="xml" ContentType="application/xml"/>' +
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+            '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+          '</Types>'
+        );
+
+        zip.file("_rels/.rels",
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+          '</Relationships>'
+        );
+
+        zip.file("word/_rels/document.xml.rels",
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+          '</Relationships>'
+        );
+
+        zip.file("word/document.xml",
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml" xmlns:w16cex="http://schemas.microsoft.com/office/word/2018/wordml/cex" xmlns:w16cid="http://schemas.microsoft.com/office/word/2016/wordml/cid" xmlns:w16="http://schemas.microsoft.com/office/word/2018/wordml" xmlns:w16sdtdh="http://schemas.microsoft.com/office/word/2020/wordml/sdtdatahash" xmlns:w16se="http://schemas.microsoft.com/office/word/2015/wordml/symex" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="w14 w15 w16se w16cid w16 w16cex w16sdtdh wp14">' +
+          '<w:body>' + bodyXml + '</w:body></w:document>'
+        );
+
+        zip.file("word/styles.xml",
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+            '<w:docDefaults>' +
+              '<w:rPrDefault><w:rPr>' +
+                '<w:rFonts w:ascii="' + bodyFont + '" w:hAnsi="' + bodyFont + '"/>' +
+                '<w:sz w:val="' + bodySz + '"/>' +
+                '<w:color w:val="' + bodyHex + '"/>' +
+              '</w:rPr></w:rPrDefault>' +
+            '</w:docDefaults>' +
+            '<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/>' +
+              '<w:rPr><w:rFonts w:ascii="' + bodyFont + '" w:hAnsi="' + bodyFont + '"/><w:sz w:val="' + bodySz + '"/></w:rPr>' +
+            '</w:style>' +
+          '</w:styles>'
+        );
+
+        var blob = await zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+        var filename = (db.summaryTitle || "document-summary").replace(/[^a-z0-9_\-]/gi, "_") + "_" + dateFileStr + ".docx";
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        alert("Word export failed: " + err.message);
+      }
+      if (btn) { btn.textContent = "📝 Word"; btn.disabled = false; }
     }
 
     // ===== PDF THEME EDITOR =====
