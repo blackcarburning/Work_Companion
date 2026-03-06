@@ -8,6 +8,8 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@4.2.0/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -179,6 +181,15 @@
     }
     #input-section button:hover { background: #218838; }
     #input-section button:disabled { background: #94d3a2; cursor: not-allowed; }
+    #upload-btn {
+      padding: 0.6rem 0.8rem;
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    #upload-btn:hover { background: #e1e4e8; }
 
     #notes-panel { width: 320px; min-width: 280px; display: flex; flex-direction: column; background: #fff; }
     #notes-header {
@@ -435,6 +446,7 @@
   </div>
 
   <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImport(event)" />
+  <input type="file" id="doc-upload-file" accept=".xlsx,.xls,.csv,.docx" style="display:none" onchange="handleDocumentUpload(event)" />
 
   <script>
     var API_URL = "https://models.github.ai/inference/chat/completions";
@@ -1005,7 +1017,8 @@
 
       ca.innerHTML =
         '<div id="chat-panel"><div id="chat"></div>' +
-        '<div id="input-section"><input type="text" id="userInput" placeholder="Ask a question..." />' +
+        '<div id="input-section"><button id="upload-btn" onclick="document.getElementById(\'doc-upload-file\').click()" title="Upload document">📎</button>' +
+        '<input type="text" id="userInput" placeholder="Ask a question..." />' +
         '<button onclick="sendMessage()" id="sendBtn">Send</button></div></div>' +
         '<div id="notes-panel"><div id="notes-header"><span>📋 Notes / Clipboard</span>' +
         '<button onclick="clearNotes()">Clear</button></div>' +
@@ -1329,6 +1342,103 @@
         } catch (err) { alert("Failed to parse: " + err.message); }
       };
       reader.readAsText(file); event.target.value = "";
+    }
+
+    var MAX_DOC_CHARS = 50000;
+
+    function handleDocumentUpload(event) {
+      var file = event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+
+      if (!db.activeJobId) return;
+      var job = getJob(db.activeJobId); if (!job) return;
+
+      var uploadBtn = document.getElementById("upload-btn");
+      if (uploadBtn) uploadBtn.textContent = "⏳";
+
+      var filename = file.name;
+      var ext = filename.split(".").pop().toLowerCase();
+      var reader = new FileReader();
+
+      reader.onload = function(e) {
+        var buffer = e.target.result;
+        try {
+          var extractedText = "";
+
+          if (ext === "xlsx" || ext === "xls" || ext === "csv") {
+            var workbook = XLSX.read(buffer, { type: "array" });
+            var parts = ['📊 Uploaded spreadsheet: "' + filename + '"'];
+            workbook.SheetNames.forEach(function(sheetName) {
+              var sheet = workbook.Sheets[sheetName];
+              var csv = XLSX.utils.sheet_to_csv(sheet);
+              var rows = 0, cols = 0;
+              if (sheet["!ref"]) {
+                var range = XLSX.utils.decode_range(sheet["!ref"]);
+                rows = range.e.r - range.s.r + 1;
+                cols = range.e.c - range.s.c + 1;
+              }
+              parts.push("\n--- Sheet: " + sheetName + " (" + rows + " rows × " + cols + " columns) ---\n" + csv);
+            });
+            extractedText = parts.join("\n");
+          } else if (ext === "docx") {
+            mammoth.extractRawText({ arrayBuffer: buffer }).then(function(result) {
+              var text = result.value;
+              var header = '📄 Uploaded document: "' + filename + '"';
+              var fullText = header + "\n\n" + text;
+              if (fullText.length > MAX_DOC_CHARS) {
+                var origLen = fullText.length;
+                fullText = fullText.substring(0, MAX_DOC_CHARS) +
+                  "\n[Content truncated at 50,000 characters. The full document contained approximately " + origLen + " characters.]";
+              }
+              injectDocumentMessage(job, filename, fullText);
+              if (uploadBtn) uploadBtn.textContent = "📎";
+            }).catch(function(err) {
+              injectDocumentError(job, filename, err.message);
+              if (uploadBtn) uploadBtn.textContent = "📎";
+            });
+            return; // async path handled above
+          } else {
+            if (uploadBtn) uploadBtn.textContent = "📎";
+            return;
+          }
+
+          if (extractedText.length > MAX_DOC_CHARS) {
+            var fullLen = extractedText.length;
+            extractedText = extractedText.substring(0, MAX_DOC_CHARS) +
+              "\n[Content truncated at 50,000 characters. The full document contained approximately " + fullLen + " characters.]";
+          }
+          injectDocumentMessage(job, filename, extractedText);
+          if (uploadBtn) uploadBtn.textContent = "📎";
+        } catch (err) {
+          injectDocumentError(job, filename, err.message);
+          if (uploadBtn) uploadBtn.textContent = "📎";
+        }
+      };
+
+      reader.onerror = function() {
+        injectDocumentError(job, filename, "Failed to read file.");
+        if (uploadBtn) uploadBtn.textContent = "📎";
+      };
+
+      reader.readAsArrayBuffer(file);
+    }
+
+    function injectDocumentMessage(job, filename, extractedText) {
+      var contentMessage = "I've uploaded a file called '" + filename + "'. Please analyze it.\n\n" + extractedText;
+      job.messages.push({ role: "user", content: contentMessage });
+      saveDB();
+      addMessageToDOM("user", contentMessage, false, job.messages.length - 2);
+      updateContextBar();
+      var chat = document.getElementById("chat");
+      if (chat) chat.scrollTop = chat.scrollHeight;
+    }
+
+    function injectDocumentError(job, filename, errMsg) {
+      var msg = "❌ Failed to parse \"" + filename + "\": " + errMsg;
+      addMessageToDOM("error", msg, false, -1);
+      var chat = document.getElementById("chat");
+      if (chat) chat.scrollTop = chat.scrollHeight;
     }
 
     function escapeHtml(t) { var d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
