@@ -1375,11 +1375,9 @@
             contentText = null;
           } else if (msg.role === "user") {
             bgColor = [221, 244, 255]; borderColor = [168, 216, 240]; accentColor = [9, 105, 218];
-            labelColor = [9, 105, 218]; label = theme.decorations.userMsgPrefix;
             contentText = msg.content || "";
           } else if (msg.role === "assistant") {
             bgColor = [246, 248, 250]; borderColor = [208, 215, 222]; accentColor = [26, 127, 55];
-            labelColor = [26, 127, 55]; label = theme.decorations.assistantMsgPrefix;
             contentText = msg.content || "";
           } else {
             return;
@@ -1398,7 +1396,7 @@
             estimatedLines = pdf.splitTextToSize(textToMeasure, innerW).length;
           }
           var estimatedContentH = contentText ? (estimatedLines * bodyLineH + pV) : 0;
-          var cardH = pV * 2 + labelLineH + estimatedContentH;
+          var cardH = pV * 2 + (label ? labelLineH : 0) + estimatedContentH;
           var isLongMessage = cardH > pageMaxH * 0.75;
 
           if (!isLongMessage) {
@@ -1413,11 +1411,13 @@
             pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
             pdf.rect(cardX, cardY, 1, cardH, 'F');
             y = cardY + pV;
-            pdf.setFont(theme.fonts.body, "bold");
-            pdf.setFontSize(theme.sizes.body);
-            pdf.setTextColor(labelColor[0], labelColor[1], labelColor[2]);
-            pdf.text(label, cardX + pL, y);
-            y += labelLineH;
+            if (label) {
+              pdf.setFont(theme.fonts.body, "bold");
+              pdf.setFontSize(theme.sizes.body);
+              pdf.setTextColor(labelColor[0], labelColor[1], labelColor[2]);
+              pdf.text(label, cardX + pL, y);
+              y += labelLineH;
+            }
             if (contentText) {
               pdf.setFont(theme.fonts.body, "normal");
               pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
@@ -1435,7 +1435,7 @@
             y = cardY + cardH + theme.spacing.paragraphGap;
           } else {
             // LONG MESSAGE: colored header card + full markdown/text content below
-            var headerH = pV * 2 + labelLineH;
+            var headerH = pV * 2 + (label ? labelLineH : 0);
             checkBreak(headerH);
             var headerY = y;
             pdf.setFillColor(bgColor[0], bgColor[1], bgColor[2]);
@@ -1446,10 +1446,12 @@
             pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
             pdf.rect(cardX, headerY, 1, headerH, 'F');
             y = headerY + pV;
-            pdf.setFont(theme.fonts.body, "bold");
-            pdf.setFontSize(theme.sizes.body);
-            pdf.setTextColor(labelColor[0], labelColor[1], labelColor[2]);
-            pdf.text(label, cardX + pL, y);
+            if (label) {
+              pdf.setFont(theme.fonts.body, "bold");
+              pdf.setFontSize(theme.sizes.body);
+              pdf.setTextColor(labelColor[0], labelColor[1], labelColor[2]);
+              pdf.text(label, cardX + pL, y);
+            }
             y = headerY + headerH + 2;
             if (contentText) {
               var contentStartY = y;
@@ -1785,8 +1787,6 @@
           '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.accent) + '" title="Accent"></div>' +
           '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.heading) + '" title="Heading"></div>' +
           '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.body) + '" title="Body"></div>' +
-          '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.userLabel) + '" title="User Label"></div>' +
-          '<div class="theme-preview-swatch" style="background:' + rgbToHex(t.colors.assistantLabel) + '" title="Assistant Label"></div>' +
           '</div>';
       }
 
@@ -1822,8 +1822,6 @@
           '<div class="theme-field"><label>Accent</label><input type="color" id="tc-accent" value="' + rgbToHex(t.colors.accent) + '"></div>' +
           '<div class="theme-field"><label>Heading</label><input type="color" id="tc-heading" value="' + rgbToHex(t.colors.heading) + '"></div>' +
           '<div class="theme-field"><label>Body Text</label><input type="color" id="tc-body" value="' + rgbToHex(t.colors.body) + '"></div>' +
-          '<div class="theme-field"><label>User Label</label><input type="color" id="tc-userLabel" value="' + rgbToHex(t.colors.userLabel) + '"></div>' +
-          '<div class="theme-field"><label>Asst. Label</label><input type="color" id="tc-assistantLabel" value="' + rgbToHex(t.colors.assistantLabel) + '"></div>' +
           '<div class="theme-field"><label>Header Line</label><input type="color" id="tc-headerLine" value="' + rgbToHex(t.colors.headerLine) + '"></div>' +
           '<div class="theme-field"><label>Section Divider</label><input type="color" id="tc-sectionDivider" value="' + rgbToHex(t.colors.sectionDivider) + '"></div>' +
           '<div class="theme-field"><label>Accent Bar</label><input type="color" id="tc-accentBarColor" value="' + rgbToHex(t.decorations.accentBarColor) + '"></div>' +
@@ -1880,8 +1878,6 @@
           '<option value="lined"' + (t.decorations.tocStyle === "lined" ? " selected" : "") + '>Lined</option>' +
           '<option value="plain"' + (t.decorations.tocStyle === "plain" ? " selected" : "") + '>Plain</option>' +
           '</select></div>' +
-          '<div class="theme-field" style="margin-bottom:0.4rem"><label>User Prefix</label><input type="text" id="td-userMsgPrefix" value="' + escapeHtml(t.decorations.userMsgPrefix) + '"></div>' +
-          '<div class="theme-field"><label>Asst. Prefix</label><input type="text" id="td-assistantMsgPrefix" value="' + escapeHtml(t.decorations.assistantMsgPrefix) + '"></div>' +
           '</div></div>' +
 
           '<div class="theme-import-export">' +
@@ -1920,8 +1916,6 @@
         t.colors.accent = hexToRgb(document.getElementById("tc-accent").value);
         t.colors.heading = hexToRgb(document.getElementById("tc-heading").value);
         t.colors.body = hexToRgb(document.getElementById("tc-body").value);
-        t.colors.userLabel = hexToRgb(document.getElementById("tc-userLabel").value);
-        t.colors.assistantLabel = hexToRgb(document.getElementById("tc-assistantLabel").value);
         t.colors.headerLine = hexToRgb(document.getElementById("tc-headerLine").value);
         t.colors.sectionDivider = hexToRgb(document.getElementById("tc-sectionDivider").value);
         t.decorations.accentBarColor = hexToRgb(document.getElementById("tc-accentBarColor").value);
@@ -1941,8 +1935,6 @@
         t.decorations.showTimestamp = document.getElementById("td-showTimestamp").checked;
         t.decorations.coverStyle = document.getElementById("td-coverStyle").value;
         t.decorations.tocStyle = document.getElementById("td-tocStyle").value;
-        t.decorations.userMsgPrefix = document.getElementById("td-userMsgPrefix").value || "YOU:";
-        t.decorations.assistantMsgPrefix = document.getElementById("td-assistantMsgPrefix").value || "ASSISTANT:";
         return t;
       }
 
@@ -2035,7 +2027,7 @@
           theme = applyWordThemeColors(themeDoc, theme);
         }
 
-        db.pdfTheme = "word-import";
+        db.pdfTheme = "custom";
         db.customPdfTheme = theme;
         saveDB();
         alert(
@@ -2046,6 +2038,11 @@
           "\u2022 Primary color: " + theme.extractedInfo.primaryColor + "\n" +
           "\u2022 " + theme.extractedInfo.stylesFound + " styles found"
         );
+        var existingModal = document.querySelector(".pdf-theme-modal");
+        if (existingModal) {
+          document.body.removeChild(existingModal);
+          openPdfThemeEditor();
+        }
       } catch (err) {
         alert("\u274C Failed to parse Word template: " + err.message);
       }
@@ -2131,15 +2128,12 @@
       if (headingRgb) {
         base.colors.heading = headingRgb;
         base.colors.title = headingRgb;
-        base.colors.primary = headingRgb;
-        base.decorations.accentBarColor = headingRgb;
       }
       if (bodyRgb) {
         base.colors.body = bodyRgb;
       }
       if (accentRgb) {
         base.colors.primary = accentRgb;
-        base.colors.userLabel = accentRgb;
         base.decorations.accentBarColor = accentRgb;
       }
 
@@ -2178,21 +2172,68 @@
           }
         }
         // Map theme roles to PDF theme
+        // dk1 → body text color only (not heading/title, which come from style definitions)
         if (colorMap["dk1"]) {
           var rgb = hexToRgbWord(colorMap["dk1"]);
-          if (rgb) { theme.colors.body = rgb; theme.colors.heading = rgb; theme.colors.title = rgb; }
+          if (rgb) { theme.colors.body = rgb; }
         }
+        // lt1 → cover background (usually white)
+        if (colorMap["lt1"]) {
+          var rgb = hexToRgbWord(colorMap["lt1"]);
+          if (rgb) { theme.colors.coverBg = rgb; }
+        }
+        // accent1 → primary, accentBarColor, headerLine, sectionDivider
+        var accent1Rgb = null;
         if (colorMap["accent1"]) {
-          var rgb = hexToRgbWord(colorMap["accent1"]);
-          if (rgb) { theme.colors.primary = rgb; theme.colors.userLabel = rgb; theme.decorations.accentBarColor = rgb; }
+          accent1Rgb = hexToRgbWord(colorMap["accent1"]);
+          if (accent1Rgb) {
+            theme.colors.primary = accent1Rgb;
+            theme.decorations.accentBarColor = accent1Rgb;
+            theme.colors.headerLine = accent1Rgb;
+            // sectionDivider: lighter version of accent1
+            theme.colors.sectionDivider = [
+              Math.min(255, Math.round(accent1Rgb[0] * 0.3 + 200)),
+              Math.min(255, Math.round(accent1Rgb[1] * 0.3 + 200)),
+              Math.min(255, Math.round(accent1Rgb[2] * 0.3 + 200))
+            ];
+          }
         }
+        // accent2 → accent color
         if (colorMap["accent2"]) {
           var rgb = hexToRgbWord(colorMap["accent2"]);
-          if (rgb) { theme.colors.accent = rgb; theme.colors.assistantLabel = rgb; }
+          if (rgb) { theme.colors.accent = rgb; }
+        } else if (accent1Rgb) {
+          theme.colors.accent = accent1Rgb;
+        }
+        // heading: use explicit heading color from styles if available, else accent1, else dk2
+        // Check if heading was set from Heading1 style (non-default professional value)
+        var defaultProfessionalHeadingColor = [31, 35, 40];
+        var headingColorNotCustomized = theme.colors.heading &&
+          theme.colors.heading[0] === defaultProfessionalHeadingColor[0] &&
+          theme.colors.heading[1] === defaultProfessionalHeadingColor[1] &&
+          theme.colors.heading[2] === defaultProfessionalHeadingColor[2];
+        if (headingColorNotCustomized) {
+          // No explicit heading color from styles.xml, use accent1 or dk2
+          if (accent1Rgb) {
+            theme.colors.heading = accent1Rgb;
+            theme.colors.title = accent1Rgb;
+          } else if (colorMap["dk2"]) {
+            var rgb = hexToRgbWord(colorMap["dk2"]);
+            if (rgb) { theme.colors.heading = rgb; theme.colors.title = rgb; }
+          }
+        }
+        // muted: lighter version of body color
+        if (theme.colors.body) {
+          var b = theme.colors.body;
+          theme.colors.muted = [
+            Math.min(255, Math.round(b[0] * 0.5 + 128)),
+            Math.min(255, Math.round(b[1] * 0.5 + 128)),
+            Math.min(255, Math.round(b[2] * 0.5 + 128))
+          ];
         }
         if (colorMap["hyperlink"]) {
           var rgb = hexToRgbWord(colorMap["hyperlink"]);
-          if (rgb) { theme.colors.primary = rgb; theme.colors.userLabel = rgb; theme.decorations.accentBarColor = rgb; }
+          if (rgb) { theme.colors.primary = rgb; theme.decorations.accentBarColor = rgb; }
         }
       }
 
