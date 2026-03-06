@@ -2051,6 +2051,14 @@
       }
     }
 
+    function mapWordFont(wordFont) {
+      if (!wordFont) return "helvetica";
+      var lower = wordFont.toLowerCase();
+      if (lower.match(/times|georgia|garamond|palatino|book antiqua|serif/)) return "times";
+      if (lower.match(/courier|consolas|monospace|lucida console|monaco/)) return "courier";
+      return "helvetica";
+    }
+
     function extractThemeFromWordStyles(stylesDoc) {
       var styles = stylesDoc.getElementsByTagName("w:style");
       var extracted = {
@@ -2095,14 +2103,6 @@
         }
       }
 
-      function mapFont(wordFont) {
-        if (!wordFont) return "helvetica";
-        var lower = wordFont.toLowerCase();
-        if (lower.match(/times|georgia|garamond|palatino|book antiqua|serif/)) return "times";
-        if (lower.match(/courier|consolas|monospace|lucida console|monaco/)) return "courier";
-        return "helvetica";
-      }
-
       function hexToRgbWord(hex) {
         if (!hex || hex === "auto") return null;
         hex = hex.replace("#", "");
@@ -2116,8 +2116,8 @@
 
       var base = JSON.parse(JSON.stringify(PDF_THEMES["professional"]));
       base.name = "Word Import";
-      base.fonts.heading = mapFont(extracted.headingFont);
-      base.fonts.body = mapFont(extracted.bodyFont);
+      base.fonts.heading = mapWordFont(extracted.headingFont);
+      base.fonts.body = mapWordFont(extracted.bodyFont);
 
       if (extracted.heading1Size) base.sizes.h1 = Math.min(Math.max(extracted.heading1Size, 12), 28);
       if (extracted.heading2Size) base.sizes.h2 = Math.min(Math.max(extracted.heading2Size, 10), 22);
@@ -2200,30 +2200,27 @@
       var fontSchemes = themeDoc.getElementsByTagName("a:fontScheme");
       if (fontSchemes.length > 0) {
         var fontScheme = fontSchemes[0];
-        function mapFontWord(wordFont) {
-          if (!wordFont) return null;
-          var lower = wordFont.toLowerCase();
-          if (lower.match(/times|georgia|garamond|palatino|book antiqua|serif/)) return "times";
-          if (lower.match(/courier|consolas|monospace|lucida console|monaco/)) return "courier";
-          return "helvetica";
-        }
         // Major font (headings)
         var majorLatinEls = fontScheme.getElementsByTagName("a:latin");
         if (majorLatinEls.length > 0) {
           var majorFont = majorLatinEls[0].getAttribute("typeface");
-          var mapped = mapFontWord(majorFont);
+          var mapped = mapWordFont(majorFont);
           if (mapped) theme.fonts.heading = mapped;
         }
         // Minor font (body) — second latin element in fontScheme
         if (majorLatinEls.length > 1) {
           var minorFont = majorLatinEls[1].getAttribute("typeface");
-          var mapped = mapFontWord(minorFont);
+          var mapped = mapWordFont(minorFont);
           if (mapped) theme.fonts.body = mapped;
         }
         // Update extractedInfo if available
         if (theme.extractedInfo) {
-          if (majorLatinEls[0]) theme.extractedInfo.headingFont = majorLatinEls[0].getAttribute("typeface") || theme.extractedInfo.headingFont;
-          if (majorLatinEls[1]) theme.extractedInfo.bodyFont = majorLatinEls[1].getAttribute("typeface") || theme.extractedInfo.bodyFont;
+          if (majorLatinEls.length > 0) {
+            theme.extractedInfo.headingFont = majorLatinEls[0].getAttribute("typeface") || theme.extractedInfo.headingFont;
+          }
+          if (majorLatinEls.length > 1) {
+            theme.extractedInfo.bodyFont = majorLatinEls[1].getAttribute("typeface") || theme.extractedInfo.bodyFont;
+          }
         }
       }
 
