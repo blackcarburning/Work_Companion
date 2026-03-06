@@ -1374,11 +1374,9 @@
             labelColor = [26, 127, 55]; label = "[Content] " + (msg.contentTitle || "content");
             contentText = null;
           } else if (msg.role === "user") {
-            bgColor = [221, 244, 255]; borderColor = [168, 216, 240]; accentColor = [9, 105, 218];
-            contentText = msg.content || "";
+            return; // User messages are for the app only, not exported to PDF
           } else if (msg.role === "assistant") {
-            bgColor = [246, 248, 250]; borderColor = [208, 215, 222]; accentColor = [26, 127, 55];
-            contentText = msg.content || "";
+            return; // Assistant messages are for the app only, not exported to PDF
           } else {
             return;
           }
@@ -1598,7 +1596,15 @@
         db.jobs.forEach(function(job) {
           pdf.addPage();
           sectionPages["job_" + job.id] = pdf.internal.getCurrentPageInfo().pageNumber;
-          y = marginT;
+          y = marginT + 3;
+
+          // Divider line before job section title
+          if (y > marginT + 5) {
+            pdf.setDrawColor(theme.colors.sectionDivider[0], theme.colors.sectionDivider[1], theme.colors.sectionDivider[2]);
+            pdf.setLineWidth(0.5);
+            pdf.line(marginL, y, marginL + contentW, y);
+            y += 5;
+          }
 
           // Styled job section header: background bar + colored dot + job name
           var headerBgH = lh(theme.sizes.h1) + 8;
@@ -1608,7 +1614,7 @@
           var dotColor = job.color || "#58a6ff";
           var dc = hexToRgbLocal(dotColor);
           pdf.setFillColor(dc[0], dc[1], dc[2]);
-          pdf.circle(marginL + 3, y + lh(theme.sizes.h1) / 2 - 1, 2, 'F');
+          pdf.circle(marginL + 3, y - 1, 2, 'F');
           pdf.setFont(theme.fonts.heading, "bold");
           pdf.setFontSize(theme.sizes.h1);
           pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
@@ -1652,7 +1658,12 @@
           if (job.notes && job.notes.trim()) {
             checkBreak(20);
             sectionPages["notes_" + job.id] = pdf.internal.getCurrentPageInfo().pageNumber;
-            y += 5;
+            y += 8;
+            // Divider line before notes heading
+            pdf.setDrawColor(theme.colors.sectionDivider[0], theme.colors.sectionDivider[1], theme.colors.sectionDivider[2]);
+            pdf.setLineWidth(0.3);
+            pdf.line(marginL, y, marginL + contentW, y);
+            y += 4;
             pdf.setFont(theme.fonts.heading, "bold");
             pdf.setFontSize(theme.sizes.h3);
             pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
