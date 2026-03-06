@@ -10,6 +10,7 @@
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -530,6 +531,7 @@
   <input type="file" id="doc-upload-file" accept=".xlsx,.xls,.csv,.docx" style="display:none" onchange="handleDocumentUpload(event)" />
   <input type="file" id="image-upload-file" accept="image/*" style="display:none" onchange="handleImageUpload(event)" />
   <input type="file" id="theme-import-file" accept=".json" style="display:none" onchange="handleThemeImport(event)" />
+  <input type="file" id="word-template-file" accept=".docx,.dotx" style="display:none" onchange="handleWordTemplateImport(event)" />
 
   <script>
     var API_URL = "https://models.github.ai/inference/chat/completions";
@@ -1058,7 +1060,7 @@
     }
 
     function getActivePdfTheme() {
-      if (db.pdfTheme === "custom" && db.customPdfTheme) return db.customPdfTheme;
+      if ((db.pdfTheme === "custom" || db.pdfTheme === "word-import") && db.customPdfTheme) return db.customPdfTheme;
       return PDF_THEMES[db.pdfTheme] || PDF_THEMES["professional"];
     }
 
@@ -1089,6 +1091,13 @@
 
         // Line height in mm from font size in pt
         function lh(fs) { return fs * 0.45; }
+
+        function hexToRgbLocal(hex) {
+          hex = (hex || "#888888").replace("#", "");
+          if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+          if (hex.length !== 6) return [136, 136, 136];
+          return [parseInt(hex.slice(0,2),16), parseInt(hex.slice(2,4),16), parseInt(hex.slice(4,6),16)];
+        }
 
         function newPage() { pdf.addPage(); y = marginT; }
 
@@ -1125,6 +1134,344 @@
           pdf.line(marginL, y, pageW - theme.spacing.marginRight, y);
           pdf.setDrawColor(0, 0, 0);
           y += 2;
+        }
+
+        // ===== MARKDOWN / CARD RENDERING HELPERS =====
+
+        function pdfRenderCodeBlock(codeLines, startX, startY, maxW) {
+          var code = codeLines.join('\n');
+          var padding = 3;
+          pdf.setFont("courier", "normal");
+          pdf.setFontSize(8.5);
+          var wrappedLines = pdf.splitTextToSize(code, maxW - padding * 2);
+          var lineH = 3.5;
+          var blockH = wrappedLines.length * lineH + padding * 2;
+          if (startY + blockH > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFillColor(22, 27, 34);
+          pdf.rect(startX, startY, maxW, blockH, 'F');
+          pdf.setTextColor(230, 237, 243);
+          pdf.text(wrappedLines, startX + padding, startY + padding + lineH);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          return startY + blockH + 3;
+        }
+
+        function pdfRenderHeading(text, level, startX, startY, maxW) {
+          var fs = level === 1 ? theme.sizes.h1 : (level === 2 ? theme.sizes.h2 : theme.sizes.h3);
+          var lineHv = lh(fs) + 1;
+          if (startY + lineHv + 4 > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFont(theme.fonts.heading, "bold");
+          pdf.setFontSize(fs);
+          pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
+          var textLines = pdf.splitTextToSize(text, maxW);
+          for (var ti = 0; ti < textLines.length; ti++) {
+            pdf.text(textLines[ti], startX, startY);
+            startY += lineHv;
+          }
+          if (level <= 2) {
+            pdf.setDrawColor(theme.colors.sectionDivider[0], theme.colors.sectionDivider[1], theme.colors.sectionDivider[2]);
+            pdf.setLineWidth(0.2);
+            pdf.line(startX, startY, startX + maxW, startY);
+            pdf.setDrawColor(0, 0, 0);
+            startY += 2;
+          }
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          return startY + 1;
+        }
+
+        function pdfRenderBullet(text, startX, startY, maxW) {
+          var lineHv = lh(theme.sizes.body);
+          var indent = 5;
+          if (startY + lineHv > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          pdf.text("\u2022", startX + indent - 3, startY);
+          var textLines = pdf.splitTextToSize(text, maxW - indent - 2);
+          for (var ti = 0; ti < textLines.length; ti++) {
+            if (startY > pageH - marginB) { pdf.addPage(); startY = marginT; }
+            pdf.text(textLines[ti], startX + indent, startY);
+            startY += lineHv;
+          }
+          return startY;
+        }
+
+        function pdfRenderNumberedItem(text, startX, startY, maxW) {
+          var lineHv = lh(theme.sizes.body);
+          var indent = 7;
+          if (startY + lineHv > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          var textLines = pdf.splitTextToSize(text, maxW - indent);
+          for (var ti = 0; ti < textLines.length; ti++) {
+            if (ti > 0 && startY > pageH - marginB) { pdf.addPage(); startY = marginT; }
+            pdf.text(textLines[ti], startX + indent, startY);
+            startY += lineHv;
+          }
+          return startY;
+        }
+
+        function pdfRenderBlockquote(text, startX, startY, maxW) {
+          var lineHv = lh(theme.sizes.body);
+          var indent = 5;
+          if (startY + lineHv > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFont(theme.fonts.body, "italic");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(87, 96, 106);
+          var textLines = pdf.splitTextToSize(text, maxW - indent - 2);
+          var bqStartY = startY;
+          for (var ti = 0; ti < textLines.length; ti++) {
+            if (startY > pageH - marginB) { pdf.addPage(); startY = marginT; bqStartY = startY; }
+            pdf.text(textLines[ti], startX + indent, startY);
+            startY += lineHv;
+          }
+          pdf.setFillColor(208, 215, 222);
+          pdf.rect(startX, bqStartY - lineHv + 1, 1, startY - bqStartY + lineHv - 1, 'F');
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          return startY + 1;
+        }
+
+        function pdfRenderHRule(startX, startY, maxW) {
+          pdf.setDrawColor(theme.colors.sectionDivider[0], theme.colors.sectionDivider[1], theme.colors.sectionDivider[2]);
+          pdf.setLineWidth(0.3);
+          pdf.line(startX, startY, startX + maxW, startY);
+          pdf.setDrawColor(0, 0, 0);
+          return startY + 4;
+        }
+
+        function pdfRenderTable(rows, startX, startY, maxW) {
+          var parsedRows = rows.filter(function(r) {
+            return !r.trim().match(/^\|[\s\-:|]+\|$/);
+          }).map(function(r) {
+            return r.split('|').slice(1, -1).map(function(c) { return c.trim(); });
+          });
+          if (parsedRows.length === 0) return startY;
+          var colCount = parsedRows[0].length;
+          if (colCount === 0) return startY;
+          var colWidth = maxW / colCount;
+          var rowHeight = 6;
+          if (startY + rowHeight * 2 > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          for (var ri = 0; ri < parsedRows.length; ri++) {
+            if (startY + rowHeight > pageH - marginB) { pdf.addPage(); startY = marginT; }
+            var row = parsedRows[ri];
+            for (var ci = 0; ci < row.length; ci++) {
+              var cellX = startX + ci * colWidth;
+              if (ri === 0) {
+                pdf.setFillColor(246, 248, 250);
+                pdf.rect(cellX, startY, colWidth, rowHeight, 'F');
+                pdf.setFont(theme.fonts.body, "bold");
+              } else {
+                pdf.setFont(theme.fonts.body, "normal");
+              }
+              pdf.setDrawColor(208, 215, 222);
+              pdf.setLineWidth(0.2);
+              pdf.rect(cellX, startY, colWidth, rowHeight, 'S');
+              pdf.setFontSize(8.5);
+              pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+              var cellText = pdf.splitTextToSize(row[ci] || '', colWidth - 3);
+              pdf.text(cellText[0] || '', cellX + 1.5, startY + 4);
+            }
+            startY += rowHeight;
+          }
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setFont(theme.fonts.body, "normal");
+          return startY + 3;
+        }
+
+        function pdfRenderInlinePara(text, startX, startY, maxW) {
+          var clean = text
+            .replace(/\*\*([^*]+)\*\*/g, "$1")
+            .replace(/\*([^*]+)\*/g, "$1")
+            .replace(/__([^_]+)__/g, "$1")
+            .replace(/_([^_]+)_/g, "$1")
+            .replace(/`([^`]+)`/g, "$1")
+            .replace(/<[^>]+>/g, "");
+          var lineHv = lh(theme.sizes.body);
+          if (!clean.trim()) return startY + lineHv * 0.3;
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          var textLines = pdf.splitTextToSize(clean, maxW);
+          for (var ti = 0; ti < textLines.length; ti++) {
+            if (startY > pageH - marginB) { pdf.addPage(); startY = marginT; }
+            pdf.text(textLines[ti], startX, startY);
+            startY += lineHv;
+          }
+          return startY;
+        }
+
+        function pdfRenderMarkdown(markdown, startX, startY, maxW) {
+          if (!markdown) return startY;
+          var lines = markdown.split('\n');
+          var inCodeBlock = false;
+          var codeBlockLines = [];
+          var tableRows = [];
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            // Code block detection
+            if (line.trim().indexOf('```') === 0) {
+              if (inCodeBlock) {
+                startY = pdfRenderCodeBlock(codeBlockLines, startX, startY, maxW);
+                codeBlockLines = [];
+                inCodeBlock = false;
+              } else {
+                inCodeBlock = true;
+              }
+              continue;
+            }
+            if (inCodeBlock) { codeBlockLines.push(line); continue; }
+            // Table detection
+            if (line.trim().charAt(0) === '|' && line.trim().charAt(line.trim().length - 1) === '|') {
+              tableRows.push(line);
+              continue;
+            } else if (tableRows.length > 0) {
+              startY = pdfRenderTable(tableRows, startX, startY, maxW);
+              tableRows = [];
+            }
+            // Headings
+            if (line.indexOf('### ') === 0) { startY = pdfRenderHeading(line.slice(4), 3, startX, startY, maxW); continue; }
+            if (line.indexOf('## ') === 0) { startY = pdfRenderHeading(line.slice(3), 2, startX, startY, maxW); continue; }
+            if (line.indexOf('# ') === 0) { startY = pdfRenderHeading(line.slice(2), 1, startX, startY, maxW); continue; }
+            // Bullet lists
+            if (line.match(/^\s*[-*]\s/)) { startY = pdfRenderBullet(line.replace(/^\s*[-*]\s/, ''), startX, startY, maxW); continue; }
+            // Numbered lists
+            if (line.match(/^\s*\d+\.\s/)) { startY = pdfRenderNumberedItem(line, startX, startY, maxW); continue; }
+            // Blockquote
+            if (line.indexOf('> ') === 0) { startY = pdfRenderBlockquote(line.slice(2), startX, startY, maxW); continue; }
+            // Horizontal rule
+            if (line.match(/^---+$/)) { startY = pdfRenderHRule(startX, startY, maxW); continue; }
+            // Regular paragraph
+            startY = pdfRenderInlinePara(line, startX, startY, maxW);
+          }
+          if (tableRows.length > 0) startY = pdfRenderTable(tableRows, startX, startY, maxW);
+          if (inCodeBlock && codeBlockLines.length > 0) startY = pdfRenderCodeBlock(codeBlockLines, startX, startY, maxW);
+          return startY;
+        }
+
+        function renderMessageCard(msg) {
+          var bgColor, borderColor, accentColor, labelColor, label, contentText;
+          var pV = 4; // vertical padding
+          var pL = 6; // left padding (inside card, from card left edge)
+          var cardX = marginL;
+          var cardW = contentW;
+          var innerW = cardW - pL - 1 - 4; // -1 accent bar, -4 right padding
+
+          if (msg.isDocument) {
+            bgColor = [240, 246, 255]; borderColor = [9, 105, 218]; accentColor = [9, 105, 218];
+            labelColor = [9, 105, 218]; label = "[Document] " + (msg.documentName || "attachment");
+            contentText = null;
+          } else if (msg.isImage) {
+            bgColor = [255, 248, 240]; borderColor = [255, 166, 87]; accentColor = [255, 166, 87];
+            labelColor = [255, 128, 0]; label = "[Image] " + (msg.imageName || "image");
+            contentText = null;
+          } else if (msg.isManualContent) {
+            bgColor = [240, 255, 244]; borderColor = [45, 164, 78]; accentColor = [45, 164, 78];
+            labelColor = [26, 127, 55]; label = "[Content] " + (msg.contentTitle || "content");
+            contentText = null;
+          } else if (msg.role === "user") {
+            bgColor = [221, 244, 255]; borderColor = [168, 216, 240]; accentColor = [9, 105, 218];
+            labelColor = [9, 105, 218]; label = theme.decorations.userMsgPrefix;
+            contentText = msg.content || "";
+          } else if (msg.role === "assistant") {
+            bgColor = [246, 248, 250]; borderColor = [208, 215, 222]; accentColor = [26, 127, 55];
+            labelColor = [26, 127, 55]; label = theme.decorations.assistantMsgPrefix;
+            contentText = msg.content || "";
+          } else {
+            return;
+          }
+
+          var labelLineH = lh(theme.sizes.body) + 1;
+          var bodyLineH = lh(theme.sizes.body);
+          var pageMaxH = pageH - marginT - marginB - 10;
+
+          // Estimate content height for short messages (plain-text estimate)
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          var estimatedLines = 0;
+          if (contentText) {
+            var textToMeasure = msg.role === "assistant" ? stripMarkdown(contentText) : contentText;
+            estimatedLines = pdf.splitTextToSize(textToMeasure, innerW).length;
+          }
+          var estimatedContentH = contentText ? (estimatedLines * bodyLineH + pV) : 0;
+          var cardH = pV * 2 + labelLineH + estimatedContentH;
+          var isLongMessage = cardH > pageMaxH * 0.75;
+
+          if (!isLongMessage) {
+            // SHORT MESSAGE: draw full card with background
+            checkBreak(cardH);
+            var cardY = y;
+            pdf.setFillColor(bgColor[0], bgColor[1], bgColor[2]);
+            pdf.rect(cardX, cardY, cardW, cardH, 'F');
+            pdf.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+            pdf.setLineWidth(0.3);
+            pdf.rect(cardX, cardY, cardW, cardH, 'S');
+            pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
+            pdf.rect(cardX, cardY, 1, cardH, 'F');
+            y = cardY + pV;
+            pdf.setFont(theme.fonts.body, "bold");
+            pdf.setFontSize(theme.sizes.body);
+            pdf.setTextColor(labelColor[0], labelColor[1], labelColor[2]);
+            pdf.text(label, cardX + pL, y);
+            y += labelLineH;
+            if (contentText) {
+              pdf.setFont(theme.fonts.body, "normal");
+              pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+              var wrappedContent = pdf.splitTextToSize(
+                msg.role === "assistant" ? stripMarkdown(contentText) : contentText,
+                innerW
+              );
+              var maxContentY = cardY + cardH - pV;
+              for (var li = 0; li < wrappedContent.length; li++) {
+                if (y + bodyLineH > maxContentY) { break; }
+                pdf.text(wrappedContent[li], cardX + pL, y);
+                y += bodyLineH;
+              }
+            }
+            y = cardY + cardH + theme.spacing.paragraphGap;
+          } else {
+            // LONG MESSAGE: colored header card + full markdown/text content below
+            var headerH = pV * 2 + labelLineH;
+            checkBreak(headerH);
+            var headerY = y;
+            pdf.setFillColor(bgColor[0], bgColor[1], bgColor[2]);
+            pdf.rect(cardX, headerY, cardW, headerH, 'F');
+            pdf.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+            pdf.setLineWidth(0.3);
+            pdf.rect(cardX, headerY, cardW, headerH, 'S');
+            pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
+            pdf.rect(cardX, headerY, 1, headerH, 'F');
+            y = headerY + pV;
+            pdf.setFont(theme.fonts.body, "bold");
+            pdf.setFontSize(theme.sizes.body);
+            pdf.setTextColor(labelColor[0], labelColor[1], labelColor[2]);
+            pdf.text(label, cardX + pL, y);
+            y = headerY + headerH + 2;
+            if (contentText) {
+              var contentStartY = y;
+              pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
+              if (msg.role === "assistant") {
+                y = pdfRenderMarkdown(contentText, cardX + pL + 1, y, innerW);
+              } else {
+                writeWrapped(contentText, theme.sizes.body, "normal", pL + 1);
+              }
+              // Draw left accent bar alongside content (on current page only)
+              var accentBarH = Math.min(y, pageH - marginB) - contentStartY;
+              if (accentBarH > 0) {
+                pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
+                pdf.rect(cardX, contentStartY, 1, accentBarH, 'F');
+              }
+            }
+            y += theme.spacing.paragraphGap;
+          }
+
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
         }
 
         var docTitle = db.summaryTitle || "Document Summary";
@@ -1251,15 +1598,35 @@
           sectionPages["job_" + job.id] = pdf.internal.getCurrentPageInfo().pageNumber;
           y = marginT;
 
-          // Job heading
+          // Styled job section header: background bar + colored dot + job name
+          var headerBgH = lh(theme.sizes.h1) + 8;
+          pdf.setFillColor(246, 248, 250);
+          pdf.rect(0, y - 4, pageW, headerBgH, 'F');
+          // Colored dot (job color)
+          var dotColor = job.color || "#58a6ff";
+          var dc = hexToRgbLocal(dotColor);
+          pdf.setFillColor(dc[0], dc[1], dc[2]);
+          pdf.circle(marginL + 3, y + lh(theme.sizes.h1) / 2 - 1, 2, 'F');
           pdf.setFont(theme.fonts.heading, "bold");
           pdf.setFontSize(theme.sizes.h1);
-          pdf.setTextColor(...theme.colors.heading);
-          var jLines = pdf.splitTextToSize("Job: " + job.name, contentW);
-          jLines.forEach(function(line) { pdf.text(line, marginL, y); y += lh(theme.sizes.h1); });
-          y += 2;
+          pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
+          var jLines = pdf.splitTextToSize(job.name, contentW - 10);
+          jLines.forEach(function(line) { pdf.text(line, marginL + 8, y); y += lh(theme.sizes.h1); });
+          y = Math.max(y, marginT + headerBgH - 4) + 2;
           if (theme.decorations.showSectionDividers) { hRule(); }
-          y += 2;
+
+          // Exchange count (styled, muted)
+          var exCount = Math.floor((job.messages.length - 1) / 2);
+          var msgCount = job.messages.length - 1;
+          if (theme.decorations.showExchangeNumbers) {
+            var mc = theme.colors.muted;
+            setStyle(theme.sizes.small, "normal", mc[0], mc[1], mc[2]);
+            var countLine = exCount + " exchange" + (exCount !== 1 ? "s" : "") +
+              " \u00b7 " + msgCount + " message" + (msgCount !== 1 ? "s" : "");
+            pdf.text(countLine, marginL, y);
+            pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          }
+          y += lh(theme.sizes.small) + 3;
 
           // System prompt (italic, muted, capped at 5 lines)
           var sysMsg = job.messages[0];
@@ -1270,59 +1637,13 @@
             var showLines = spLines.slice(0, 5);
             showLines.forEach(function(line) { checkBreak(lh(theme.sizes.small)); pdf.text(line, marginL, y); y += lh(theme.sizes.small); });
             if (spLines.length > 5) { pdf.text("[...]", marginL, y); y += lh(theme.sizes.small); }
-            pdf.setTextColor(...theme.colors.body);
+            pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
             y += 3;
           }
 
-          // Exchange / message count line
-          var exCount = Math.floor((job.messages.length - 1) / 2);
-          var msgCount = job.messages.length - 1;
-          var mc = theme.colors.muted;
-          setStyle(theme.sizes.small, "normal", mc[0], mc[1], mc[2]);
-          var countLine = "";
-          if (theme.decorations.showExchangeNumbers) {
-            countLine = exCount + " exchange" + (exCount !== 1 ? "s" : "") +
-              " \u00b7 " + msgCount + " message" + (msgCount !== 1 ? "s" : "");
-          }
-          if (countLine) { pdf.text(countLine, marginL, y); }
-          pdf.setTextColor(...theme.colors.body);
-          y += lh(theme.sizes.small) + 5;
-
-          // Chat messages
+          // Chat messages — rendered as styled cards
           job.messages.slice(1).forEach(function(msg) {
-            if (msg.role === "user") {
-              checkBreak(lh(theme.sizes.body) * 3);
-              var ulc = theme.colors.userLabel;
-              pdf.setFont(theme.fonts.body, "bold");
-              pdf.setFontSize(theme.sizes.body);
-              pdf.setTextColor(ulc[0], ulc[1], ulc[2]);
-              pdf.text(theme.decorations.userMsgPrefix, marginL, y);
-              y += lh(theme.sizes.body);
-              pdf.setTextColor(...theme.colors.body);
-              var txt;
-              if (msg.isDocument) {
-                txt = "[Document]: " + (msg.documentName || "attachment");
-              } else if (msg.isImage) {
-                txt = "[Image]: " + (msg.imageName || "image");
-              } else if (msg.isManualContent) {
-                txt = "[Content]: " + (msg.contentTitle || "content") + " (" + (msg.contentType || "text") + ")";
-              } else {
-                txt = msg.content || "";
-              }
-              writeWrapped(txt, theme.sizes.body, "normal", 5);
-              y += theme.spacing.paragraphGap;
-            } else if (msg.role === "assistant") {
-              checkBreak(lh(theme.sizes.body) * 3);
-              var alc = theme.colors.assistantLabel;
-              pdf.setFont(theme.fonts.body, "bold");
-              pdf.setFontSize(theme.sizes.body);
-              pdf.setTextColor(alc[0], alc[1], alc[2]);
-              pdf.text(theme.decorations.assistantMsgPrefix, marginL, y);
-              y += lh(theme.sizes.body);
-              pdf.setTextColor(...theme.colors.body);
-              writeWrapped(stripMarkdown(msg.content || ""), theme.sizes.body, "normal", 5);
-              y += theme.spacing.paragraphGap;
-            }
+            renderMessageCard(msg);
           });
 
           // Notes sub-section
@@ -1332,7 +1653,7 @@
             y += 5;
             pdf.setFont(theme.fonts.heading, "bold");
             pdf.setFontSize(theme.sizes.h3);
-            pdf.setTextColor(...theme.colors.heading);
+            pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
             var nhLines = pdf.splitTextToSize("Notes for " + job.name, contentW);
             nhLines.forEach(function(line) { pdf.text(line, marginL, y); y += lh(theme.sizes.h3); });
             y += 1;
@@ -1566,7 +1887,9 @@
           '<div class="theme-import-export">' +
           '<button onclick="exportPdfTheme()">⬇ Export Theme</button>' +
           '<button onclick="document.getElementById(\'theme-import-file\').click()">⬆ Import Theme</button>' +
+          '<button onclick="document.getElementById(\'word-template-file\').click()">📄 Import from Word Template</button>' +
           '</div>' +
+          '<p style="font-size:0.75rem;color:#57606a;margin-top:0.25rem">Upload a .docx or .dotx file to extract its color scheme and font styles.</p>' +
 
           '<div class="modal-btns" style="margin-top:1rem">' +
           '<button class="cancel" id="theme-cancel">Cancel</button>' +
@@ -1685,6 +2008,223 @@
         }
       };
       reader.readAsText(file);
+    }
+
+    async function handleWordTemplateImport(event) {
+      var file = event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+      if (!window.JSZip) {
+        alert("JSZip library is not loaded. Please refresh and try again.");
+        return;
+      }
+      try {
+        var zip = await JSZip.loadAsync(file);
+        var stylesFile = zip.file("word/styles.xml");
+        if (!stylesFile) { alert("Could not find styles in this Word document."); return; }
+        var stylesXml = await stylesFile.async("string");
+        var parser = new DOMParser();
+        var stylesDoc = parser.parseFromString(stylesXml, "application/xml");
+        var theme = extractThemeFromWordStyles(stylesDoc);
+
+        // Also try to parse word/theme/theme1.xml
+        var themeFile = zip.file("word/theme/theme1.xml");
+        if (themeFile) {
+          var themeXml = await themeFile.async("string");
+          var themeDoc = parser.parseFromString(themeXml, "application/xml");
+          theme = applyWordThemeColors(themeDoc, theme);
+        }
+
+        db.pdfTheme = "word-import";
+        db.customPdfTheme = theme;
+        saveDB();
+        alert(
+          "\u2705 Word template styles imported successfully!\n\n" +
+          "Extracted:\n" +
+          "\u2022 Heading font: " + theme.extractedInfo.headingFont + "\n" +
+          "\u2022 Body font: " + theme.extractedInfo.bodyFont + "\n" +
+          "\u2022 Primary color: " + theme.extractedInfo.primaryColor + "\n" +
+          "\u2022 " + theme.extractedInfo.stylesFound + " styles found"
+        );
+      } catch (err) {
+        alert("\u274C Failed to parse Word template: " + err.message);
+      }
+    }
+
+    function mapWordFont(wordFont) {
+      if (!wordFont) return "helvetica";
+      var lower = wordFont.toLowerCase();
+      if (lower.match(/times|georgia|garamond|palatino|book antiqua|serif/)) return "times";
+      if (lower.match(/courier|consolas|monospace|lucida console|monaco/)) return "courier";
+      return "helvetica";
+    }
+
+    function extractThemeFromWordStyles(stylesDoc) {
+      var styles = stylesDoc.getElementsByTagName("w:style");
+      var extracted = {
+        headingFont: null, bodyFont: null,
+        headingColor: null, bodyColor: null, accentColor: null,
+        heading1Size: null, heading2Size: null, heading3Size: null, bodySize: null,
+        stylesFound: 0
+      };
+
+      for (var i = 0; i < styles.length; i++) {
+        var style = styles[i];
+        var styleId = style.getAttribute("w:styleId") || "";
+        var styleType = style.getAttribute("w:type") || "";
+        extracted.stylesFound++;
+
+        var rFonts = style.getElementsByTagName("w:rFonts")[0];
+        var font = rFonts ? (rFonts.getAttribute("w:ascii") || rFonts.getAttribute("w:hAnsi")) : null;
+        var colorNode = style.getElementsByTagName("w:color")[0];
+        var color = colorNode ? colorNode.getAttribute("w:val") : null;
+        var szNode = style.getElementsByTagName("w:sz")[0];
+        var size = szNode ? parseInt(szNode.getAttribute("w:val"), 10) / 2 : null;
+
+        if (styleId === "Heading1" || styleId === "heading1") {
+          if (font) extracted.headingFont = font;
+          if (color && color !== "auto") extracted.headingColor = color;
+          if (size) extracted.heading1Size = size;
+        }
+        if (styleId === "Heading2" || styleId === "heading2") {
+          if (size) extracted.heading2Size = size;
+        }
+        if (styleId === "Heading3" || styleId === "heading3") {
+          if (size) extracted.heading3Size = size;
+        }
+        if (styleId === "Normal" || styleId === "normal" ||
+            (styleType === "paragraph" && !styleId.match(/heading/i) && !extracted.bodyFont)) {
+          if (font && !extracted.bodyFont) extracted.bodyFont = font;
+          if (color && color !== "auto" && !extracted.bodyColor) extracted.bodyColor = color;
+          if (size && !extracted.bodySize) extracted.bodySize = size;
+        }
+        if (styleId === "Hyperlink" || styleId === "FollowedHyperlink") {
+          if (color && color !== "auto") extracted.accentColor = color;
+        }
+      }
+
+      function hexToRgbWord(hex) {
+        if (!hex || hex === "auto") return null;
+        hex = hex.replace("#", "");
+        if (hex.length !== 6) return null;
+        return [
+          parseInt(hex.substring(0, 2), 16),
+          parseInt(hex.substring(2, 4), 16),
+          parseInt(hex.substring(4, 6), 16)
+        ];
+      }
+
+      var base = JSON.parse(JSON.stringify(PDF_THEMES["professional"]));
+      base.name = "Word Import";
+      base.fonts.heading = mapWordFont(extracted.headingFont);
+      base.fonts.body = mapWordFont(extracted.bodyFont);
+
+      if (extracted.heading1Size) base.sizes.h1 = Math.min(Math.max(extracted.heading1Size, 12), 28);
+      if (extracted.heading2Size) base.sizes.h2 = Math.min(Math.max(extracted.heading2Size, 10), 22);
+      if (extracted.heading3Size) base.sizes.h3 = Math.min(Math.max(extracted.heading3Size, 9), 18);
+      if (extracted.bodySize) base.sizes.body = Math.min(Math.max(extracted.bodySize, 8), 14);
+
+      var headingRgb = hexToRgbWord(extracted.headingColor);
+      var bodyRgb = hexToRgbWord(extracted.bodyColor);
+      var accentRgb = hexToRgbWord(extracted.accentColor);
+
+      if (headingRgb) {
+        base.colors.heading = headingRgb;
+        base.colors.title = headingRgb;
+        base.colors.primary = headingRgb;
+        base.decorations.accentBarColor = headingRgb;
+      }
+      if (bodyRgb) {
+        base.colors.body = bodyRgb;
+      }
+      if (accentRgb) {
+        base.colors.primary = accentRgb;
+        base.colors.userLabel = accentRgb;
+        base.decorations.accentBarColor = accentRgb;
+      }
+
+      base.extractedInfo = {
+        primaryColor: extracted.headingColor || extracted.accentColor || "default",
+        headingFont: extracted.headingFont || "default",
+        bodyFont: extracted.bodyFont || "default",
+        stylesFound: extracted.stylesFound
+      };
+
+      return base;
+    }
+
+    function applyWordThemeColors(themeDoc, theme) {
+      function hexToRgbWord(hex) {
+        if (!hex || hex.length !== 6) return null;
+        return [parseInt(hex.substring(0,2),16), parseInt(hex.substring(2,4),16), parseInt(hex.substring(4,6),16)];
+      }
+
+      // Parse color scheme from <a:clrScheme>
+      var clrSchemes = themeDoc.getElementsByTagName("a:clrScheme");
+      if (clrSchemes.length > 0) {
+        var clrScheme = clrSchemes[0];
+        var colorMap = {};
+        for (var ci = 0; ci < clrScheme.children.length; ci++) {
+          var colorEl = clrScheme.children[ci];
+          var tagName = colorEl.tagName.replace("a:", "");
+          var srgb = colorEl.getElementsByTagName("a:srgbClr")[0];
+          if (srgb) {
+            colorMap[tagName] = srgb.getAttribute("val");
+          }
+          // Some colors use sysClr (system color)
+          var sysClr = colorEl.getElementsByTagName("a:sysClr")[0];
+          if (sysClr) {
+            colorMap[tagName] = sysClr.getAttribute("lastClr");
+          }
+        }
+        // Map theme roles to PDF theme
+        if (colorMap["dk1"]) {
+          var rgb = hexToRgbWord(colorMap["dk1"]);
+          if (rgb) { theme.colors.body = rgb; theme.colors.heading = rgb; theme.colors.title = rgb; }
+        }
+        if (colorMap["accent1"]) {
+          var rgb = hexToRgbWord(colorMap["accent1"]);
+          if (rgb) { theme.colors.primary = rgb; theme.colors.userLabel = rgb; theme.decorations.accentBarColor = rgb; }
+        }
+        if (colorMap["accent2"]) {
+          var rgb = hexToRgbWord(colorMap["accent2"]);
+          if (rgb) { theme.colors.accent = rgb; theme.colors.assistantLabel = rgb; }
+        }
+        if (colorMap["hyperlink"]) {
+          var rgb = hexToRgbWord(colorMap["hyperlink"]);
+          if (rgb) { theme.colors.primary = rgb; theme.colors.userLabel = rgb; theme.decorations.accentBarColor = rgb; }
+        }
+      }
+
+      // Parse font scheme from <a:fontScheme>
+      var fontSchemes = themeDoc.getElementsByTagName("a:fontScheme");
+      if (fontSchemes.length > 0) {
+        var fontScheme = fontSchemes[0];
+        // Major font (headings)
+        var majorLatinEls = fontScheme.getElementsByTagName("a:latin");
+        if (majorLatinEls.length > 0) {
+          var majorFont = majorLatinEls[0].getAttribute("typeface");
+          var mapped = mapWordFont(majorFont);
+          if (mapped) theme.fonts.heading = mapped;
+        }
+        // Minor font (body) — second latin element in fontScheme
+        if (majorLatinEls.length > 1) {
+          var minorFont = majorLatinEls[1].getAttribute("typeface");
+          var mapped = mapWordFont(minorFont);
+          if (mapped) theme.fonts.body = mapped;
+        }
+        // Update extractedInfo if available
+        if (theme.extractedInfo) {
+          if (majorLatinEls.length > 0) {
+            theme.extractedInfo.headingFont = majorLatinEls[0].getAttribute("typeface") || theme.extractedInfo.headingFont;
+          }
+          if (majorLatinEls.length > 1) {
+            theme.extractedInfo.bodyFont = majorLatinEls[1].getAttribute("typeface") || theme.extractedInfo.bodyFont;
+          }
+        }
+      }
+
+      return theme;
     }
 
     function formatText(type) {
