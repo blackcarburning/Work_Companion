@@ -1149,6 +1149,7 @@
           var wrappedLines = pdf.splitTextToSize(code, maxW - padding * 2);
           var lineH = 3.5;
           var blockH = wrappedLines.length * lineH + padding * 2;
+          if (startY > marginT) { startY += 3; }
           if (startY + blockH > pageH - marginB) { pdf.addPage(); startY = marginT; }
           pdf.setFillColor(22, 27, 34);
           pdf.rect(startX, startY, maxW, blockH, 'F');
@@ -1157,12 +1158,14 @@
           pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
           pdf.setFont(theme.fonts.body, "normal");
           pdf.setFontSize(theme.sizes.body);
-          return startY + blockH + 3;
+          return startY + blockH + 5;
         }
 
         function pdfRenderHeading(text, level, startX, startY, maxW) {
           var fs = level === 1 ? theme.sizes.h1 : (level === 2 ? theme.sizes.h2 : theme.sizes.h3);
+          var spaceBefore = level === 1 ? 8 : (level === 2 ? 6 : 4);
           var lineHv = lh(fs) + 1;
+          if (startY > marginT) { startY += spaceBefore; }
           if (startY + lineHv + 4 > pageH - marginB) { pdf.addPage(); startY = marginT; }
           pdf.setFont(theme.fonts.heading, "bold");
           pdf.setFontSize(fs);
@@ -1199,7 +1202,7 @@
             pdf.text(textLines[ti], startX + indent, startY);
             startY += lineHv;
           }
-          return startY;
+          return startY + 1;
         }
 
         function pdfRenderNumberedItem(text, startX, startY, maxW) {
@@ -1215,7 +1218,7 @@
             pdf.text(textLines[ti], startX + indent, startY);
             startY += lineHv;
           }
-          return startY;
+          return startY + 1;
         }
 
         function pdfRenderBlockquote(text, startX, startY, maxW) {
@@ -1236,7 +1239,7 @@
           pdf.rect(startX, bqStartY - lineHv + 1, 1, startY - bqStartY + lineHv - 1, 'F');
           pdf.setFont(theme.fonts.body, "normal");
           pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
-          return startY + 1;
+          return startY + 3;
         }
 
         function pdfRenderHRule(startX, startY, maxW) {
@@ -1295,7 +1298,7 @@
             .replace(/`([^`]+)`/g, "$1")
             .replace(/<[^>]+>/g, "");
           var lineHv = lh(theme.sizes.body);
-          if (!clean.trim()) return startY + lineHv * 0.3;
+          if (!clean.trim()) return startY + lineHv * 0.6;
           pdf.setFont(theme.fonts.body, "normal");
           pdf.setFontSize(theme.sizes.body);
           pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
@@ -1342,6 +1345,8 @@
             if (line.indexOf('# ') === 0) { startY = pdfRenderHeading(line.slice(2), 1, startX, startY, maxW); continue; }
             // Bullet lists
             if (line.match(/^\s*[-*]\s/)) { startY = pdfRenderBullet(line.replace(/^\s*[-*]\s/, ''), startX, startY, maxW); continue; }
+            // Numbered bold patterns as section headings (e.g. "5. **Environment Variables**")
+            if (line.match(/^\d+\.\s+\*\*.*\*\*/)) { startY = pdfRenderHeading(line.replace(/^\d+\.\s+/, '').replace(/\*\*/g, ''), 2, startX, startY, maxW); continue; }
             // Numbered lists
             if (line.match(/^\s*\d+\.\s/)) { startY = pdfRenderNumberedItem(line, startX, startY, maxW); continue; }
             // Blockquote
