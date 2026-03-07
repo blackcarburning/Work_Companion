@@ -396,16 +396,10 @@
 
     .message-image { background: #fff8f0; border: 1px solid #fed8b1; border-left: 3px solid #ffa657; }
     .image-indicator { font-size: 0.95rem; font-weight: 600; color: #e87b00; }
-    .image-toggle-btn {
-      margin-top: 0.4rem; background: #fff0d9; border: 1px solid #fed8b1; border-radius: 4px;
-      padding: 0.15rem 0.6rem; font-size: 0.75rem; cursor: pointer; color: #e87b00; font-weight: 600; display: block;
-    }
-    .image-toggle-btn:hover { background: #fed8b1; }
     .image-preview {
       max-width: 100%; max-height: 400px; border-radius: 6px; border: 1px solid #d0d7de;
-      margin-top: 0.5rem; display: none; cursor: pointer;
+      margin-top: 0.5rem; display: block; cursor: pointer;
     }
-    .image-preview.visible { display: block; }
 
     .input-attach-group { display: flex; gap: 0.3rem; }
     #input-section .input-attach-btn {
@@ -1374,9 +1368,41 @@
             labelColor = [9, 105, 218]; label = "[Document] " + (msg.documentName || "attachment");
             contentText = null;
           } else if (msg.isImage) {
-            bgColor = [255, 248, 240]; borderColor = [255, 166, 87]; accentColor = [255, 166, 87];
-            labelColor = [255, 128, 0]; label = "[Image] " + (msg.imageName || "image");
-            contentText = null;
+            // Render actual image in PDF
+            if (msg.imageData) {
+              try {
+                var imgLabel = msg.imageName || "image";
+                if (msg.imageInfo) imgLabel += " (" + msg.imageInfo + ")";
+                checkBreak(10);
+                pdf.setFont(theme.fonts.body, "italic");
+                pdf.setFontSize(theme.sizes.small || 8);
+                pdf.setTextColor(255, 128, 0);
+                pdf.text(imgLabel, marginL, y);
+                y += lh(theme.sizes.body) + 1;
+                var imgProps = pdf.getImageProperties(msg.imageData);
+                var imgW = contentW;
+                var imgH = (imgProps.height / imgProps.width) * imgW;
+                var maxImgH = 180;
+                if (imgH > maxImgH) {
+                  imgW = (imgProps.width / imgProps.height) * maxImgH;
+                  imgH = maxImgH;
+                }
+                checkBreak(imgH + 4);
+                pdf.addImage(msg.imageData, marginL, y, imgW, imgH);
+                y += imgH + 4;
+              } catch (imgErr) {
+                pdf.setFont(theme.fonts.body, "italic");
+                pdf.setFontSize(theme.sizes.body);
+                pdf.setTextColor(255, 128, 0);
+                pdf.text("[Image: " + (msg.imageName || "image") + "]", marginL, y);
+                y += lh(theme.sizes.body) + 2;
+              }
+              pdf.setFont(theme.fonts.body, "normal");
+              pdf.setFontSize(theme.sizes.body);
+              pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+              y += theme.spacing.paragraphGap;
+            }
+            return;
           } else if (msg.isManualContent) {
             bgColor = [240, 255, 244]; borderColor = [45, 164, 78]; accentColor = [45, 164, 78];
             labelColor = [26, 127, 55]; label = "[Content] " + (msg.contentTitle || "content");
@@ -2086,6 +2112,9 @@
         }
 
         var body = "";
+        var imageCounter = 0;
+        var imageRelationships = [];
+        var imageFiles = [];
 
         // ===== COVER PAGE =====
         body += makePara(makeRun(docTitle, { bold: true, font: headingFont, sz: titleSz, color: headingHex }), { spaceAfter: 400 });
@@ -2119,6 +2148,58 @@
           job.messages.slice(1).forEach(function(msg) {
             if (msg.isDocument) {
               body += makePara(makeRun("[Document]: " + (msg.documentName || "attachment"), { bold: true, font: bodyFont, sz: bodySz, color: "0969DA" }), { spaceAfter: 120 });
+            } else if (msg.isImage && msg.imageData) {
+              imageCounter++;
+              var imgRelId = "rIdImg" + imageCounter;
+              var dataUrlParts = msg.imageData.split(",");
+              var mimeMatch = dataUrlParts[0].match(/data:image\/(png|jpeg|jpg|gif);/);
+              var imgExt = (mimeMatch && mimeMatch[1]) ? (mimeMatch[1] === "jpg" ? "jpeg" : mimeMatch[1]) : "png";
+              var imgFilename = "image" + imageCounter + "." + imgExt;
+              var imgBase64 = dataUrlParts[1];
+
+              imageFiles.push({ filename: "word/media/" + imgFilename, base64: imgBase64 });
+              imageRelationships.push({ id: imgRelId, target: "media/" + imgFilename, type: imgExt });
+
+              // Image label
+              body += makePara(makeRun(msg.imageName || "image", { italic: true, font: bodyFont, sz: Math.round(bodySz * 0.8), color: "FF8000" }), { spaceAfter: 60 });
+
+              // Calculate dimensions in EMU (1 inch = 914400 EMU, max width ~5.5 inches)
+              var maxWidthEmu = 5029200; // ~5.5 inches
+              var maxHeightEmu = 7315200; // ~8 inches
+              var cx = maxWidthEmu;
+              var cy = Math.round(maxWidthEmu * 0.75); // default 4:3 ratio
+              // Try to get actual dimensions from imageInfo (e.g., "1920×1080, 150 KB")
+              if (msg.imageInfo) {
+                // Match dimensions in "WxH" or "W×H" format (both × and x are supported)
+                var dimMatch = msg.imageInfo.match(/(\d+)\s*[×x]\s*(\d+)/);
+                if (dimMatch) {
+                  var origW = parseInt(dimMatch[1]);
+                  var origH = parseInt(dimMatch[2]);
+                  cx = maxWidthEmu;
+                  cy = Math.round((origH / origW) * cx);
+                  if (cy > maxHeightEmu) {
+                    cy = maxHeightEmu;
+                    cx = Math.round((origW / origH) * cy);
+                  }
+                }
+              }
+
+              body += '<w:p><w:r>' +
+                '<w:drawing>' +
+                '<wp:inline distT="0" distB="0" distL="0" distR="0">' +
+                '<wp:extent cx="' + cx + '" cy="' + cy + '"/>' +
+                '<wp:docPr id="' + imageCounter + '" name="Image ' + imageCounter + '"/>' +
+                '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+                '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+                '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+                '<pic:nvPicPr><pic:cNvPr id="' + imageCounter + '" name="' + escapeXml(msg.imageName || "image") + '"/><pic:cNvPicPr/></pic:nvPicPr>' +
+                '<pic:blipFill><a:blip r:embed="' + imgRelId + '"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+                '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm>' +
+                '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
+                '</pic:pic></a:graphicData></a:graphic>' +
+                '</wp:inline></w:drawing>' +
+                '</w:r></w:p>';
+              body += makePara("", { spaceAfter: 100 });
             } else if (msg.isImage) {
               body += makePara(makeRun("[Image]: " + (msg.imageName || "image"), { bold: true, font: bodyFont, sz: bodySz, color: "FF8000" }), { spaceAfter: 120 });
             } else if (msg.isManualContent) {
@@ -2144,7 +2225,10 @@
 
         var NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
           'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
-          'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+          'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" ' +
+          'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" ' +
+          'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" ' +
+          'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"';
 
         var documentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
           '<w:document ' + NS + '><w:body>' + body + '</w:body></w:document>';
@@ -2160,6 +2244,9 @@
           '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
           '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
           '<Default Extension="xml" ContentType="application/xml"/>' +
+          '<Default Extension="png" ContentType="image/png"/>' +
+          '<Default Extension="jpeg" ContentType="image/jpeg"/>' +
+          '<Default Extension="gif" ContentType="image/gif"/>' +
           '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
           '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
           '</Types>';
@@ -2169,9 +2256,14 @@
           '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
           '</Relationships>';
 
+        var imgRelsXml = "";
+        imageRelationships.forEach(function(rel) {
+          imgRelsXml += '<Relationship Id="' + rel.id + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="' + rel.target + '"/>';
+        });
         var docRelsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
           '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
           '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+          imgRelsXml +
           '</Relationships>';
 
         var zip = new JSZip();
@@ -2180,6 +2272,9 @@
         zip.file("word/document.xml", documentXml);
         zip.file("word/styles.xml", stylesXml);
         zip.file("word/_rels/document.xml.rels", docRelsXml);
+        imageFiles.forEach(function(imgFile) {
+          zip.file(imgFile.filename, imgFile.base64, { base64: true });
+        });
 
         var blob = await zip.generateAsync({
           type: "blob",
@@ -3097,11 +3192,8 @@
           msgDiv.classList.add("message-image");
           var imgIndicator = document.createElement("div");
           imgIndicator.className = "image-indicator";
-          imgIndicator.textContent = "🖼️ Image attached: \"" + msg.imageName + "\"" + (msg.imageInfo ? " (" + msg.imageInfo + ")" : "");
+          imgIndicator.textContent = "🖼️ " + (msg.imageName || "image") + (msg.imageInfo ? " (" + msg.imageInfo + ")" : "");
           body.appendChild(imgIndicator);
-          var imgToggleBtn = document.createElement("button");
-          imgToggleBtn.className = "image-toggle-btn";
-          imgToggleBtn.textContent = "👁️ View Image";
           var imgEl = document.createElement("img");
           imgEl.className = "image-preview";
           imgEl.src = msg.imageData;
@@ -3109,13 +3201,6 @@
           (function(im) {
             im.onclick = function() { window.open(im.src, "_blank"); };
           })(imgEl);
-          (function(tb, im) {
-            tb.onclick = function() {
-              im.classList.toggle("visible");
-              tb.textContent = im.classList.contains("visible") ? "🔼 Hide Image" : "👁️ View Image";
-            };
-          })(imgToggleBtn, imgEl);
-          body.appendChild(imgToggleBtn);
           body.appendChild(imgEl);
           if (editBtnRef) { editBtnRef.disabled = true; editBtnRef.title = "Image messages cannot be edited"; }
         } else {
