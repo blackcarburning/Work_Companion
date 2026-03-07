@@ -1355,6 +1355,10 @@
         }
 
         function renderMessageCard(msg) {
+          if (!msg.isDocument && !msg.isImage && !msg.isManualContent) {
+            return; // Skip regular chat messages (user prompts and assistant responses)
+          }
+
           var bgColor, borderColor, accentColor, labelColor, label, contentText;
           var pV = 4; // vertical padding
           var pL = 6; // left padding (inside card, from card left edge)
@@ -1374,12 +1378,6 @@
             bgColor = [240, 255, 244]; borderColor = [45, 164, 78]; accentColor = [45, 164, 78];
             labelColor = [26, 127, 55]; label = "[Content] " + (msg.contentTitle || "content");
             contentText = null;
-          } else if (msg.role === "user") {
-            return; // Skip user message text
-          } else if (msg.role === "assistant") {
-            return; // Skip assistant message text
-          } else {
-            return; // Unknown message type — skip
           }
 
           // Remaining code handles special message types (Document / Image / Content) with colored cards
@@ -2167,6 +2165,9 @@
           bodyXml += emptyPara();
 
           job.messages.slice(1).forEach(function(msg) {
+            if (!msg.isDocument && !msg.isImage && !msg.isManualContent) {
+              return; // Skip regular chat messages (user prompts and assistant responses)
+            }
             bodyXml += wordMessageCard(msg);
           });
 
