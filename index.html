@@ -1854,6 +1854,232 @@
           return xml;
         }
 
+        // ===== WORD MARKDOWN RENDERER =====
+
+        function wordRenderMarkdown(markdown) {
+          if (!markdown) return "";
+          var result = "";
+          var lines = markdown.split('\n');
+          var inCodeBlock = false;
+          var codeBlockLines = [];
+          var tableRows = [];
+          var codeSz = Math.round(8.5 * 2); // 8.5pt converted to half-points for Word XML
+
+          function parseInlineRuns(text) {
+            var runs = "";
+            var i = 0;
+            var len = text.length;
+            var plain = "";
+            while (i < len) {
+              if (text[i] === '`') {
+                var end = text.indexOf('`', i + 1);
+                if (end !== -1) {
+                  if (plain) { runs += makeRun(plain, { font: bodyFont, sz: bodySz, color: bodyHex }); plain = ""; }
+                  var codeVal = text.slice(i + 1, end);
+                  var spAttr = (codeVal.charAt(0) === ' ' || codeVal.charAt(codeVal.length - 1) === ' ') ? ' xml:space="preserve"' : '';
+                  runs += '<w:r><w:rPr>' +
+                    '<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>' +
+                    '<w:color w:val="' + bodyHex + '"/>' +
+                    '<w:sz w:val="' + codeSz + '"/><w:szCs w:val="' + codeSz + '"/>' +
+                    '<w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/>' +
+                    '</w:rPr><w:t' + spAttr + '>' + escapeXml(codeVal) + '</w:t></w:r>';
+                  i = end + 1;
+                  continue;
+                }
+              }
+              if (text[i] === '*' && i + 1 < len && text[i + 1] === '*') {
+                var end2 = text.indexOf('**', i + 2);
+                if (end2 !== -1) {
+                  if (plain) { runs += makeRun(plain, { font: bodyFont, sz: bodySz, color: bodyHex }); plain = ""; }
+                  runs += makeRun(text.slice(i + 2, end2), { bold: true, font: bodyFont, sz: bodySz, color: bodyHex });
+                  i = end2 + 2;
+                  continue;
+                }
+              }
+              if (text[i] === '*') {
+                var end3 = text.indexOf('*', i + 1);
+                if (end3 !== -1) {
+                  if (plain) { runs += makeRun(plain, { font: bodyFont, sz: bodySz, color: bodyHex }); plain = ""; }
+                  runs += makeRun(text.slice(i + 1, end3), { italic: true, font: bodyFont, sz: bodySz, color: bodyHex });
+                  i = end3 + 1;
+                  continue;
+                }
+              }
+              if (text[i] === '_' && i + 1 < len && text[i + 1] === '_') {
+                var end4 = text.indexOf('__', i + 2);
+                if (end4 !== -1) {
+                  if (plain) { runs += makeRun(plain, { font: bodyFont, sz: bodySz, color: bodyHex }); plain = ""; }
+                  runs += makeRun(text.slice(i + 2, end4), { bold: true, font: bodyFont, sz: bodySz, color: bodyHex });
+                  i = end4 + 2;
+                  continue;
+                }
+              }
+              if (text[i] === '_') {
+                var end5 = text.indexOf('_', i + 1);
+                if (end5 !== -1) {
+                  if (plain) { runs += makeRun(plain, { font: bodyFont, sz: bodySz, color: bodyHex }); plain = ""; }
+                  runs += makeRun(text.slice(i + 1, end5), { italic: true, font: bodyFont, sz: bodySz, color: bodyHex });
+                  i = end5 + 1;
+                  continue;
+                }
+              }
+              plain += text[i];
+              i++;
+            }
+            if (plain) { runs += makeRun(plain, { font: bodyFont, sz: bodySz, color: bodyHex }); }
+            return runs;
+          }
+
+          function flushCodeBlock(clines) {
+            var xml = "";
+            clines.forEach(function(cl) {
+              // Use a single space for empty lines so Word XML doesn't collapse/omit them
+              var t = cl || " ";
+              var spAttr = (t.charAt(0) === ' ' || t.charAt(t.length - 1) === ' ') ? ' xml:space="preserve"' : '';
+              xml += '<w:p>' +
+                '<w:pPr><w:shd w:val="clear" w:color="auto" w:fill="161B22"/><w:spacing w:after="0"/></w:pPr>' +
+                '<w:r>' +
+                '<w:rPr>' +
+                '<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>' +
+                '<w:color w:val="E6EDF3"/>' +
+                '<w:sz w:val="' + codeSz + '"/><w:szCs w:val="' + codeSz + '"/>' +
+                '<w:shd w:val="clear" w:color="auto" w:fill="161B22"/>' +
+                '</w:rPr>' +
+                '<w:t' + spAttr + '>' + escapeXml(t) + '</w:t>' +
+                '</w:r>' +
+                '</w:p>';
+            });
+            xml += makePara("", { spaceAfter: 80 });
+            return xml;
+          }
+
+          function flushTable(rows) {
+            var parsedRows = rows.filter(function(r) {
+              return !r.trim().match(/^\|[\s\-:|]+\|$/);
+            }).map(function(r) {
+              return r.split('|').slice(1, -1).map(function(c) { return c.trim(); });
+            });
+            if (!parsedRows.length) return '';
+            var colCount = parsedRows[0].length;
+            if (!colCount) return '';
+            var tblSz = Math.round(8.5 * 2);
+            var xml = '<w:tbl>' +
+              '<w:tblPr>' +
+              '<w:tblW w:w="0" w:type="auto"/>' +
+              '<w:tblBorders>' +
+              '<w:top w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
+              '<w:left w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
+              '<w:bottom w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
+              '<w:right w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
+              '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
+              '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
+              '</w:tblBorders>' +
+              '</w:tblPr>';
+            parsedRows.forEach(function(row, ri) {
+              xml += '<w:tr>';
+              row.forEach(function(cell) {
+                xml += '<w:tc>';
+                if (ri === 0) {
+                  xml += '<w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/></w:tcPr>';
+                }
+                xml += '<w:p><w:pPr><w:spacing w:after="40"/></w:pPr>';
+                xml += makeRun(cell, { bold: ri === 0, font: bodyFont, sz: tblSz, color: bodyHex });
+                xml += '</w:p></w:tc>';
+              });
+              xml += '</w:tr>';
+            });
+            xml += '</w:tbl>';
+            xml += makePara("", { spaceAfter: 80 });
+            return xml;
+          }
+
+          for (var li = 0; li < lines.length; li++) {
+            var line = lines[li];
+
+            if (line.trim().indexOf('```') === 0) {
+              if (inCodeBlock) {
+                result += flushCodeBlock(codeBlockLines);
+                codeBlockLines = [];
+                inCodeBlock = false;
+              } else {
+                inCodeBlock = true;
+              }
+              continue;
+            }
+            if (inCodeBlock) { codeBlockLines.push(line); continue; }
+
+            if (line.trim().charAt(0) === '|' && line.trim().charAt(line.trim().length - 1) === '|') {
+              tableRows.push(line);
+              continue;
+            } else if (tableRows.length > 0) {
+              result += flushTable(tableRows);
+              tableRows = [];
+            }
+
+            if (line.indexOf('### ') === 0) {
+              result += makePara(makeRun(line.slice(4), { bold: true, font: headingFont, sz: h3Sz, color: headingHex }), { spaceBefore: 100, spaceAfter: 80 });
+              continue;
+            }
+            if (line.indexOf('## ') === 0) {
+              result += makePara(makeRun(line.slice(3), { bold: true, font: headingFont, sz: h2Sz, color: headingHex }), { spaceBefore: 160, spaceAfter: 100 });
+              continue;
+            }
+            if (line.indexOf('# ') === 0) {
+              result += makePara(makeRun(line.slice(2), { bold: true, font: headingFont, sz: h1Sz, color: headingHex }), { spaceBefore: 240, spaceAfter: 120 });
+              continue;
+            }
+
+            if (line.match(/^\s*[-*]\s/)) {
+              var bulletText = line.replace(/^\s*[-*]\s/, '');
+              result += '<w:p>' +
+                '<w:pPr><w:ind w:left="360"/><w:spacing w:after="80"/></w:pPr>' +
+                makeRun('\u2022 ', { font: bodyFont, sz: bodySz, color: bodyHex }) +
+                parseInlineRuns(bulletText) +
+                '</w:p>';
+              continue;
+            }
+
+            if (line.match(/^\s*\d+\.\s/)) {
+              result += '<w:p>' +
+                '<w:pPr><w:ind w:left="360"/><w:spacing w:after="80"/></w:pPr>' +
+                parseInlineRuns(line) +
+                '</w:p>';
+              continue;
+            }
+
+            if (line.indexOf('> ') === 0) {
+              result += '<w:p>' +
+                '<w:pPr>' +
+                '<w:ind w:left="360"/>' +
+                '<w:spacing w:after="80"/>' +
+                '<w:pBdr><w:left w:val="single" w:sz="12" w:space="4" w:color="D0D7DE"/></w:pBdr>' +
+                '</w:pPr>' +
+                makeRun(line.slice(2), { italic: true, font: bodyFont, sz: bodySz, color: "57606A" }) +
+                '</w:p>';
+              continue;
+            }
+
+            if (line.match(/^---+$/)) {
+              result += '<w:p>' +
+                '<w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="D0D7DE"/></w:pBdr>' +
+                '<w:spacing w:after="80"/></w:pPr>' +
+                '</w:p>';
+              continue;
+            }
+
+            if (!line.trim()) {
+              result += makePara("", { spaceAfter: 80 });
+            } else {
+              result += makePara(parseInlineRuns(line), { spaceAfter: 80 });
+            }
+          }
+
+          if (tableRows.length > 0) result += flushTable(tableRows);
+          if (inCodeBlock && codeBlockLines.length > 0) result += flushCodeBlock(codeBlockLines);
+
+          return result;
+        }
+
         var body = "";
 
         // ===== COVER PAGE =====
@@ -1898,7 +2124,7 @@
               body += textParas(msg.content || "", { font: bodyFont, sz: bodySz, color: bodyHex });
               body += makePara("", { spaceAfter: 100 });
             } else if (msg.role === "assistant") {
-              body += textParas(stripMarkdown(msg.content || ""), { font: bodyFont, sz: bodySz, color: bodyHex });
+              body += wordRenderMarkdown(msg.content || "");
               body += makePara("", { spaceAfter: 100 });
             }
           });
