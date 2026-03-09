@@ -57,6 +57,9 @@
     .sidebar-actions { display: flex; gap: 0.4rem; }
     .sidebar-actions .sidebar-btn { flex: 1; background: #30363d; }
     .sidebar-actions .sidebar-btn:hover { background: #484f58; }
+    .sidebar-doc-limit { display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0; }
+    .sidebar-doc-limit label { font-size: 0.75rem; color: #8b949e; white-space: nowrap; }
+    .sidebar-doc-limit input { width: 90px; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9; font-size: 0.78rem; padding: 0.2rem 0.35rem; }
 
     #summary-tab {
       padding: 0.6rem 0.75rem;
@@ -500,6 +503,10 @@
         <button class="sidebar-btn" onclick="openPdfThemeEditor()">🎨 PDF Theme</button>
         <button class="sidebar-btn" onclick="toggleDebugConsole()">🐛 Debug</button>
       </div>
+      <div class="sidebar-doc-limit">
+        <label for="max-doc-chars-input">📄 Doc limit (chars):</label>
+        <input type="number" id="max-doc-chars-input" min="1000" max="200000" step="1000" value="15000" onchange="setMaxDocChars(this.value)" />
+      </div>
     </div>
     <div id="summary-tab" class="active" onclick="showSummary()">
       <span>📄</span>&nbsp;
@@ -618,6 +625,7 @@
     var MODELS_CACHE_KEY = "github_models_cache";
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
+    var DEFAULT_MAX_DOC_CHARS = 15000;
 
     if (window.pdfjsLib) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
@@ -628,7 +636,8 @@
       jobs: [], activeJobId: null, activeView: "summary",
       summary: "", summaryTitle: "Document Summary",
       summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" },
-      pdfTheme: "professional", customPdfTheme: null
+      pdfTheme: "professional", customPdfTheme: null,
+      maxDocChars: DEFAULT_MAX_DOC_CHARS
     };
 
     var PDF_THEMES = {
@@ -792,14 +801,23 @@
           if (!db.pdfTheme) db.pdfTheme = "professional";
           if (db.customPdfTheme === undefined) db.customPdfTheme = null;
           if (db.activeProvider) activeProvider = db.activeProvider;
+          if (!db.maxDocChars) db.maxDocChars = DEFAULT_MAX_DOC_CHARS;
         } catch(e) {
           db = { jobs:[], activeJobId:null, activeView:"summary", summary:"", summaryTitle:"Document Summary",
             summaryStyle:{ fontFamily:"sans-serif", fontSize:16, textColor:"#1f2328", bgColor:"#ffffff" },
-            pdfTheme:"professional", customPdfTheme:null };
+            pdfTheme:"professional", customPdfTheme:null, maxDocChars:DEFAULT_MAX_DOC_CHARS };
         }
       }
     }
     function getJob(id) { return db.jobs.find(function(j) { return j.id === id; }); }
+
+    function setMaxDocChars(val) {
+      var n = parseInt(val, 10);
+      if (!isNaN(n) && n >= 1000 && n <= 200000) {
+        db.maxDocChars = n;
+        saveDB();
+      }
+    }
 
     // ===== TOKEN =====
     function saveToken() {
@@ -3426,7 +3444,6 @@
       reader.readAsText(file); event.target.value = "";
     }
 
-    var MAX_DOC_CHARS = 50000;
 
     function handleDocumentUpload(event) {
       var file = event.target.files[0];
@@ -3475,10 +3492,11 @@
               var docInfo = wordCount.toLocaleString() + " words";
               var header = '📄 Uploaded document: "' + filename + '"';
               var fullText = header + "\n\n" + text;
-              if (fullText.length > MAX_DOC_CHARS) {
+              var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+              if (fullText.length > maxChars) {
                 var origLen = fullText.length;
-                fullText = fullText.substring(0, MAX_DOC_CHARS) +
-                  "\n[Content truncated at 50,000 characters. The full document contained approximately " + origLen + " characters.]";
+                fullText = fullText.substring(0, maxChars) +
+                  "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + origLen + " characters.]";
               }
               injectDocumentMessage(job, filename, fullText, docInfo);
               if (uploadBtn) uploadBtn.textContent = "📎";
@@ -3517,10 +3535,11 @@
                 var docInfo = numPages + " page" + (numPages !== 1 ? "s" : "") + ", " + wordCount.toLocaleString() + " words";
                 var header = '📄 Uploaded PDF: "' + filename + '"';
                 var fullText = header + "\n\n" + text;
-                if (fullText.length > MAX_DOC_CHARS) {
+                var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+                if (fullText.length > maxChars) {
                   var origLen = fullText.length;
-                  fullText = fullText.substring(0, MAX_DOC_CHARS) +
-                    "\n[Content truncated at 50,000 characters. The full document contained approximately " + origLen + " characters.]";
+                  fullText = fullText.substring(0, maxChars) +
+                    "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + origLen + " characters.]";
                 }
                 injectDocumentMessage(job, filename, fullText, docInfo);
                 if (uploadBtn) uploadBtn.textContent = "📎";
@@ -3540,10 +3559,11 @@
             return;
           }
 
-          if (extractedText.length > MAX_DOC_CHARS) {
+          var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+          if (extractedText.length > maxChars) {
             var fullLen = extractedText.length;
-            extractedText = extractedText.substring(0, MAX_DOC_CHARS) +
-              "\n[Content truncated at 50,000 characters. The full document contained approximately " + fullLen + " characters.]";
+            extractedText = extractedText.substring(0, maxChars) +
+              "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + fullLen + " characters.]";
           }
           injectDocumentMessage(job, filename, extractedText, documentInfo);
           if (uploadBtn) uploadBtn.textContent = "📎";
@@ -3719,6 +3739,8 @@
 
     // ===== INIT =====
     loadDB(); loadToken(); renderSidebar(); renderView();
+    var _mdci = document.getElementById("max-doc-chars-input");
+    if (_mdci) _mdci.value = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
     if (activeProvider === "github" && token) setTimeout(fetchModels, 500);
       /* ===== Open all external links in a new tab ===== */
   document.addEventListener('click', function (e) {
