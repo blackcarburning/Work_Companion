@@ -11,7 +11,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -590,6 +590,18 @@
       var output = document.getElementById("debug-console-output");
       if (output) output.innerHTML = "";
     }
+    function debugLog(message, level) {
+      var lvl = level || "log";
+      var output = document.getElementById("debug-console-output");
+      if (output) {
+        var ts = new Date().toLocaleTimeString();
+        var entry = document.createElement("div");
+        entry.className = "debug-entry " + lvl;
+        entry.textContent = "[" + ts + "] " + message;
+        output.appendChild(entry);
+        output.scrollTop = output.scrollHeight;
+      }
+    }
     var API_URL = "https://models.github.ai/inference/chat/completions";
     var MODELS_URL = "https://models.github.ai/inference/models";
     var OPENAI_DIRECT_URL = "https://api.openai.com/v1/chat/completions";
@@ -608,7 +620,8 @@
     var KEEP_LAST = 15;
 
     if (window.pdfjsLib) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js';
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+      debugLog('pdfjsLib worker source set: https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js');
     }
 
     var db = {
@@ -3429,6 +3442,7 @@
       var filename = file.name;
       var ext = filename.split(".").pop().toLowerCase();
       var reader = new FileReader();
+      debugLog('handleDocumentUpload called: file="' + filename + '", ext="' + ext + '"');
 
       reader.onload = function(e) {
         var buffer = e.target.result;
@@ -3475,11 +3489,13 @@
             return; // async path handled above
           } else if (ext === "pdf") {
             if (!window.pdfjsLib) {
+              debugLog('pdfjsLib is not available', 'error');
               injectDocumentError(job, filename, "PDF.js library is not loaded. Please refresh and try again.");
               if (uploadBtn) uploadBtn.textContent = "📎";
               return;
             }
             // Use pdf.js to extract text from PDF
+            debugLog('Starting PDF parse...');
             pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise.then(function(pdfDoc) {
               var numPages = pdfDoc.numPages;
               var pagePromises = [];
@@ -3497,6 +3513,7 @@
               Promise.all(pagePromises).then(function(pageTexts) {
                 var text = pageTexts.join("\n\n");
                 var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+                debugLog('PDF pages extracted: ' + numPages + ' page' + (numPages !== 1 ? 's' : '') + ', ' + wordCount.toLocaleString() + ' words');
                 var docInfo = numPages + " page" + (numPages !== 1 ? "s" : "") + ", " + wordCount.toLocaleString() + " words";
                 var header = '📄 Uploaded PDF: "' + filename + '"';
                 var fullText = header + "\n\n" + text;
@@ -3508,10 +3525,12 @@
                 injectDocumentMessage(job, filename, fullText, docInfo);
                 if (uploadBtn) uploadBtn.textContent = "📎";
               }).catch(function(err) {
+                debugLog('PDF text extraction failed: ' + err.message, 'error');
                 injectDocumentError(job, filename, "Failed to extract text: " + err.message);
                 if (uploadBtn) uploadBtn.textContent = "📎";
               });
             }).catch(function(err) {
+              debugLog('PDF parse failed: ' + err.message, 'error');
               injectDocumentError(job, filename, "Failed to parse PDF: " + err.message);
               if (uploadBtn) uploadBtn.textContent = "📎";
             });
