@@ -11,6 +11,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -525,7 +526,7 @@
   </div>
 
   <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImport(event)" />
-  <input type="file" id="doc-upload-file" accept=".xlsx,.xls,.csv,.docx" style="display:none" onchange="handleDocumentUpload(event)" />
+  <input type="file" id="doc-upload-file" accept=".xlsx,.xls,.csv,.docx,.pdf" style="display:none" onchange="handleDocumentUpload(event)" />
   <input type="file" id="image-upload-file" accept="image/*" style="display:none" onchange="handleImageUpload(event)" />
   <input type="file" id="theme-import-file" accept=".json" style="display:none" onchange="handleThemeImport(event)" />
   <input type="file" id="word-template-file" accept=".docx,.dotx" style="display:none" onchange="handleWordTemplateImport(event)" />
@@ -547,6 +548,10 @@
     var MODELS_CACHE_KEY = "github_models_cache";
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
+
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js';
+    }
 
     var db = {
       jobs: [], activeJobId: null, activeView: "summary",
@@ -3407,6 +3412,47 @@
               if (uploadBtn) uploadBtn.textContent = "📎";
             }).catch(function(err) {
               injectDocumentError(job, filename, err.message);
+              if (uploadBtn) uploadBtn.textContent = "📎";
+            });
+            return; // async path handled above
+          } else if (ext === "pdf") {
+            if (!window.pdfjsLib) {
+              injectDocumentError(job, filename, "PDF.js library is not loaded. Please refresh and try again.");
+              if (uploadBtn) uploadBtn.textContent = "📎";
+              return;
+            }
+            // Use pdf.js to extract text from PDF
+            pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise.then(function(pdfDoc) {
+              var numPages = pdfDoc.numPages;
+              var pagePromises = [];
+              for (var p = 1; p <= numPages; p++) {
+                pagePromises.push(
+                  pdfDoc.getPage(p).then(function(page) {
+                    return page.getTextContent().then(function(textContent) {
+                      return textContent.items.map(function(item) { return item.str; }).join(" ");
+                    });
+                  })
+                );
+              }
+              Promise.all(pagePromises).then(function(pageTexts) {
+                var text = pageTexts.join("\n\n");
+                var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+                var docInfo = numPages + " page" + (numPages !== 1 ? "s" : "") + ", " + wordCount.toLocaleString() + " words";
+                var header = '📄 Uploaded PDF: "' + filename + '"';
+                var fullText = header + "\n\n" + text;
+                if (fullText.length > MAX_DOC_CHARS) {
+                  var origLen = fullText.length;
+                  fullText = fullText.substring(0, MAX_DOC_CHARS) +
+                    "\n[Content truncated at 50,000 characters. The full document contained approximately " + origLen + " characters.]";
+                }
+                injectDocumentMessage(job, filename, fullText, docInfo);
+                if (uploadBtn) uploadBtn.textContent = "📎";
+              }).catch(function(err) {
+                injectDocumentError(job, filename, "Failed to extract text: " + err.message);
+                if (uploadBtn) uploadBtn.textContent = "📎";
+              });
+            }).catch(function(err) {
+              injectDocumentError(job, filename, "Failed to parse PDF: " + err.message);
               if (uploadBtn) uploadBtn.textContent = "📎";
             });
             return; // async path handled above
