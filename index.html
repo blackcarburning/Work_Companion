@@ -939,20 +939,29 @@
       return text.replace(/<img[^>]*src=["']data:image\/[^"']*["'][^>]*\/?>/gi, '[inline image]');
     }
 
+    function estimateTokenCount(text) {
+      if (!text) return 0;
+      return Math.ceil(text.length / 4);
+    }
+
     function buildContextMessages(all) {
       var sys = all[0], conv = all.slice(1);
       var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2;
       var msgs;
+      debugLog('[CTX] buildContextMessages: total messages in history = ' + all.length + ' (incl. system), conv = ' + conv.length, 'info');
+      var trimmed = 0;
       if (conv.length <= fc + lc) { msgs = [sys].concat(conv); }
       else {
         var first = conv.slice(0, fc), last = conv.slice(-lc);
         var skip = conv.length - fc - lc;
+        trimmed = skip;
         var note = { role: "developer", content: "[Note: " + skip + " messages omitted. First " + KEEP_FIRST + " and last " + KEEP_LAST + " exchanges included.]" };
         msgs = [sys].concat(first).concat([note]).concat(last);
+        debugLog('[CTX] Sliding window trimmed ' + skip + ' messages (kept first ' + KEEP_FIRST + ' + last ' + KEEP_LAST + ' exchanges)', 'warn');
       }
       // Convert image messages to vision multipart format for supported providers
       var isVisionCapable = (activeProvider === "openai" || activeProvider === "github");
-      return msgs.map(function(m) {
+      var result = msgs.map(function(m) {
         if (m.isImage && m.imageData && isVisionCapable) {
           return {
             role: "user",
@@ -966,6 +975,21 @@
         var content = m.wasEditedAsHtml ? stripInlineImages(m.content) : m.content;
         return { role: m.role, content: content };
       });
+
+      var totalChars = 0;
+      result.forEach(function(m, i) {
+        var chars = typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
+        totalChars += chars;
+        debugLog('[CTX] Message ' + i + ' (' + m.role + '): ' + chars.toLocaleString() + ' chars (~' + estimateTokenCount(typeof m.content === "string" ? m.content : JSON.stringify(m.content)).toLocaleString() + ' tokens)', 'log');
+        if (chars > 50000) {
+          debugLog('[CTX] ⚠️ WARNING: Message ' + i + ' (' + m.role + ') exceeds 50,000 chars (' + chars.toLocaleString() + ' chars) — may cause API errors!', 'warn');
+        }
+      });
+      debugLog('[CTX] Total payload: ' + totalChars.toLocaleString() + ' chars (~' + estimateTokenCount(totalChars).toLocaleString() + ' tokens) across ' + result.length + ' messages', 'info');
+      if (totalChars > 200000) {
+        debugLog('[CTX] ⚠️ WARNING: Total payload exceeds 200,000 chars (' + totalChars.toLocaleString() + '). API call is likely to fail or be truncated!', 'warn');
+      }
+      return result;
     }
 
     // ===== MODAL =====
@@ -3396,8 +3420,15 @@
       input.value = ""; input.disabled = true; document.getElementById("sendBtn").disabled = true;
       showTyping();
 
+      debugLog('[API] sendMessage: starting — provider="' + activeProvider + '", model="' + selectedModel + '"', 'info');
+
       try {
+        debugLog('[API] Building context messages...', 'log');
         var ctx = buildContextMessages(job.messages);
+        var payloadStr = JSON.stringify(ctx);
+        var payloadKB = (payloadStr.length / 1024).toFixed(1);
+        var payloadTokens = estimateTokenCount(payloadStr);
+        debugLog('[API] Context ready: ' + ctx.length + ' messages, payload ~' + payloadKB + ' KB (~' + payloadTokens.toLocaleString() + ' tokens)', 'info');
         var r, d, reply;
 
         if (activeProvider === "anthropic") {
@@ -3408,42 +3439,78 @@
             return { role: m.role === "developer" ? "user" : m.role, content: m.content };
           });
           var systemContent = (sysMsg && sysMsg.content) || "";
-          r = await fetch(ANTHROPIC_DIRECT_URL, {
-            method: "POST",
-            headers: {
-              "x-api-key": anthropicToken,
-              "Content-Type": "application/json",
-              "anthropic-version": "2023-06-01",
-              "anthropic-dangerous-direct-browser-access": "true"
-            },
-            body: JSON.stringify({ model: selectedModel, max_tokens: 4096, system: systemContent, messages: convMsgs })
-          });
+          var anthropicBody = JSON.stringify({ model: selectedModel, max_tokens: 4096, system: systemContent, messages: convMsgs });
+          debugLog('[API] Fetching ' + ANTHROPIC_DIRECT_URL + ' — payload ' + (anthropicBody.length / 1024).toFixed(1) + ' KB', 'info');
+          var requestStartTime = Date.now();
+          var waitingLogInterval = setInterval(function() {
+            var elapsed = Math.round((Date.now() - requestStartTime) / 1000);
+            debugLog('[API] Still waiting for Anthropic response... ' + elapsed + 's', 'warn');
+          }, 10000);
+          try {
+            r = await fetch(ANTHROPIC_DIRECT_URL, {
+              method: "POST",
+              headers: {
+                "x-api-key": anthropicToken,
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01",
+                "anthropic-dangerous-direct-browser-access": "true"
+              },
+              body: anthropicBody
+            });
+          } finally { clearInterval(waitingLogInterval); }
+          var elapsed = Date.now() - requestStartTime;
           removeTyping();
-          if (!r.ok) { var et = await r.text(); addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB(); }
-          else {
+          if (!r.ok) {
+            var et = await r.text();
+            debugLog('[API] ❌ Anthropic error HTTP ' + r.status + ' (' + elapsed + 'ms): ' + et, 'error');
+            addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB();
+          } else {
+            debugLog('[API] ✅ Anthropic response HTTP ' + r.status + ' in ' + elapsed + 'ms', 'info');
             d = await r.json();
             reply = (d.content && d.content[0] && d.content[0].text) || "No response.";
+            debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
           }
         } else {
           var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
           var authToken = activeProvider === "openai" ? openaiToken : token;
-          r = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
-            body: JSON.stringify({ model: selectedModel, messages: ctx })
-          });
+          var openaiBody = JSON.stringify({ model: selectedModel, messages: ctx });
+          debugLog('[API] Fetching ' + endpoint + ' — payload ' + (openaiBody.length / 1024).toFixed(1) + ' KB', 'info');
+          var requestStartTime = Date.now();
+          var waitingLogInterval = setInterval(function() {
+            var elapsed = Math.round((Date.now() - requestStartTime) / 1000);
+            debugLog('[API] Still waiting for response... ' + elapsed + 's', 'warn');
+          }, 10000);
+          try {
+            r = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
+              body: openaiBody
+            });
+          } finally { clearInterval(waitingLogInterval); }
+          var elapsed = Date.now() - requestStartTime;
           removeTyping();
-          if (!r.ok) { var et = await r.text(); addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB(); }
-          else {
+          if (!r.ok) {
+            var et = await r.text();
+            debugLog('[API] ❌ Error HTTP ' + r.status + ' (' + elapsed + 'ms): ' + et, 'error');
+            addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB();
+          } else {
+            debugLog('[API] ✅ Response HTTP ' + r.status + ' in ' + elapsed + 'ms', 'info');
             d = await r.json();
+            var respStr = JSON.stringify(d);
             reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
+            debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens), response JSON ' + (respStr.length / 1024).toFixed(1) + ' KB', 'log');
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
           }
         }
-      } catch (err) { removeTyping(); addMessageToDOM("error", err.message, false); job.messages.pop(); saveDB(); }
+      } catch (err) {
+        removeTyping();
+        debugLog('[API] ❌ Caught exception: name="' + err.name + '", message="' + err.message + '"', 'error');
+        if (err.stack) debugLog('[API] Stack: ' + err.stack, 'error');
+        addMessageToDOM("error", err.message, false); job.messages.pop(); saveDB();
+      }
 
       input.disabled = false; document.getElementById("sendBtn").disabled = false; input.focus();
       updateContextBar(); renderSidebar();
@@ -3502,7 +3569,7 @@
       var filename = file.name;
       var ext = filename.split(".").pop().toLowerCase();
       var reader = new FileReader();
-      debugLog('handleDocumentUpload called: file="' + filename + '", ext="' + ext + '"');
+      debugLog('[DOC] handleDocumentUpload: file="' + filename + '", ext="' + ext + '", size=' + file.size.toLocaleString() + ' bytes (' + (file.size / 1024).toFixed(1) + ' KB)', 'info');
 
       reader.onload = function(e) {
         var buffer = e.target.result;
@@ -3511,6 +3578,7 @@
           var documentInfo = "";
 
           if (ext === "xlsx" || ext === "xls" || ext === "csv") {
+            debugLog('[DOC] Parsing spreadsheet (' + ext + ')...', 'log');
             var workbook = XLSX.read(buffer, { type: "array" });
             var parts = ['📊 Uploaded spreadsheet: "' + filename + '"'];
             var sheetCount = workbook.SheetNames.length, totalRows = 0;
@@ -3524,14 +3592,18 @@
                 cols = range.e.c - range.s.c + 1;
               }
               totalRows += rows;
+              debugLog('[DOC] Sheet "' + sheetName + '": ' + rows + ' rows × ' + cols + ' cols, ' + csv.length.toLocaleString() + ' chars', 'log');
               parts.push("\n--- Sheet: " + sheetName + " (" + rows + " rows × " + cols + " columns) ---\n" + csv);
             });
             extractedText = parts.join("\n");
             documentInfo = sheetCount + " sheet" + (sheetCount !== 1 ? "s" : "") + ", " + totalRows.toLocaleString() + " rows";
+            debugLog('[DOC] Spreadsheet extracted: ' + extractedText.length.toLocaleString() + ' chars total', 'info');
           } else if (ext === "docx") {
+            debugLog('[DOC] Parsing DOCX with mammoth...', 'log');
             mammoth.extractRawText({ arrayBuffer: buffer }).then(function(result) {
               var text = result.value;
               var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+              debugLog('[DOC] DOCX extracted: ' + text.length.toLocaleString() + ' chars, ' + wordCount.toLocaleString() + ' words', 'info');
               var docInfo = wordCount.toLocaleString() + " words";
               var header = '📄 Uploaded document: "' + filename + '"';
               var fullText = header + "\n\n" + text;
@@ -3540,32 +3612,38 @@
                 var origLen = fullText.length;
                 fullText = fullText.substring(0, maxChars) +
                   "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + origLen + " characters.]";
+                debugLog('[DOC] ⚠️ DOCX content truncated from ' + origLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
               }
+              debugLog('[DOC] Injecting DOCX message: ' + fullText.length.toLocaleString() + ' chars (~' + estimateTokenCount(fullText).toLocaleString() + ' tokens)', 'info');
               injectDocumentMessage(job, filename, fullText, docInfo);
               if (uploadBtn) uploadBtn.textContent = "📎";
             }).catch(function(err) {
+              debugLog('[DOC] ❌ DOCX extraction failed: ' + err.message, 'error');
               injectDocumentError(job, filename, err.message);
               if (uploadBtn) uploadBtn.textContent = "📎";
             });
             return; // async path handled above
           } else if (ext === "pdf") {
             if (!window.pdfjsLib) {
-              debugLog('pdfjsLib is not available', 'error');
+              debugLog('[PDF] ❌ pdfjsLib is not available', 'error');
               injectDocumentError(job, filename, "PDF.js library is not loaded. Please refresh and try again.");
               if (uploadBtn) uploadBtn.textContent = "📎";
               return;
             }
             // Use pdf.js to extract text from PDF
-            debugLog('Starting PDF parse...');
+            debugLog('[PDF] Starting PDF parse: "' + filename + '", buffer size=' + buffer.byteLength.toLocaleString() + ' bytes (' + (buffer.byteLength / 1024).toFixed(1) + ' KB)', 'info');
             pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise.then(function(pdfDoc) {
               var numPages = pdfDoc.numPages;
+              debugLog('[PDF] PDF opened: ' + numPages + ' page' + (numPages !== 1 ? 's' : '') + ' found', 'info');
               var pagePromises = [];
               for (var p = 1; p <= numPages; p++) {
                 pagePromises.push(
                   (function(pageNum) {
                     return pdfDoc.getPage(pageNum).then(function(page) {
                       return page.getTextContent().then(function(textContent) {
-                        return textContent.items.map(function(item) { return item.str; }).join(" ");
+                        var pageText = textContent.items.map(function(item) { return item.str; }).join(" ");
+                        debugLog('[PDF] Page ' + pageNum + '/' + numPages + ': ' + pageText.length.toLocaleString() + ' chars', 'log');
+                        return pageText;
                       });
                     });
                   })(p)
@@ -3574,7 +3652,7 @@
               Promise.all(pagePromises).then(function(pageTexts) {
                 var text = pageTexts.join("\n\n");
                 var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
-                debugLog('PDF pages extracted: ' + numPages + ' page' + (numPages !== 1 ? 's' : '') + ', ' + wordCount.toLocaleString() + ' words');
+                debugLog('[PDF] All pages extracted: total ' + text.length.toLocaleString() + ' chars, ' + wordCount.toLocaleString() + ' words', 'info');
                 var docInfo = numPages + " page" + (numPages !== 1 ? "s" : "") + ", " + wordCount.toLocaleString() + " words";
                 var header = '📄 Uploaded PDF: "' + filename + '"';
                 var fullText = header + "\n\n" + text;
@@ -3582,17 +3660,19 @@
                 if (fullText.length > maxChars) {
                   var origLen = fullText.length;
                   fullText = fullText.substring(0, maxChars) +
-                    "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + origLen + " characters.]";
+                    "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + origLen.toLocaleString() + " characters.]";
+                  debugLog('[PDF] ⚠️ Content truncated from ' + origLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
                 }
+                debugLog('[PDF] Injecting PDF message: ' + fullText.length.toLocaleString() + ' chars (~' + estimateTokenCount(fullText).toLocaleString() + ' tokens)', 'info');
                 injectDocumentMessage(job, filename, fullText, docInfo);
                 if (uploadBtn) uploadBtn.textContent = "📎";
               }).catch(function(err) {
-                debugLog('PDF text extraction failed: ' + err.message, 'error');
+                debugLog('[PDF] ❌ Text extraction failed: ' + err.message, 'error');
                 injectDocumentError(job, filename, "Failed to extract text: " + err.message);
                 if (uploadBtn) uploadBtn.textContent = "📎";
               });
             }).catch(function(err) {
-              debugLog('PDF parse failed: ' + err.message, 'error');
+              debugLog('[PDF] ❌ PDF parse failed: ' + err.message, 'error');
               injectDocumentError(job, filename, "Failed to parse PDF: " + err.message);
               if (uploadBtn) uploadBtn.textContent = "📎";
             });
@@ -3606,17 +3686,21 @@
           if (extractedText.length > maxChars) {
             var fullLen = extractedText.length;
             extractedText = extractedText.substring(0, maxChars) +
-              "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + fullLen + " characters.]";
+              "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + fullLen.toLocaleString() + " characters.]";
+            debugLog('[DOC] ⚠️ Content truncated from ' + fullLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
           }
+          debugLog('[DOC] Injecting document message: ' + extractedText.length.toLocaleString() + ' chars (~' + estimateTokenCount(extractedText).toLocaleString() + ' tokens)', 'info');
           injectDocumentMessage(job, filename, extractedText, documentInfo);
           if (uploadBtn) uploadBtn.textContent = "📎";
         } catch (err) {
+          debugLog('[DOC] ❌ Exception during document processing: ' + err.message, 'error');
           injectDocumentError(job, filename, err.message);
           if (uploadBtn) uploadBtn.textContent = "📎";
         }
       };
 
       reader.onerror = function() {
+        debugLog('[DOC] ❌ FileReader error reading "' + filename + '"', 'error');
         injectDocumentError(job, filename, "Failed to read file.");
         if (uploadBtn) uploadBtn.textContent = "📎";
       };
