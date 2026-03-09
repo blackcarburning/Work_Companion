@@ -499,6 +499,9 @@
         <button class="sidebar-btn" onclick="importData()">📥 Import</button>
       </div>
       <div class="sidebar-actions">
+        <button class="sidebar-btn" onclick="resetApp()" aria-label="Reset workspace to default state">🆕 New Workspace</button>
+      </div>
+      <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="exportToPDF(this)">📄 Export PDF</button>
         <button class="sidebar-btn" onclick="exportToWord(this)">📝 Export Word</button>
       </div>
@@ -514,6 +517,12 @@
         <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.8rem">
           <input type="checkbox" id="extract-doc-images-toggle" onchange="db.extractDocImages=this.checked;saveDB();debugLog('[DOC] Image extraction ' + (this.checked ? 'enabled' : 'disabled'))">
           🖼️ Extract images from documents
+        </label>
+      </div>
+      <div class="sidebar-doc-limit">
+        <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.8rem">
+          <input type="checkbox" id="autosave-toggle" checked onchange="toggleAutosave(this.checked)">
+          💾 Autosave every 5 min
         </label>
       </div>
     </div>
@@ -635,6 +644,7 @@
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
     var DEFAULT_MAX_DOC_CHARS = 15000;
+    var DEFAULT_AUTOSAVE_INTERVAL_MIN = 5;
     var RATE_LIMIT_MAX_RETRIES = 3;
     var RATE_LIMIT_DELAYS = [5000, 15000, 30000]; // ms: 5s, 15s, 30s
 
@@ -649,8 +659,12 @@
       summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" },
       pdfTheme: "professional", customPdfTheme: null,
       maxDocChars: DEFAULT_MAX_DOC_CHARS,
-      extractDocImages: false
+      extractDocImages: false,
+      autosaveEnabled: true,
+      autosaveIntervalMin: DEFAULT_AUTOSAVE_INTERVAL_MIN
     };
+
+    var autosaveTimer = null;
 
     var PDF_THEMES = {
       "professional": {
@@ -815,10 +829,13 @@
           if (db.activeProvider) activeProvider = db.activeProvider;
           if (!db.maxDocChars) db.maxDocChars = DEFAULT_MAX_DOC_CHARS;
           if (db.extractDocImages === undefined) db.extractDocImages = false;
+          if (db.autosaveEnabled === undefined) db.autosaveEnabled = true;
+          if (db.autosaveIntervalMin === undefined) db.autosaveIntervalMin = DEFAULT_AUTOSAVE_INTERVAL_MIN;
         } catch(e) {
           db = { jobs:[], activeJobId:null, activeView:"summary", summary:"", summaryTitle:"Document Summary",
             summaryStyle:{ fontFamily:"sans-serif", fontSize:16, textColor:"#1f2328", bgColor:"#ffffff" },
-            pdfTheme:"professional", customPdfTheme:null, maxDocChars:DEFAULT_MAX_DOC_CHARS, extractDocImages:false };
+            pdfTheme:"professional", customPdfTheme:null, maxDocChars:DEFAULT_MAX_DOC_CHARS, extractDocImages:false,
+            autosaveEnabled:true, autosaveIntervalMin:DEFAULT_AUTOSAVE_INTERVAL_MIN };
         }
       }
     }
@@ -3631,8 +3648,7 @@
     }
 
     // ===== EXPORT =====
-    async function exportData() {
-      saveCurrentNotes();
+    async function exportData() {      saveCurrentNotes();
       var se = document.getElementById("summary-editor"); if (se) db.summary = se.innerHTML;
       var json = JSON.stringify(db, null, 2);
       var defName = "github-chat-" + new Date().toISOString().slice(0, 10) + ".json";
@@ -3669,6 +3685,95 @@
       reader.readAsText(file); event.target.value = "";
     }
 
+
+    async function resetApp() {
+      var shouldSave = confirm("Would you like to save your current data before resetting?\n\nClick OK to save first, or Cancel to reset without saving.");
+      if (shouldSave) {
+        await exportData();
+      }
+      if (!confirm("Are you sure you want to reset? This will delete all jobs, conversations, and the document summary.\n\nAPI tokens will be preserved.")) {
+        return;
+      }
+      var savedToken = token;
+      var savedOpenaiToken = openaiToken;
+      var savedAnthropicToken = anthropicToken;
+      var savedProvider = activeProvider;
+      db = {
+        jobs: [],
+        activeJobId: null,
+        activeView: "summary",
+        summary: "",
+        summaryTitle: "Document Summary",
+        summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" },
+        pdfTheme: "professional",
+        customPdfTheme: null,
+        maxDocChars: DEFAULT_MAX_DOC_CHARS,
+        extractDocImages: false,
+        activeProvider: savedProvider,
+        autosaveEnabled: true,
+        autosaveIntervalMin: DEFAULT_AUTOSAVE_INTERVAL_MIN
+      };
+      token = savedToken;
+      openaiToken = savedOpenaiToken;
+      anthropicToken = savedAnthropicToken;
+      activeProvider = savedProvider;
+      saveDB();
+      var _mdci = document.getElementById("max-doc-chars-input");
+      if (_mdci) _mdci.value = db.maxDocChars;
+      var _edti = document.getElementById("extract-doc-images-toggle");
+      if (_edti) _edti.checked = false;
+      var _asti = document.getElementById("autosave-toggle");
+      if (_asti) _asti.checked = true;
+      renderSidebar();
+      renderView();
+      startAutosave();
+      debugLog('[APP] Workspace reset to initial state', 'info');
+    }
+
+    function startAutosave() {
+      stopAutosave();
+      if (!db.autosaveEnabled) return;
+      var intervalMs = (db.autosaveIntervalMin || DEFAULT_AUTOSAVE_INTERVAL_MIN) * 60 * 1000;
+      autosaveTimer = setInterval(function() {
+        performAutosave();
+      }, intervalMs);
+      debugLog('[AUTOSAVE] Started — saving every ' + (db.autosaveIntervalMin || DEFAULT_AUTOSAVE_INTERVAL_MIN) + ' minutes', 'info');
+    }
+
+    function stopAutosave() {
+      if (autosaveTimer) {
+        clearInterval(autosaveTimer);
+        autosaveTimer = null;
+        debugLog('[AUTOSAVE] Stopped', 'info');
+      }
+    }
+
+    function toggleAutosave(enabled) {
+      db.autosaveEnabled = enabled;
+      saveDB();
+      if (enabled) startAutosave();
+      else stopAutosave();
+    }
+
+    function performAutosave() {
+      try {
+        saveCurrentNotes();
+        var se = document.getElementById("summary-editor");
+        if (se) db.summary = se.innerHTML;
+        var json = JSON.stringify(db, null, 2);
+        var blob = new Blob([json], { type: "application/json" });
+        var url = URL.createObjectURL(blob);
+        var filename = "work-companion-autosave.json";
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        debugLog('[AUTOSAVE] Saved to ' + filename + ' (' + (json.length / 1024).toFixed(1) + ' KB)', 'info');
+      } catch (err) {
+        debugLog('[AUTOSAVE] ❌ Failed: ' + err.message, 'error');
+      }
+    }
 
     function handleDocumentUpload(event) {
       var file = event.target.files[0];
@@ -4140,6 +4245,9 @@
     if (_mdci) _mdci.value = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
     var _edti = document.getElementById("extract-doc-images-toggle");
     if (_edti) _edti.checked = !!db.extractDocImages;
+    var _asti = document.getElementById("autosave-toggle");
+    if (_asti) _asti.checked = db.autosaveEnabled !== false;
+    if (db.autosaveEnabled !== false) startAutosave();
     if (activeProvider === "github" && token) setTimeout(fetchModels, 500);
       /* ===== Open all external links in a new tab ===== */
   document.addEventListener('click', function (e) {
