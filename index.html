@@ -468,6 +468,18 @@
       border-radius: 4px; cursor: pointer; background: #f6f8fa; font-weight: 600;
     }
     .theme-import-export button:hover { background: #e1e4e8; }
+    #debug-console { position: fixed; bottom: 0; left: 0; right: 0; height: 220px; background: #161b22; color: #c9d1d9; font-family: monospace; font-size: 0.8rem; z-index: 9999; display: none; flex-direction: column; border-top: 2px solid #30363d; }
+    #debug-console.open { display: flex; }
+    #debug-console-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 0.25rem 0.6rem; background: #0d1117; border-bottom: 1px solid #30363d; }
+    #debug-console-toolbar span { font-weight: 700; color: #58a6ff; }
+    #debug-console-toolbar button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 0.15rem 0.5rem; cursor: pointer; font-size: 0.78rem; margin-left: 0.4rem; }
+    #debug-console-toolbar button:hover { background: #30363d; }
+    #debug-console-output { flex: 1; overflow-y: auto; padding: 0.3rem 0.6rem; }
+    .debug-entry { padding: 0.1rem 0; border-bottom: 1px solid #21262d; white-space: pre-wrap; word-break: break-all; }
+    .debug-entry.log { color: #c9d1d9; }
+    .debug-entry.info { color: #58a6ff; }
+    .debug-entry.warn { color: #e3b341; }
+    .debug-entry.error { color: #f85149; }
   </style>
 </head>
 <body>
@@ -486,6 +498,7 @@
       </div>
       <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="openPdfThemeEditor()">🎨 PDF Theme</button>
+        <button class="sidebar-btn" onclick="toggleDebugConsole()">🐛 Debug</button>
       </div>
     </div>
     <div id="summary-tab" class="active" onclick="showSummary()">
@@ -531,7 +544,52 @@
   <input type="file" id="theme-import-file" accept=".json" style="display:none" onchange="handleThemeImport(event)" />
   <input type="file" id="word-template-file" accept=".docx,.dotx" style="display:none" onchange="handleWordTemplateImport(event)" />
 
+  <div id="debug-console">
+    <div id="debug-console-toolbar">
+      <span>🐛 Debug Console</span>
+      <div>
+        <button onclick="clearDebugConsole()">Clear</button>
+        <button onclick="toggleDebugConsole()">Close</button>
+      </div>
+    </div>
+    <div id="debug-console-output"></div>
+  </div>
+
   <script>
+    (function() {
+      var _origLog = console.log, _origWarn = console.warn, _origError = console.error, _origInfo = console.info;
+      function addDebugEntry(type, args) {
+        var output = document.getElementById("debug-console-output");
+        if (!output) return;
+        var ts = new Date().toLocaleTimeString();
+        var msg = Array.prototype.slice.call(args).map(function(a) {
+          try { return (typeof a === "object") ? JSON.stringify(a) : String(a); } catch(e) { return String(a); }
+        }).join(" ");
+        var entry = document.createElement("div");
+        entry.className = "debug-entry " + type;
+        entry.textContent = "[" + ts + "] " + msg;
+        output.appendChild(entry);
+        output.scrollTop = output.scrollHeight;
+      }
+      console.log = function() { addDebugEntry("log", arguments); _origLog.apply(console, arguments); };
+      console.warn = function() { addDebugEntry("warn", arguments); _origWarn.apply(console, arguments); };
+      console.error = function() { addDebugEntry("error", arguments); _origError.apply(console, arguments); };
+      console.info = function() { addDebugEntry("info", arguments); _origInfo.apply(console, arguments); };
+      window.onerror = function(msg, src, line, col, err) {
+        addDebugEntry("error", ["[Uncaught Error] " + msg + " (" + src + ":" + line + ":" + col + ")"]);
+      };
+      window.onunhandledrejection = function(e) {
+        addDebugEntry("error", ["[Unhandled Promise Rejection] " + (e.reason ? (e.reason.message || e.reason) : e)]);
+      };
+    })();
+    function toggleDebugConsole() {
+      var el = document.getElementById("debug-console");
+      if (el) el.classList.toggle("open");
+    }
+    function clearDebugConsole() {
+      var output = document.getElementById("debug-console-output");
+      if (output) output.innerHTML = "";
+    }
     var API_URL = "https://models.github.ai/inference/chat/completions";
     var MODELS_URL = "https://models.github.ai/inference/models";
     var OPENAI_DIRECT_URL = "https://api.openai.com/v1/chat/completions";
@@ -3427,11 +3485,13 @@
               var pagePromises = [];
               for (var p = 1; p <= numPages; p++) {
                 pagePromises.push(
-                  pdfDoc.getPage(p).then(function(page) {
-                    return page.getTextContent().then(function(textContent) {
-                      return textContent.items.map(function(item) { return item.str; }).join(" ");
+                  (function(pageNum) {
+                    return pdfDoc.getPage(pageNum).then(function(page) {
+                      return page.getTextContent().then(function(textContent) {
+                        return textContent.items.map(function(item) { return item.str; }).join(" ");
+                      });
                     });
-                  })
+                  })(p)
                 );
               }
               Promise.all(pagePromises).then(function(pageTexts) {
