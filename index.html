@@ -3095,11 +3095,19 @@
       var saveBtn = document.createElement("button");
       saveBtn.className = "msg-save-btn"; saveBtn.textContent = "💾 Save";
 
+      var undoBtn = document.createElement("button");
+      undoBtn.className = "msg-undo-btn"; undoBtn.textContent = "↩️ Undo";
+      undoBtn.onclick = function() { document.execCommand("undo"); bodyEl.focus(); };
+
+      var redoBtn = document.createElement("button");
+      redoBtn.className = "msg-redo-btn"; redoBtn.textContent = "↪️ Redo";
+      redoBtn.onclick = function() { document.execCommand("redo"); bodyEl.focus(); };
+
       var cancelBtn = document.createElement("button");
       cancelBtn.className = "msg-cancel-btn"; cancelBtn.textContent = "❌ Cancel";
 
       var btnRow = document.createElement("div"); btnRow.className = "msg-edit-btns";
-      btnRow.appendChild(saveBtn); btnRow.appendChild(cancelBtn);
+      btnRow.appendChild(saveBtn); btnRow.appendChild(undoBtn); btnRow.appendChild(redoBtn); btnRow.appendChild(cancelBtn);
 
       bodyEl.parentNode.insertBefore(btnRow, bodyEl.nextSibling);
 
@@ -3115,18 +3123,29 @@
       }
 
       saveBtn.onclick = function() {
-        var newContent = bodyEl.innerText || bodyEl.textContent;
-        msg.content = newContent;
-        saveDB();
-        exitEditMode();
-        if (msg.role === "assistant") { bodyEl.innerHTML = marked.parse(newContent); addCopyButtons(bodyEl); }
-        else { bodyEl.textContent = newContent; }
+        if (msg.role === "assistant") {
+          var newHtml = bodyEl.innerHTML;
+          msg.content = newHtml;
+          msg.wasEditedAsHtml = true;
+          saveDB();
+          exitEditMode();
+          bodyEl.innerHTML = newHtml;
+          addCopyButtons(bodyEl);
+        } else {
+          var newContent = bodyEl.innerText || bodyEl.textContent;
+          msg.content = newContent;
+          saveDB();
+          exitEditMode();
+          bodyEl.textContent = newContent;
+        }
       };
 
       cancelBtn.onclick = function() {
         exitEditMode();
-        if (msg.role === "assistant") { bodyEl.innerHTML = marked.parse(originalContent); addCopyButtons(bodyEl); }
-        else { bodyEl.textContent = originalContent; }
+        if (msg.role === "assistant") {
+          if (msg.wasEditedAsHtml) { bodyEl.innerHTML = originalContent; } else { bodyEl.innerHTML = marked.parse(originalContent); }
+          addCopyButtons(bodyEl);
+        } else { bodyEl.textContent = originalContent; }
       };
     }
 
@@ -3318,7 +3337,11 @@
           }
         }
       } else if (role === "assistant") {
-        body.innerHTML = marked.parse(content);
+        if (msg && msg.wasEditedAsHtml) {
+          body.innerHTML = content;
+        } else {
+          body.innerHTML = marked.parse(content);
+        }
         addCopyButtons(body);
         if (editBtnRef) {
           (function(i, eb, bd) {
