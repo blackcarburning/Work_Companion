@@ -991,10 +991,22 @@
       if (conv.length <= fc + lc) { msgs = [sys].concat(conv); }
       else {
         var first = conv.slice(0, fc), last = conv.slice(-lc);
-        var skip = conv.length - fc - lc;
+        var middle = conv.slice(fc, conv.length - lc);
+        // Identify pinned messages in the pruned middle that must always be preserved
+        var pinnedInMiddle = middle.filter(function(m) {
+          return m.isDocument || m.isImage || m.isManualContent;
+        });
+        if (pinnedInMiddle.length > 0) {
+          debugLog('[CTX] Preserving ' + pinnedInMiddle.length + ' document/attachment message(s) from pruning', 'info');
+        }
+        var skip = middle.length - pinnedInMiddle.length;
         trimmed = skip;
-        var note = { role: "developer", content: "[Note: " + skip + " messages omitted. First " + KEEP_FIRST + " and last " + KEEP_LAST + " exchanges included.]" };
-        msgs = [sys].concat(first).concat([note]).concat(last);
+        if (skip > 0) {
+          var note = { role: "developer", content: "[Note: " + skip + " messages omitted. First " + KEEP_FIRST + " and last " + KEEP_LAST + " exchanges included.]" };
+          msgs = [sys].concat(first).concat([note]).concat(pinnedInMiddle).concat(last);
+        } else {
+          msgs = [sys].concat(first).concat(pinnedInMiddle).concat(last);
+        }
         debugLog('[CTX] Sliding window trimmed ' + skip + ' messages (kept first ' + KEEP_FIRST + ' + last ' + KEEP_LAST + ' exchanges)', 'warn');
       }
       // Convert image messages to vision multipart format for supported providers
@@ -3175,12 +3187,16 @@
 
       var chatDiv = document.getElementById("chat"), conv = job.messages.slice(1);
       var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2, trim = conv.length > fc + lc;
+      var pinnedMiddleCount = trim ? conv.slice(fc, conv.length - lc).filter(function(m) {
+        return m.isDocument || m.isImage || m.isManualContent;
+      }).length : 0;
       conv.forEach(function(msg, i) {
-        var inCtx = !trim || (i < fc) || (i >= conv.length - lc);
+        var isPinned = !!(msg.isDocument || msg.isImage || msg.isManualContent);
+        var inCtx = !trim || (i < fc) || (i >= conv.length - lc) || isPinned;
         addMessageToDOM(msg.role, msg.content, !inCtx, i);
         if (trim && i === fc - 1) {
           var d = document.createElement("div"); d.className = "trimmed-divider";
-          d.textContent = "✂️ " + (conv.length - fc - lc) + " messages not sent to AI";
+          d.textContent = "✂️ " + (conv.length - fc - lc - pinnedMiddleCount) + " messages not sent to AI";
           chatDiv.appendChild(d);
         }
       });
