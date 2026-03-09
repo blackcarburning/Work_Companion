@@ -314,6 +314,9 @@
       opacity: 0.4; cursor: not-allowed;
     }
     .message-locked { border-left: 3px solid #d4a72c !important; }
+    .message-excluded { opacity: 0.5; border-left: 3px dashed #d0d7de !important; }
+    .msg-exclude-btn { background: #fff8c5; border: 1px solid #d4a72c; border-radius: 4px; padding: 0.15rem 0.5rem; font-size: 0.7rem; cursor: pointer; color: #6a5300; font-weight: 600; }
+    .msg-exclude-btn:hover { background: #fae17d; }
     .msg-edit-textarea {
       width: 100%; min-height: 150px; resize: vertical;
       border: 2px solid #0969da; border-radius: 6px;
@@ -507,6 +510,12 @@
         <label for="max-doc-chars-input">📄 Doc limit (chars):</label>
         <input type="number" id="max-doc-chars-input" min="1000" max="200000" step="1000" value="15000" onchange="setMaxDocChars(this.value)" />
       </div>
+      <div class="sidebar-doc-limit">
+        <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.8rem">
+          <input type="checkbox" id="extract-doc-images-toggle" onchange="db.extractDocImages=this.checked;saveDB();debugLog('[DOC] Image extraction ' + (this.checked ? 'enabled' : 'disabled'))">
+          🖼️ Extract images from documents
+        </label>
+      </div>
     </div>
     <div id="summary-tab" class="active" onclick="showSummary()">
       <span>📄</span>&nbsp;
@@ -637,7 +646,8 @@
       summary: "", summaryTitle: "Document Summary",
       summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" },
       pdfTheme: "professional", customPdfTheme: null,
-      maxDocChars: DEFAULT_MAX_DOC_CHARS
+      maxDocChars: DEFAULT_MAX_DOC_CHARS,
+      extractDocImages: false
     };
 
     var PDF_THEMES = {
@@ -802,10 +812,11 @@
           if (db.customPdfTheme === undefined) db.customPdfTheme = null;
           if (db.activeProvider) activeProvider = db.activeProvider;
           if (!db.maxDocChars) db.maxDocChars = DEFAULT_MAX_DOC_CHARS;
+          if (db.extractDocImages === undefined) db.extractDocImages = false;
         } catch(e) {
           db = { jobs:[], activeJobId:null, activeView:"summary", summary:"", summaryTitle:"Document Summary",
             summaryStyle:{ fontFamily:"sans-serif", fontSize:16, textColor:"#1f2328", bgColor:"#ffffff" },
-            pdfTheme:"professional", customPdfTheme:null, maxDocChars:DEFAULT_MAX_DOC_CHARS };
+            pdfTheme:"professional", customPdfTheme:null, maxDocChars:DEFAULT_MAX_DOC_CHARS, extractDocImages:false };
         }
       }
     }
@@ -946,6 +957,13 @@
 
     function buildContextMessages(all) {
       var sys = all[0], conv = all.slice(1);
+      // Filter out excluded messages from context
+      var excluded = conv.filter(function(m) { return m.excluded; });
+      if (excluded.length > 0) {
+        debugLog('[CTX] Excluded ' + excluded.length + ' message(s) from context: indices ' +
+          conv.map(function(m, i) { return m.excluded ? i : null; }).filter(function(i) { return i !== null; }).join(', '), 'info');
+        conv = conv.filter(function(m) { return !m.excluded; });
+      }
       var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2;
       var msgs;
       debugLog('[CTX] buildContextMessages: total messages in history = ' + all.length + ' (incl. system), conv = ' + conv.length, 'info');
@@ -1008,6 +1026,41 @@
         if (e.key === "Enter") document.getElementById("modal-confirm").click();
         if (e.key === "Escape") document.getElementById("modal-cancel").click();
       });
+    }
+
+    // ===== API CONTEXT VIEWER =====
+    function viewApiContext() {
+      if (!db.activeJobId) { alert("No active job."); return; }
+      var job = getJob(db.activeJobId); if (!job) return;
+      var ctx = buildContextMessages(job.messages);
+      var json = JSON.stringify(ctx, null, 2);
+      var displayJson = json.replace(/(data:image\/[^;]+;base64,)[A-Za-z0-9+\/=]{100,}/g, '$1[BASE64_DATA_TRUNCATED]');
+      var totalKB = (json.length / 1024).toFixed(1);
+      var totalTokens = estimateTokenCount(json);
+      debugLog('[API] Context viewer opened: ' + ctx.length + ' messages, ~' + totalKB + ' KB, ~' + totalTokens.toLocaleString() + ' tokens', 'info');
+
+      var ov = document.createElement("div"); ov.className = "modal-overlay";
+      var modal = document.createElement("div"); modal.className = "modal"; modal.style.cssText = "width:700px;max-width:95vw;";
+      modal.innerHTML =
+        '<h3>🔍 API Context (' + ctx.length + ' messages, ~' + totalKB + ' KB, ~' + totalTokens.toLocaleString() + ' tokens)</h3>' +
+        '<p style="font-size:0.82rem;color:#57606a;margin-top:0">The exact JSON payload that will be sent to the API. Base64 image data is truncated for display.</p>' +
+        '<textarea id="ctx-viewer-ta" readonly style="width:100%;height:350px;font-family:monospace;font-size:0.75rem;resize:vertical;box-sizing:border-box;border:1px solid #d0d7de;border-radius:6px;padding:0.5rem;background:#f6f8fa;color:#1f2328"></textarea>' +
+        '<div class="modal-btns" style="margin-top:0.5rem">' +
+        '<button class="cancel" id="ctx-viewer-close">Close</button>' +
+        '<button class="confirm" id="ctx-viewer-copy">📋 Copy JSON</button>' +
+        '</div>';
+      ov.appendChild(modal);
+      document.body.appendChild(ov);
+
+      var ta = document.getElementById("ctx-viewer-ta"); ta.value = displayJson;
+      document.getElementById("ctx-viewer-close").onclick = function() { document.body.removeChild(ov); };
+      document.getElementById("ctx-viewer-copy").onclick = function() {
+        navigator.clipboard.writeText(json).then(function() {
+          var btn = document.getElementById("ctx-viewer-copy");
+          if (btn) { btn.textContent = "✅ Copied!"; setTimeout(function() { if (document.getElementById("ctx-viewer-copy")) btn.textContent = "📋 Copy JSON"; }, 2000); }
+        });
+      };
+      ov.addEventListener("keydown", function(e) { if (e.key === "Escape") document.body.removeChild(ov); });
     }
 
     // ===== SUMMARY =====
@@ -3032,10 +3085,12 @@
       var j = getJob(db.activeJobId); if (!j) { bar.classList.remove("visible"); return; }
       var te = Math.floor((j.messages.length - 1) / 2), conv = j.messages.slice(1);
       var docCount = j.messages.filter(function(m) { return m.isDocument; }).length;
+      var excludedCount = conv.filter(function(m) { return m.excluded; }).length;
       var trimmed = conv.length > (KEEP_FIRST + KEEP_LAST) * 2;
       var sp = j.messages[0].content.substring(0, 80); if (j.messages[0].content.length > 80) sp += "…";
       var info = '🧠 "' + sp + '" | 💬 ' + te + ' exchanges';
       if (docCount > 0) info += ' | 📎 ' + docCount + ' document' + (docCount !== 1 ? 's' : '') + ' attached';
+      if (excludedCount > 0) info += ' | 🚫 ' + excludedCount + ' excluded';
       if (trimmed) { var sk = Math.floor((conv.length - (KEEP_FIRST + KEEP_LAST) * 2) / 2); info += ' | ✂️ First ' + KEEP_FIRST + ' + Last ' + KEEP_LAST + ' (' + sk + ' skipped)'; }
       else info += ' | ✅ Full history sent';
       txt.textContent = info; bar.classList.add("visible");
@@ -3081,6 +3136,7 @@
         '<button class="input-attach-btn" id="upload-btn" onclick="document.getElementById(\'doc-upload-file\').click()" title="Upload Document">📎</button>' +
         '<button class="input-attach-btn" id="manual-content-btn" onclick="openManualContentModal()" title="Add Content">📋</button>' +
         '<button class="input-attach-btn" id="image-btn" onclick="openImagePicker()" title="Add Screenshot">📷</button>' +
+        '<button class="input-attach-btn" id="view-context-btn" onclick="viewApiContext()" title="View API Context">🔍</button>' +
         '</div>' +
         '<input type="text" id="userInput" placeholder="Ask a question..." />' +
         '<button onclick="sendMessage()" id="sendBtn">Send</button></div></div>' +
@@ -3218,13 +3274,14 @@
       var actualIndex = idx + 1;
       var msg = job ? job.messages[actualIndex] : null;
       var locked = msg ? !!msg.locked : false;
+      var excluded = msg ? !!msg.excluded : false;
 
       var msgDiv = document.createElement("div");
-      msgDiv.className = "message message-" + role + (isTrimmed ? " message-trimmed" : "") + (locked && role === "assistant" ? " message-locked" : "");
+      msgDiv.className = "message message-" + role + (isTrimmed ? " message-trimmed" : "") + (locked && role === "assistant" ? " message-locked" : "") + (excluded ? " message-excluded" : "");
       var label = document.createElement("div"); label.className = "message-label";
       var lt = document.createElement("span");
       lt.textContent = (role === "user" ? "You" : role === "assistant" ? "Assistant" : "Error") +
-        (isTrimmed ? " (not in context)" : "") + (locked && role === "assistant" ? " 🔒" : "");
+        (isTrimmed ? " (not in context)" : "") + (locked && role === "assistant" ? " 🔒" : "") + (excluded ? " (excluded from context)" : "");
       var actions = document.createElement("span"); actions.className = "msg-actions";
 
       var editBtnRef = null;
@@ -3280,6 +3337,17 @@
         (function(i) { del.onclick = function() { deleteExchange(db.activeJobId, i); }; })(idx);
         actions.appendChild(del);
 
+        var exclBtn = document.createElement("button"); exclBtn.className = "msg-exclude-btn";
+        exclBtn.textContent = excluded ? "✅ Include" : "🚫 Exclude";
+        (function(i, aIdx) { exclBtn.onclick = function() {
+          var j = getJob(db.activeJobId); if (!j) return;
+          var m = j.messages[aIdx]; if (!m) return;
+          m.excluded = !m.excluded;
+          debugLog('[CTX] Message ' + i + ' (' + m.role + ') ' + (m.excluded ? 'excluded from' : 'included in') + ' context');
+          saveDB(); renderView();
+        }; })(idx, actualIndex);
+        actions.appendChild(exclBtn);
+
       } else if (role === "user") {
         var uEditBtn = document.createElement("button"); uEditBtn.className = "msg-edit-btn"; uEditBtn.textContent = "✏️ Edit";
         editBtnRef = uEditBtn;
@@ -3288,6 +3356,17 @@
         var uDel = document.createElement("button"); uDel.className = "msg-delete-btn"; uDel.textContent = "🗑️ Delete";
         (function(i) { uDel.onclick = function() { deleteExchange(db.activeJobId, i); }; })(idx);
         actions.appendChild(uDel);
+
+        var uExclBtn = document.createElement("button"); uExclBtn.className = "msg-exclude-btn";
+        uExclBtn.textContent = excluded ? "✅ Include" : "🚫 Exclude";
+        (function(i, aIdx) { uExclBtn.onclick = function() {
+          var j = getJob(db.activeJobId); if (!j) return;
+          var m = j.messages[aIdx]; if (!m) return;
+          m.excluded = !m.excluded;
+          debugLog('[CTX] Message ' + i + ' (' + m.role + ') ' + (m.excluded ? 'excluded from' : 'included in') + ' context');
+          saveDB(); renderView();
+        }; })(idx, actualIndex);
+        actions.appendChild(uExclBtn);
       }
 
       label.appendChild(lt); label.appendChild(actions);
@@ -3547,6 +3626,7 @@
             if (!db.activeView) db.activeView = "summary";
             if (!db.summaryTitle) db.summaryTitle = "Document Summary";
             if (!db.summaryStyle) db.summaryStyle = { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" };
+            if (db.extractDocImages === undefined) db.extractDocImages = false;
             saveDB(); renderSidebar(); renderView();
           }
         } catch (err) { alert("Failed to parse: " + err.message); }
@@ -3600,28 +3680,77 @@
             debugLog('[DOC] Spreadsheet extracted: ' + extractedText.length.toLocaleString() + ' chars total', 'info');
           } else if (ext === "docx") {
             debugLog('[DOC] Parsing DOCX with mammoth...', 'log');
-            mammoth.extractRawText({ arrayBuffer: buffer }).then(function(result) {
-              var text = result.value;
-              var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
-              debugLog('[DOC] DOCX extracted: ' + text.length.toLocaleString() + ' chars, ' + wordCount.toLocaleString() + ' words', 'info');
-              var docInfo = wordCount.toLocaleString() + " words";
-              var header = '📄 Uploaded document: "' + filename + '"';
-              var fullText = header + "\n\n" + text;
-              var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
-              if (fullText.length > maxChars) {
-                var origLen = fullText.length;
-                fullText = fullText.substring(0, maxChars) +
-                  "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + origLen + " characters.]";
-                debugLog('[DOC] ⚠️ DOCX content truncated from ' + origLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
-              }
-              debugLog('[DOC] Injecting DOCX message: ' + fullText.length.toLocaleString() + ' chars (~' + estimateTokenCount(fullText).toLocaleString() + ' tokens)', 'info');
-              injectDocumentMessage(job, filename, fullText, docInfo);
-              if (uploadBtn) uploadBtn.textContent = "📎";
-            }).catch(function(err) {
-              debugLog('[DOC] ❌ DOCX extraction failed: ' + err.message, 'error');
-              injectDocumentError(job, filename, err.message);
-              if (uploadBtn) uploadBtn.textContent = "📎";
-            });
+
+            if (db.extractDocImages) {
+              debugLog('[DOC] Image extraction enabled for DOCX', 'info');
+              var docxImages = [];
+              var imgConvertOptions = {
+                convertImage: mammoth.images.imgElement(function(image) {
+                  return image.read("base64").then(function(imageBuffer) {
+                    var dataUrl = "data:" + image.contentType + ";base64," + imageBuffer;
+                    docxImages.push({ dataUrl: dataUrl, contentType: image.contentType });
+                    return { src: dataUrl };
+                  });
+                })
+              };
+              Promise.all([
+                mammoth.extractRawText({ arrayBuffer: buffer }),
+                mammoth.convertToHtml({ arrayBuffer: buffer }, imgConvertOptions)
+              ]).then(function(results) {
+                var text = results[0].value;
+                var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+                debugLog('[DOC] DOCX extracted: ' + text.length.toLocaleString() + ' chars, ' + wordCount.toLocaleString() + ' words', 'info');
+                debugLog('[DOC] Found ' + docxImages.length + ' image(s) in DOCX', 'info');
+                var docInfo = wordCount.toLocaleString() + " words";
+                var header = '📄 Uploaded document: "' + filename + '"';
+                var fullText = header + "\n\n" + text;
+                var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+                if (fullText.length > maxChars) {
+                  var origLen = fullText.length;
+                  fullText = fullText.substring(0, maxChars) +
+                    "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + origLen + " characters.]";
+                  debugLog('[DOC] ⚠️ DOCX content truncated from ' + origLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
+                }
+                debugLog('[DOC] Injecting DOCX message: ' + fullText.length.toLocaleString() + ' chars (~' + estimateTokenCount(fullText).toLocaleString() + ' tokens)', 'info');
+                injectDocumentMessage(job, filename, fullText, docInfo);
+                docxImages.forEach(function(imgObj, idx2) {
+                  var sizeKB = Math.round(imgObj.dataUrl.length * 0.75 / 1024);
+                  debugLog('[DOC] Image ' + (idx2 + 1) + ': ' + sizeKB + ' KB (' + imgObj.contentType + ')', 'log');
+                  var contentText = "Image " + (idx2 + 1) + " from document \"" + filename + "\"";
+                  job.messages.push({ role: "user", content: contentText, isImage: true, imageData: imgObj.dataUrl, imageName: filename + "_img" + (idx2 + 1), imageInfo: sizeKB + " KB" });
+                  saveDB();
+                  addMessageToDOM("user", contentText, false, job.messages.length - 2);
+                });
+                if (uploadBtn) uploadBtn.textContent = "📎";
+              }).catch(function(err) {
+                debugLog('[DOC] ❌ DOCX extraction failed: ' + err.message, 'error');
+                injectDocumentError(job, filename, err.message);
+                if (uploadBtn) uploadBtn.textContent = "📎";
+              });
+            } else {
+              mammoth.extractRawText({ arrayBuffer: buffer }).then(function(result) {
+                var text = result.value;
+                var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+                debugLog('[DOC] DOCX extracted: ' + text.length.toLocaleString() + ' chars, ' + wordCount.toLocaleString() + ' words', 'info');
+                var docInfo = wordCount.toLocaleString() + " words";
+                var header = '📄 Uploaded document: "' + filename + '"';
+                var fullText = header + "\n\n" + text;
+                var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+                if (fullText.length > maxChars) {
+                  var origLen = fullText.length;
+                  fullText = fullText.substring(0, maxChars) +
+                    "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + origLen + " characters.]";
+                  debugLog('[DOC] ⚠️ DOCX content truncated from ' + origLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
+                }
+                debugLog('[DOC] Injecting DOCX message: ' + fullText.length.toLocaleString() + ' chars (~' + estimateTokenCount(fullText).toLocaleString() + ' tokens)', 'info');
+                injectDocumentMessage(job, filename, fullText, docInfo);
+                if (uploadBtn) uploadBtn.textContent = "📎";
+              }).catch(function(err) {
+                debugLog('[DOC] ❌ DOCX extraction failed: ' + err.message, 'error');
+                injectDocumentError(job, filename, err.message);
+                if (uploadBtn) uploadBtn.textContent = "📎";
+              });
+            }
             return; // async path handled above
           } else if (ext === "pdf") {
             if (!window.pdfjsLib) {
@@ -3665,6 +3794,42 @@
                 }
                 debugLog('[PDF] Injecting PDF message: ' + fullText.length.toLocaleString() + ' chars (~' + estimateTokenCount(fullText).toLocaleString() + ' tokens)', 'info');
                 injectDocumentMessage(job, filename, fullText, docInfo);
+
+                if (db.extractDocImages) {
+                  debugLog('[DOC] Image extraction enabled for PDF — rendering ' + numPages + ' page(s) to canvas', 'info');
+                  var imgPromises = [];
+                  for (var pi = 1; pi <= numPages; pi++) {
+                    imgPromises.push(
+                      (function(pageNum) {
+                        return pdfDoc.getPage(pageNum).then(function(page) {
+                          var scale = 1.5;
+                          var vp = page.getViewport({ scale: scale });
+                          var canvas = document.createElement("canvas");
+                          canvas.width = vp.width; canvas.height = vp.height;
+                          var ctx = canvas.getContext("2d");
+                          return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function() {
+                            var dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+                            var sizeKB = Math.round(dataUrl.length * 0.75 / 1024);
+                            debugLog('[DOC] Image ' + pageNum + ': ' + Math.round(vp.width) + 'x' + Math.round(vp.height) + ', ' + sizeKB + ' KB', 'log');
+                            return { dataUrl: dataUrl, pageNum: pageNum, w: Math.round(vp.width), h: Math.round(vp.height), sizeKB: sizeKB };
+                          });
+                        });
+                      })(pi)
+                    );
+                  }
+                  Promise.all(imgPromises).then(function(imgs) {
+                    debugLog('[DOC] Found ' + imgs.length + ' image(s) in PDF', 'info');
+                    imgs.forEach(function(imgObj) {
+                      var contentText = "Page " + imgObj.pageNum + " image from PDF \"" + filename + "\"";
+                      job.messages.push({ role: "user", content: contentText, isImage: true, imageData: imgObj.dataUrl, imageName: filename + "_page" + imgObj.pageNum, imageInfo: imgObj.w + "×" + imgObj.h + ", " + imgObj.sizeKB + " KB" });
+                      saveDB();
+                      addMessageToDOM("user", contentText, false, job.messages.length - 2);
+                    });
+                  }).catch(function(err) {
+                    debugLog('[DOC] ⚠️ PDF image rendering failed: ' + err.message, 'warn');
+                  });
+                }
+
                 if (uploadBtn) uploadBtn.textContent = "📎";
               }).catch(function(err) {
                 debugLog('[PDF] ❌ Text extraction failed: ' + err.message, 'error');
@@ -3938,6 +4103,8 @@
     loadDB(); loadToken(); renderSidebar(); renderView();
     var _mdci = document.getElementById("max-doc-chars-input");
     if (_mdci) _mdci.value = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+    var _edti = document.getElementById("extract-doc-images-toggle");
+    if (_edti) _edti.checked = !!db.extractDocImages;
     if (activeProvider === "github" && token) setTimeout(fetchModels, 500);
       /* ===== Open all external links in a new tab ===== */
   document.addEventListener('click', function (e) {
