@@ -933,6 +933,12 @@
     }
 
     // ===== SLIDING WINDOW =====
+    function stripInlineImages(text) {
+      if (!text) return text;
+      // Strip <img> tags with base64 data URIs, replace with placeholder
+      return text.replace(/<img[^>]*src=["']data:image\/[^"']*["'][^>]*\/?>/gi, '[inline image]');
+    }
+
     function buildContextMessages(all) {
       var sys = all[0], conv = all.slice(1);
       var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2;
@@ -956,7 +962,9 @@
             ]
           };
         }
-        return { role: m.role, content: m.content };
+        // Strip inline base64 images from content before sending to API
+        var content = m.wasEditedAsHtml ? stripInlineImages(m.content) : m.content;
+        return { role: m.role, content: content };
       });
     }
 
