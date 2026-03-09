@@ -1741,6 +1741,149 @@
           pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
         }
 
+        // ===== SUMMARY HTML RENDERER (PDF) =====
+        function renderSummaryHtmlToPdf(html) {
+          if (!html) { writeWrapped("No summary content.", theme.sizes.body, "normal"); return; }
+          var tmp = document.createElement("div");
+          tmp.innerHTML = html;
+          if (!tmp.textContent.trim()) { writeWrapped("No summary content.", theme.sizes.body, "normal"); return; }
+
+          // Collect inline text runs with bold/italic context from a node subtree
+          function collectRuns(node, bold, italic, runs) {
+            if (node.nodeType === 3) {
+              var t = node.textContent;
+              if (t) runs.push({ text: t, bold: !!bold, italic: !!italic });
+              return;
+            }
+            var tag = (node.nodeName || "").toLowerCase();
+            if (tag === 'br') { runs.push({ text: '\n', bold: !!bold, italic: !!italic }); return; }
+            var b = bold || tag === 'b' || tag === 'strong';
+            var it = italic || tag === 'i' || tag === 'em';
+            Array.from(node.childNodes).forEach(function(ch) { collectRuns(ch, b, it, runs); });
+          }
+
+          // Render inline runs with word-wrapping and mixed bold/italic support
+          function renderRuns(runs, indent) {
+            var ind = indent || 0;
+            var startX = marginL + ind;
+            var maxW = contentW - ind;
+            var lineH = lh(theme.sizes.body);
+            var curX = startX;
+            var firstOnLine = true;
+            var prevWasSpace = true; // tracks inter-run spacing at word boundaries
+
+            function applyRunFont(run) {
+              var style = (run.bold && run.italic) ? "bolditalic" : (run.bold ? "bold" : (run.italic ? "italic" : "normal"));
+              pdf.setFont(theme.fonts.body, style);
+              pdf.setFontSize(theme.sizes.body);
+              pdf.setTextColor(...theme.colors.body);
+            }
+
+            checkBreak(lineH);
+
+            for (var ri = 0; ri < runs.length; ri++) {
+              var run = runs[ri];
+              if (run.text === '\n') {
+                y += lineH; curX = startX; firstOnLine = true; prevWasSpace = true; checkBreak(lineH);
+                continue;
+              }
+              applyRunFont(run);
+              var tokens = run.text.match(/\S+|\s+/g) || [];
+              for (var ti = 0; ti < tokens.length; ti++) {
+                var token = tokens[ti];
+                if (/^\s/.test(token)) {
+                  // Whitespace token: advance curX by one space width (don't render)
+                  if (!firstOnLine) { curX += pdf.getTextWidth(' '); }
+                  prevWasSpace = true;
+                  continue;
+                }
+                // Word token
+                var segW = pdf.getTextWidth(token);
+                if (!firstOnLine && curX + segW > startX + maxW) {
+                  y += lineH; curX = startX; firstOnLine = true; prevWasSpace = true;
+                  checkBreak(lineH);
+                  applyRunFont(run);
+                  segW = pdf.getTextWidth(token);
+                }
+                pdf.text(token, curX, y);
+                curX += segW;
+                firstOnLine = false;
+                prevWasSpace = false;
+              }
+            }
+            if (!firstOnLine) { y += lineH; }
+            pdf.setFont(theme.fonts.body, "normal");
+            pdf.setTextColor(...theme.colors.body);
+          }
+
+          function renderBlock(node, listType, listCounter) {
+            if (node.nodeType === 3) {
+              var t = (node.textContent || "").replace(/\s+/g, ' ');
+              if (t.trim()) { renderRuns([{ text: t, bold: false, italic: false }], 0); }
+              return;
+            }
+            var tag = (node.nodeName || "").toLowerCase();
+            if (tag === 'hr') { y += 2; hRule(); y += 2; return; }
+            if (tag === 'br') { y += lh(theme.sizes.body) * 0.5; return; }
+            if (tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6') {
+              var lvl = parseInt(tag.slice(1));
+              var t = (node.textContent || "").trim();
+              if (t) { y = pdfRenderHeading(t, Math.min(lvl, 3), marginL, y, contentW); }
+              return;
+            }
+            if (tag === 'ul') {
+              Array.from(node.childNodes).forEach(function(ch) { renderBlock(ch, 'bullet', null); });
+              y += 2; return;
+            }
+            if (tag === 'ol') {
+              var ctr = [1];
+              Array.from(node.childNodes).forEach(function(ch) { renderBlock(ch, 'ordered', ctr); });
+              y += 2; return;
+            }
+            if (tag === 'li') {
+              var runs = [];
+              collectRuns(node, false, false, runs);
+              if (!runs.some(function(r) { return r.text.trim(); })) return;
+              if (listType === 'bullet') {
+                checkBreak(lh(theme.sizes.body));
+                pdf.setFont(theme.fonts.body, "normal");
+                pdf.setFontSize(theme.sizes.body);
+                pdf.setTextColor(...theme.colors.body);
+                pdf.text("\u2022", marginL + 2, y);
+                renderRuns(runs, 6);
+              } else if (listType === 'ordered') {
+                var prefix = (listCounter ? listCounter[0]++ : 1) + ". ";
+                runs.unshift({ text: prefix, bold: false, italic: false });
+                renderRuns(runs, 6);
+              } else {
+                renderRuns(runs, 0);
+              }
+              return;
+            }
+            var isBlock = ['p', 'div', 'section', 'article', 'blockquote'].indexOf(tag) >= 0;
+            var hasSubBlocks = Array.from(node.childNodes).some(function(ch) {
+              var ct = (ch.nodeName || "").toLowerCase();
+              return ['p', 'div', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr'].indexOf(ct) >= 0;
+            });
+            if (hasSubBlocks) {
+              Array.from(node.childNodes).forEach(function(ch) { renderBlock(ch, listType, listCounter); });
+              return;
+            }
+            var isBold = tag === 'b' || tag === 'strong';
+            var isItalic = tag === 'i' || tag === 'em';
+            var runs = [];
+            collectRuns(node, isBold, isItalic, runs);
+            if (!runs.some(function(r) { return r.text.trim(); })) {
+              if (isBlock) { y += lh(theme.sizes.body) * 0.3; }
+              return;
+            }
+            renderRuns(runs, 0);
+            if (isBlock) { y += theme.spacing.paragraphGap * 0.3; }
+          }
+
+          Array.from(tmp.childNodes).forEach(function(node) { renderBlock(node, null, null); });
+        }
+
         var docTitle = db.summaryTitle || "Document Summary";
         var totalJobs = db.jobs.length;
         var totalExchanges = db.jobs.reduce(function(acc, j) {
@@ -1854,9 +1997,8 @@
         y += lh(theme.sizes.h1) + 2;
         hRule();
         y += 2;
-        var summaryText = stripHtmlToText(db.summary || "").trim();
-        if (!summaryText) { summaryText = "No summary content."; }
-        writeWrapped(summaryText, theme.sizes.body, "normal");
+        var summaryHtml = db.summary || "";
+        if (summaryHtml) { renderSummaryHtmlToPdf(summaryHtml); } else { writeWrapped("No summary content.", theme.sizes.body, "normal"); }
         y += theme.spacing.paragraphGap;
 
         // ===== JOB SECTIONS =====
@@ -2331,6 +2473,117 @@
           return result;
         }
 
+        // ===== SUMMARY HTML RENDERER (WORD) =====
+        function renderSummaryHtmlToWord(html) {
+          if (!html) return makePara(makeRun("No summary content.", { font: bodyFont, sz: bodySz, color: bodyHex }), { spaceAfter: 80 });
+          var tmp = document.createElement("div");
+          tmp.innerHTML = html;
+          if (!tmp.textContent.trim()) return makePara(makeRun("No summary content.", { font: bodyFont, sz: bodySz, color: bodyHex }), { spaceAfter: 80 });
+
+          var result = "";
+
+          // Collect inline runs: [{text, bold, italic, strike}]
+          function collectRuns(node, bold, italic, strike, runs) {
+            if (node.nodeType === 3) {
+              var t = node.textContent;
+              if (t) runs.push({ text: t, bold: !!bold, italic: !!italic, strike: !!strike });
+              return;
+            }
+            var tag = (node.nodeName || "").toLowerCase();
+            if (tag === 'br') { runs.push({ text: '\n', bold: !!bold, italic: !!italic, strike: !!strike }); return; }
+            var b = bold || tag === 'b' || tag === 'strong';
+            var it = italic || tag === 'i' || tag === 'em';
+            var st = strike || tag === 's' || tag === 'strike' || tag === 'del';
+            Array.from(node.childNodes).forEach(function(ch) { collectRuns(ch, b, it, st, runs); });
+          }
+
+          // Convert runs array to Word XML run elements
+          function runsToXml(runs, baseOpts) {
+            var xml = "";
+            baseOpts = baseOpts || {};
+            runs.forEach(function(run) {
+              if (run.text === '\n') { xml += '<w:r><w:br/></w:r>'; return; }
+              var rPr = "";
+              var font = baseOpts.font || bodyFont;
+              var sz = baseOpts.sz || bodySz;
+              var color = baseOpts.color || bodyHex;
+              rPr += '<w:rFonts w:ascii="' + escapeXml(font) + '" w:hAnsi="' + escapeXml(font) + '"/>';
+              if (run.bold || baseOpts.bold) rPr += "<w:b/>";
+              if (run.italic || baseOpts.italic) rPr += "<w:i/>";
+              if (run.strike) rPr += "<w:strike/>";
+              rPr += '<w:color w:val="' + color + '"/>';
+              rPr += '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>';
+              rPr = "<w:rPr>" + rPr + "</w:rPr>";
+              var t = run.text != null ? String(run.text) : "";
+              var spaceAttr = (t.charAt(0) === " " || t.charAt(t.length - 1) === " ") ? ' xml:space="preserve"' : "";
+              xml += "<w:r>" + rPr + "<w:t" + spaceAttr + ">" + escapeXml(t) + "</w:t></w:r>";
+            });
+            return xml;
+          }
+
+          function renderBlockWord(node, listType, listCounter) {
+            if (node.nodeType === 3) {
+              var t = (node.textContent || "").replace(/\s+/g, ' ');
+              if (t.trim()) result += makePara(makeRun(t, { font: bodyFont, sz: bodySz, color: bodyHex }), { spaceAfter: 80 });
+              return;
+            }
+            var tag = (node.nodeName || "").toLowerCase();
+            if (tag === 'hr') {
+              result += '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="D0D7DE"/></w:pBdr><w:spacing w:after="80"/></w:pPr></w:p>';
+              return;
+            }
+            if (tag === 'br') { result += makePara("", { spaceAfter: 40 }); return; }
+            if (tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6') {
+              var lvl = parseInt(tag.slice(1));
+              var hSz = lvl === 1 ? h1Sz : (lvl === 2 ? h2Sz : h3Sz);
+              var spaceBefore = lvl === 1 ? 240 : (lvl === 2 ? 160 : 100);
+              var t = (node.textContent || "").trim();
+              if (t) result += makePara(makeRun(t, { bold: true, font: headingFont, sz: hSz, color: headingHex }), { spaceBefore: spaceBefore, spaceAfter: 80 });
+              return;
+            }
+            if (tag === 'ul') {
+              Array.from(node.childNodes).forEach(function(ch) { renderBlockWord(ch, 'bullet', null); });
+              result += makePara("", { spaceAfter: 40 }); return;
+            }
+            if (tag === 'ol') {
+              var ctr = [1];
+              Array.from(node.childNodes).forEach(function(ch) { renderBlockWord(ch, 'ordered', ctr); });
+              result += makePara("", { spaceAfter: 40 }); return;
+            }
+            if (tag === 'li') {
+              var runs = [];
+              collectRuns(node, false, false, false, runs);
+              if (!runs.some(function(r) { return r.text.trim(); })) return;
+              var prefix = listType === 'bullet' ? '\u2022 ' : ((listCounter ? listCounter[0]++ : 1) + ". ");
+              var prefixRun = makeRun(prefix, { font: bodyFont, sz: bodySz, color: bodyHex });
+              result += '<w:p><w:pPr><w:ind w:left="360"/><w:spacing w:after="80"/></w:pPr>' + prefixRun + runsToXml(runs) + '</w:p>';
+              return;
+            }
+            var isBlock = ['p', 'div', 'section', 'article', 'blockquote'].indexOf(tag) >= 0;
+            var hasSubBlocks = Array.from(node.childNodes).some(function(ch) {
+              var ct = (ch.nodeName || "").toLowerCase();
+              return ['p', 'div', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr'].indexOf(ct) >= 0;
+            });
+            if (hasSubBlocks) {
+              Array.from(node.childNodes).forEach(function(ch) { renderBlockWord(ch, listType, listCounter); });
+              return;
+            }
+            var isBold = tag === 'b' || tag === 'strong';
+            var isItalic = tag === 'i' || tag === 'em';
+            var isStrike = tag === 's' || tag === 'strike' || tag === 'del';
+            var runs = [];
+            collectRuns(node, isBold, isItalic, isStrike, runs);
+            if (!runs.some(function(r) { return r.text.trim(); })) {
+              if (isBlock) result += makePara("", { spaceAfter: 40 });
+              return;
+            }
+            result += makePara(runsToXml(runs), { spaceAfter: 80 });
+          }
+
+          Array.from(tmp.childNodes).forEach(function(node) { renderBlockWord(node, null, null); });
+          return result;
+        }
+
         var body = "";
         var imageCounter = 0;
         var imageRelationships = [];
@@ -2356,9 +2609,7 @@
         // ===== DOCUMENT SUMMARY =====
         body += pageBreakPara();
         body += makePara(makeRun("Document Summary", { bold: true, font: headingFont, sz: h1Sz, color: headingHex }), { spaceAfter: 200 });
-        var summaryText = stripHtmlToText(db.summary || "").trim();
-        if (!summaryText) summaryText = "No summary content.";
-        body += textParas(summaryText, { font: bodyFont, sz: bodySz, color: bodyHex });
+        body += renderSummaryHtmlToWord(db.summary || "");
 
         // ===== JOB SECTIONS =====
         db.jobs.forEach(function(job) {
