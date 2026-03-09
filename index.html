@@ -3080,12 +3080,17 @@
       var actualIndex = convIdx + 1;
       var msg = job.messages[actualIndex]; if (!msg) return;
 
-      bodyEl.style.display = "none";
-      editBtnEl.disabled = true;
+      var originalContent = msg.content;
 
-      var ta = document.createElement("textarea");
-      ta.className = "msg-edit-textarea";
-      ta.value = msg.content;
+      bodyEl.contentEditable = "true";
+      bodyEl.style.border = "2px solid #0969da";
+      bodyEl.style.borderRadius = "6px";
+      bodyEl.style.padding = "0.5rem";
+      bodyEl.style.outline = "none";
+      bodyEl.style.minHeight = "60px";
+      bodyEl.focus();
+
+      editBtnEl.disabled = true;
 
       var saveBtn = document.createElement("button");
       saveBtn.className = "msg-save-btn"; saveBtn.textContent = "💾 Save";
@@ -3096,25 +3101,32 @@
       var btnRow = document.createElement("div"); btnRow.className = "msg-edit-btns";
       btnRow.appendChild(saveBtn); btnRow.appendChild(cancelBtn);
 
-      var editArea = document.createElement("div"); editArea.className = "msg-edit-area";
-      editArea.appendChild(ta); editArea.appendChild(btnRow);
-      msgDiv.appendChild(editArea);
-      ta.focus();
+      bodyEl.parentNode.insertBefore(btnRow, bodyEl.nextSibling);
+
+      function exitEditMode() {
+        bodyEl.removeAttribute("contenteditable");
+        bodyEl.style.border = "";
+        bodyEl.style.borderRadius = "";
+        bodyEl.style.padding = "";
+        bodyEl.style.outline = "";
+        bodyEl.style.minHeight = "";
+        editBtnEl.disabled = false;
+        if (btnRow.parentNode) btnRow.parentNode.removeChild(btnRow);
+      }
 
       saveBtn.onclick = function() {
-        var newContent = ta.value;
+        var newContent = bodyEl.innerText || bodyEl.textContent;
         msg.content = newContent;
         saveDB();
+        exitEditMode();
         if (msg.role === "assistant") { bodyEl.innerHTML = marked.parse(newContent); addCopyButtons(bodyEl); }
         else { bodyEl.textContent = newContent; }
-        bodyEl.style.display = "";
-        editBtnEl.disabled = false;
-        msgDiv.removeChild(editArea);
       };
+
       cancelBtn.onclick = function() {
-        bodyEl.style.display = "";
-        editBtnEl.disabled = false;
-        msgDiv.removeChild(editArea);
+        exitEditMode();
+        if (msg.role === "assistant") { bodyEl.innerHTML = marked.parse(originalContent); addCopyButtons(bodyEl); }
+        else { bodyEl.textContent = originalContent; }
       };
     }
 
