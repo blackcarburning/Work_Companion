@@ -635,6 +635,8 @@
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
     var DEFAULT_MAX_DOC_CHARS = 15000;
+    var RATE_LIMIT_MAX_RETRIES = 3;
+    var RATE_LIMIT_DELAYS = [5000, 15000, 30000]; // ms: 5s, 15s, 30s
 
     if (window.pdfjsLib) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
@@ -952,7 +954,8 @@
 
     function estimateTokenCount(text) {
       if (!text) return 0;
-      return Math.ceil(text.length / 4);
+      var len = typeof text === 'number' ? text : text.length;
+      return Math.ceil(len / 4);
     }
 
     function buildContextMessages(all) {
@@ -991,6 +994,15 @@
         }
         // Strip inline base64 images from content before sending to API
         var content = m.wasEditedAsHtml ? stripInlineImages(m.content) : m.content;
+        // Enforce document character limit at send time (does NOT modify stored message)
+        if (m.isDocument && content) {
+          var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+          if (content.length > maxChars) {
+            var origLen = content.length;
+            debugLog('[CTX] ⚠️ Truncating document message from ' + origLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars at send time', 'warn');
+            content = content.substring(0, maxChars) + '\n[Content truncated at ' + maxChars.toLocaleString() + ' characters for API submission. Original length: ' + origLen.toLocaleString() + ' characters.]';
+          }
+        }
         return { role: m.role, content: content };
       });
 
@@ -3482,6 +3494,29 @@
     function showTyping() { var c = document.getElementById("chat"); if (!c) return; var m = document.createElement("div"); m.className = "message message-assistant"; m.id = "typing-indicator"; m.innerHTML = '<div class="message-label"><span>Assistant</span></div><div><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>'; c.appendChild(m); c.scrollTop = c.scrollHeight; }
     function removeTyping() { var e = document.getElementById("typing-indicator"); if (e) e.remove(); }
 
+    async function fetchWithRetry(url, options, providerName) {
+      var r;
+      for (var attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt++) {
+        r = await fetch(url, options);
+        if (r.status === 429 && attempt < RATE_LIMIT_MAX_RETRIES) {
+          var delay = RATE_LIMIT_DELAYS[attempt];
+          var delaySec = delay / 1000;
+          debugLog('[API] ⚠️ Rate limited (429) from ' + providerName + '. Retry ' + (attempt + 1) + '/' + RATE_LIMIT_MAX_RETRIES + ' in ' + delaySec + 's...', 'warn');
+          var typingEl = document.getElementById("typing-indicator");
+          if (typingEl) {
+            typingEl.innerHTML = '<div class="message-label"><span>Assistant</span></div><div style="color:#d4a72c;font-weight:600">⏳ Rate limited — retrying in ' + delaySec + 's...</div>';
+          }
+          await new Promise(function(resolve) { setTimeout(resolve, delay); });
+          if (typingEl) {
+            typingEl.innerHTML = '<div class="message-label"><span>Assistant</span></div><div><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
+          }
+          continue;
+        }
+        return r;
+      }
+      return r;
+    }
+
     async function sendMessage() {
       if (!db.activeJobId) return; var job = getJob(db.activeJobId); if (!job) return;
       var input = document.getElementById("userInput"), ut = input.value.trim();
@@ -3526,7 +3561,7 @@
             debugLog('[API] Still waiting for Anthropic response... ' + elapsed + 's', 'warn');
           }, 10000);
           try {
-            r = await fetch(ANTHROPIC_DIRECT_URL, {
+            r = await fetchWithRetry(ANTHROPIC_DIRECT_URL, {
               method: "POST",
               headers: {
                 "x-api-key": anthropicToken,
@@ -3535,7 +3570,7 @@
                 "anthropic-dangerous-direct-browser-access": "true"
               },
               body: anthropicBody
-            });
+            }, "Anthropic");
           } finally { clearInterval(waitingLogInterval); }
           var elapsed = Date.now() - requestStartTime;
           removeTyping();
@@ -3562,11 +3597,11 @@
             debugLog('[API] Still waiting for response... ' + elapsed + 's', 'warn');
           }, 10000);
           try {
-            r = await fetch(endpoint, {
+            r = await fetchWithRetry(endpoint, {
               method: "POST",
               headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
               body: openaiBody
-            });
+            }, activeProvider === "openai" ? "OpenAI" : "GitHub Models");
           } finally { clearInterval(waitingLogInterval); }
           var elapsed = Date.now() - requestStartTime;
           removeTyping();
