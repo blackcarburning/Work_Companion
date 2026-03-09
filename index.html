@@ -3805,6 +3805,16 @@
       if (!db.activeJobId) return; var job = getJob(db.activeJobId); if (!job) return;
       var input = document.getElementById("userInput"), ut = input.value.trim();
       var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : anthropicToken);
+
+      // If no text typed but last message is a pending image, auto-generate a prompt
+      if (!ut && job.messages.length > 0) {
+        var lastMsg = job.messages[job.messages.length - 1];
+        if (lastMsg.isImage && lastMsg.role === "user") {
+          ut = "Please analyze this image.";
+          debugLog('[IMG] No text input but last message is image — using auto-prompt: "' + ut + '"', 'info');
+        }
+      }
+
       if (!ut || !activeToken) {
         if (!activeToken) {
           var label = activeProvider === "github" ? "GitHub token" : (activeProvider === "openai" ? "OpenAI API key" : "Anthropic API key");
@@ -4349,6 +4359,7 @@
 
     // ===== IMAGE HANDLING =====
     function openImagePicker() {
+      debugLog('[IMG] openImagePicker called', 'info');
       if (!db.activeJobId) { alert("Please select or create a job first."); return; }
       if (navigator.clipboard && navigator.clipboard.read) {
         navigator.clipboard.read().then(function(items) {
@@ -4373,13 +4384,15 @@
     function handleImageUpload(event) {
       var file = event.target.files[0];
       event.target.value = "";
-      if (!file) return;
+      if (!file) { debugLog('[IMG] handleImageUpload: no file selected', 'warn'); return; }
+      debugLog('[IMG] handleImageUpload: file="' + file.name + '", size=' + file.size + ', type=' + file.type, 'info');
       handleImageFile(file, file.name);
     }
 
     function handleImageFile(blob, name) {
-      if (!db.activeJobId) return;
-      var job = getJob(db.activeJobId); if (!job) return;
+      debugLog('[IMG] handleImageFile called: name="' + name + '", blob=' + (blob && blob.size != null ? blob.size + ' bytes, type=' + blob.type : (blob ? 'unknown size' : 'null')), 'info');
+      if (!db.activeJobId) { debugLog('[IMG] ⚠️ No active job — image ignored', 'warn'); return; }
+      var job = getJob(db.activeJobId); if (!job) { debugLog('[IMG] ⚠️ Job not found — image ignored', 'warn'); return; }
       var MAX_WIDTH = 1920;
       var JPEG_QUALITY = 0.85;
       var reader = new FileReader();
@@ -4408,6 +4421,7 @@
             role: "user", content: contentText,
             isImage: true, imageData: finalUrl, imageName: name, imageInfo: imageInfo
           });
+          debugLog('[IMG] ✅ Image added to job messages: ' + imageInfo + ', name="' + name + '"', 'info');
           saveDB();
           addMessageToDOM("user", contentText, false, job.messages.length - 2);
           updateContextBar();
@@ -4451,7 +4465,11 @@
     }
 
     document.addEventListener("paste", function(e) {
-      if (!db.activeJobId || db.activeView !== "job") return;
+      debugLog('[PASTE] Paste event fired — activeJobId=' + db.activeJobId + ', activeView=' + db.activeView, 'info');
+      if (!db.activeJobId || db.activeView !== "job") {
+        debugLog('[PASTE] ⚠️ Paste ignored: ' + (!db.activeJobId ? 'no active job' : 'activeView="' + db.activeView + '" (not "job")'), 'warn');
+        return;
+      }
 
       // Check if we're pasting into an active contenteditable element
       var target = e.target;
@@ -4467,6 +4485,7 @@
         for (var i = 0; i < items.length; i++) {
           if (items[i].type.indexOf("image") !== -1) {
             e.preventDefault();
+            debugLog('[PASTE] Inserting image inline into message edit mode', 'info');
             insertImageBlobIntoEditable(items[i].getAsFile(), editableParent, null);
             return;
           }
@@ -4481,6 +4500,7 @@
         for (var i = 0; i < items.length; i++) {
           if (items[i].type.indexOf("image") !== -1) {
             e.preventDefault();
+            debugLog('[PASTE] Inserting image inline into summary editor', 'info');
             insertImageBlobIntoEditable(items[i].getAsFile(), editableParent, function() {
               db.summary = editableParent.innerHTML;
               saveDB();
@@ -4493,15 +4513,17 @@
 
       // Default behavior: paste creates a new image message
       var items = e.clipboardData && e.clipboardData.items;
-      if (!items) return;
+      if (!items) { debugLog('[PASTE] ⚠️ No clipboardData items available', 'warn'); return; }
       for (var i = 0; i < items.length; i++) {
         if (items[i].type.indexOf("image") !== -1) {
           e.preventDefault();
           var blob = items[i].getAsFile();
+          debugLog('[PASTE] 📷 Image detected in clipboard — processing as chat image (' + (blob && blob.size != null ? blob.size + ' bytes' : (blob ? 'unknown size' : 'no blob')) + ')', 'info');
           handleImageFile(blob, "clipboard_paste_" + Date.now() + ".png");
           return;
         }
       }
+      debugLog('[PASTE] No image found in clipboard data (items: ' + items.length + ')', 'log');
     });
 
     function escapeHtml(t) { var d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
