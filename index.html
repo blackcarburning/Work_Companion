@@ -3756,8 +3756,78 @@
     }
 
     // ===== CLIPBOARD PASTE SUPPORT =====
+
+    // Helper: insert a blob as an inline base64 <img> into a contenteditable element
+    function insertImageBlobIntoEditable(blob, container, afterInsert) {
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        var img = document.createElement("img");
+        img.src = ev.target.result;
+        img.style.maxWidth = "100%";
+        img.style.borderRadius = "6px";
+        img.style.margin = "0.5rem 0";
+        img.style.display = "block";
+
+        var sel = window.getSelection();
+        if (sel.rangeCount > 0) {
+          var range = sel.getRangeAt(0);
+          range.deleteContents();
+          range.insertNode(img);
+          // Move cursor after the image
+          range.setStartAfter(img);
+          range.setEndAfter(img);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } else {
+          container.appendChild(img);
+        }
+        if (afterInsert) afterInsert();
+      };
+      reader.readAsDataURL(blob);
+    }
+
     document.addEventListener("paste", function(e) {
       if (!db.activeJobId || db.activeView !== "job") return;
+
+      // Check if we're pasting into an active contenteditable element
+      var target = e.target;
+      var editableParent = target.closest ? target.closest('[contenteditable="true"]') : null;
+      if (!editableParent && target.getAttribute && target.getAttribute("contenteditable") === "true") {
+        editableParent = target;
+      }
+
+      // If pasting into a contenteditable message body (edit mode), handle image inline
+      if (editableParent && editableParent.classList.contains("message-body")) {
+        var items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf("image") !== -1) {
+            e.preventDefault();
+            insertImageBlobIntoEditable(items[i].getAsFile(), editableParent, null);
+            return;
+          }
+        }
+        return; // Let browser handle text paste in contenteditable
+      }
+
+      // If pasting into the summary editor (contenteditable), also handle image inline
+      if (editableParent && editableParent.id === "summary-editor") {
+        var items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf("image") !== -1) {
+            e.preventDefault();
+            insertImageBlobIntoEditable(items[i].getAsFile(), editableParent, function() {
+              db.summary = editableParent.innerHTML;
+              saveDB();
+            });
+            return;
+          }
+        }
+        return;
+      }
+
+      // Default behavior: paste creates a new image message
       var items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
       for (var i = 0; i < items.length; i++) {
