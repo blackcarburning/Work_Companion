@@ -882,7 +882,7 @@
           💾 Autosave every 5 min
         </label>
       </div>
-      <div class="storage-indicator" id="storage-indicator" title="localStorage usage" style="margin-top:0.25rem">💾 Storage: <span id="storage-usage-text">calculating...</span></div>
+      <div class="storage-indicator" id="storage-indicator" title="localStorage usage" style="margin-top:0.25rem;display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">💾 <span id="storage-usage-text">calculating...</span><button class="sidebar-btn" onclick="cleanStorage()" style="font-size:0.68rem;padding:0.1rem 0.4rem;margin:0;line-height:1.4" title="Purge orphaned images and clear models cache">🧹 Clean</button></div>
     </div>
 
     <!-- ===== SIDEBAR HEADER — buttons/controls ===== -->
@@ -1424,19 +1424,103 @@
       return Math.round(total / 1024);
     }
 
+    function _lsKeyKB(key) {
+      try {
+        var v = localStorage.getItem(key);
+        if (v === null) return 0;
+        return Math.round((v.length + key.length) * 2 / 1024);
+      } catch(e) { return 0; }
+    }
+
+    function _fmtKB(kb) {
+      return kb >= 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb + ' KB';
+    }
+
     function updateStorageIndicator() {
       var el = document.getElementById('storage-usage-text');
       if (!el) return;
-      var usedKB = getLocalStorageUsageKB();
-      var limitKB = 5120; // ~5MB
-      var pct = Math.min(100, Math.round(usedKB / limitKB * 100));
+
+      var dbKB = _lsKeyKB(DB_KEY);
+      var cacheKB = _lsKeyKB(MODELS_CACHE_KEY);
+
+      // Remaining localStorage keys (tokens, name, theme, anything else)
+      var knownKeys = [DB_KEY, MODELS_CACHE_KEY];
+      var otherKB = 0;
+      try {
+        for (var key in localStorage) {
+          if (Object.prototype.hasOwnProperty.call(localStorage, key) && knownKeys.indexOf(key) === -1) {
+            otherKB += _lsKeyKB(key);
+          }
+        }
+      } catch(e) {}
+
+      var totalKB = dbKB + cacheKB + otherKB;
+      var limitKB = 5120;
+      var pct = Math.min(100, Math.round(totalKB / limitKB * 100));
       var color = pct > 85 ? '#cf222e' : pct > 65 ? '#d4851a' : '#8b949e';
-      el.innerHTML = '<span style="color:' + color + '">' + (usedKB > 1024 ? (usedKB/1024).toFixed(1) + ' MB' : usedKB + ' KB') + ' / 5 MB (' + pct + '%)</span>';
+
+      var parts = [];
+      parts.push('DB: <span style="color:' + color + '">' + _fmtKB(dbKB) + '</span>');
+      if (cacheKB > 0) parts.push('Cache: ' + _fmtKB(cacheKB));
+      if (otherKB > 0) parts.push('Other: ' + _fmtKB(otherKB));
+      el.innerHTML = parts.join(' · ');
+
       ImageStore.count().then(function(n) {
         if (n > 0) {
           el.innerHTML += ' · <span>' + n + ' image' + (n !== 1 ? 's' : '') + ' in IndexedDB</span>';
         }
       }).catch(function() {});
+    }
+
+    async function cleanStorage() {
+      var btn = document.querySelector('#storage-indicator button');
+
+      // 2. Purge orphaned images from IndexedDB
+      var imgsRemoved = 0;
+      try {
+        var allKeys = await ImageStore.getAllKeys();
+        var liveRefs = {};
+        db.jobs.forEach(function(job) {
+          job.messages.forEach(function(msg) { if (msg.imageRef) liveRefs[msg.imageRef] = true; });
+        });
+        var orphaned = allKeys.filter(function(k) { return !liveRefs[k]; });
+        if (orphaned.length > 0) {
+          await Promise.all(orphaned.map(function(k) { return ImageStore.remove(k).catch(function(){}); }));
+          imgsRemoved = orphaned.length;
+          debugLog('[DB] 🧹 cleanStorage: purged ' + imgsRemoved + ' orphaned image(s)', 'info');
+        }
+      } catch(e) {
+        debugLog('[DB] ⚠️ cleanStorage image purge error: ' + e.message, 'warn');
+      }
+
+      // 3. Clear models cache from localStorage
+      var cacheKB = _lsKeyKB(MODELS_CACHE_KEY);
+      var cacheCleared = false;
+      if (cacheKB > 0) {
+        try {
+          localStorage.removeItem(MODELS_CACHE_KEY);
+          cacheCleared = true;
+          debugLog('[DB] 🧹 cleanStorage: cleared models cache (' + _fmtKB(cacheKB) + ')', 'info');
+        } catch(e) {
+          debugLog('[DB] ⚠️ cleanStorage cache clear error: ' + e.message, 'warn');
+        }
+      }
+
+      // 4. Refresh the indicator
+      updateStorageIndicator();
+
+      // 5. Show brief inline feedback on the button
+      var lines = [];
+      if (imgsRemoved > 0) lines.push(imgsRemoved + ' image' + (imgsRemoved !== 1 ? 's' : '') + ' removed');
+      if (cacheCleared) lines.push('cache cleared (' + _fmtKB(cacheKB) + ')');
+      var feedback = lines.length > 0 ? '✅ ' + lines.join(', ') : '✅ Already tidy';
+      debugLog('[DB] 🧹 ' + feedback, 'info');
+      if (btn) {
+        var orig = btn.textContent;
+        btn.textContent = feedback;
+        btn.disabled = true;
+        setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 3000);
+      }
     }
 
     function showStorageWarning() {
