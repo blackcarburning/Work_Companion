@@ -4400,7 +4400,7 @@
                 );
               }
               Promise.all(pagePromises).then(function(pageTexts) {
-                var text = pageTexts.join("\n\n");
+                var text = pageTexts.join(" ");
                 var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
                 debugLog('[PDF] All pages extracted: total ' + text.length.toLocaleString() + ' chars, ' + wordCount.toLocaleString() + ' words', 'info');
                 var docInfo = numPages + " page" + (numPages !== 1 ? "s" : "") + ", " + wordCount.toLocaleString() + " words";
