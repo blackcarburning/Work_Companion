@@ -814,6 +814,8 @@
     .modal-btns .cancel:hover { background: #e3e7ef; }
     .modal-btns .confirm:hover { background: linear-gradient(135deg, var(--accent-dark), var(--accent-darker)); }
 
+    .summarise-modal-label { display: block; font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.3rem; }
+
     .pdf-theme-modal .modal { width: 590px; max-height: 85vh; overflow-y: auto; }
     .theme-section { margin-bottom: 1rem; }
     .theme-section-title { font-size: 0.78rem; font-weight: 700; color: #6b7280; margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -1140,6 +1142,8 @@
     var DEFAULT_AUTOSAVE_INTERVAL_MIN = 5;
     var RATE_LIMIT_MAX_RETRIES = 3;
     var RATE_LIMIT_DELAYS = [5000, 15000, 30000]; // ms: 5s, 15s, 30s
+    var DEFAULT_SUMMARISE_SYSTEM_PROMPT = "You are a document summariser. Summarise the following document concisely, preserving all key facts, figures, names, dates, and actionable information. The summary should be detailed enough to be useful as reference material.";
+    var DEFAULT_SUMMARISE_USER_PROMPT = "Please summarise this document:";
 
     if (window.pdfjsLib) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
@@ -1154,7 +1158,9 @@
       maxDocChars: DEFAULT_MAX_DOC_CHARS,
       extractDocImages: false,
       autosaveEnabled: true,
-      autosaveIntervalMin: DEFAULT_AUTOSAVE_INTERVAL_MIN
+      autosaveIntervalMin: DEFAULT_AUTOSAVE_INTERVAL_MIN,
+      summariseSystemPrompt: DEFAULT_SUMMARISE_SYSTEM_PROMPT,
+      summariseUserPrompt: DEFAULT_SUMMARISE_USER_PROMPT
     };
 
     var autosaveTimer = null;
@@ -1495,6 +1501,8 @@
           if (db.extractDocImages === undefined) db.extractDocImages = false;
           if (db.autosaveEnabled === undefined) db.autosaveEnabled = true;
           if (db.autosaveIntervalMin === undefined) db.autosaveIntervalMin = DEFAULT_AUTOSAVE_INTERVAL_MIN;
+          if (!db.summariseSystemPrompt) db.summariseSystemPrompt = DEFAULT_SUMMARISE_SYSTEM_PROMPT;
+          if (!db.summariseUserPrompt) db.summariseUserPrompt = DEFAULT_SUMMARISE_USER_PROMPT;
           // Rehydrate imageData from IndexedDB for messages that have imageRef
           for (var i = 0; i < db.jobs.length; i++) {
             var job = db.jobs[i];
@@ -4406,7 +4414,7 @@
           sumBtn.className = "document-summarise-btn";
           sumBtn.textContent = "📝 Summarise & Delete";
           (function(jId, mIdx, sb) {
-            sb.onclick = function() { summariseDocument(jId, mIdx, sb); };
+            sb.onclick = function() { openSummariseModal(jId, mIdx, sb); };
           })(db.activeJobId, actualIndex, sumBtn);
           body.appendChild(sumBtn);
           body.appendChild(contentDiv);
@@ -4640,7 +4648,53 @@
       updateContextBar(); renderSidebar();
     }
 
-    async function summariseDocument(jobId, msgIdx, sumBtn) {
+    function openSummariseModal(jobId, msgIdx, sumBtn) {
+      var job = getJob(jobId); if (!job) return;
+      var msg = job.messages[msgIdx]; if (!msg || !msg.isDocument) return;
+      var docName = msg.documentName || "document";
+
+      var ov = document.createElement("div"); ov.className = "modal-overlay";
+      var modal = document.createElement("div"); modal.className = "modal"; modal.style.cssText = "width:580px;max-width:95vw;";
+      modal.innerHTML =
+        '<h3>&#x1F4DD; Summarise Document: &quot;' + escapeHtml(docName) + '&quot;</h3>' +
+        '<div class="summarise-modal-field">' +
+          '<label class="summarise-modal-label">System Prompt (AI\'s role)</label>' +
+          '<textarea id="sum-modal-system" rows="4" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.82rem;resize:vertical;">' + escapeHtml(db.summariseSystemPrompt || DEFAULT_SUMMARISE_SYSTEM_PROMPT) + '</textarea>' +
+        '</div>' +
+        '<div class="summarise-modal-field" style="margin-top:0.75rem;">' +
+          '<label class="summarise-modal-label">Request (sent with the document)</label>' +
+          '<textarea id="sum-modal-user" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.82rem;resize:vertical;">' + escapeHtml(db.summariseUserPrompt || DEFAULT_SUMMARISE_USER_PROMPT) + '</textarea>' +
+          '<p style="margin:0.3rem 0 0;font-size:0.78rem;color:var(--text-secondary);">The document content will be appended automatically.</p>' +
+        '</div>' +
+        '<div style="margin-top:0.75rem;display:flex;align-items:center;gap:0.5rem;">' +
+          '<input type="checkbox" id="sum-modal-save-default" style="cursor:pointer;" />' +
+          '<label for="sum-modal-save-default" style="font-size:0.85rem;cursor:pointer;color:var(--text-primary);">Save as new default</label>' +
+        '</div>' +
+        '<div class="modal-btns" style="margin-top:1rem;">' +
+          '<button class="cancel" id="sum-modal-cancel">Cancel</button>' +
+          '<button class="confirm" id="sum-modal-confirm">&#x2705; Summarise</button>' +
+        '</div>';
+      ov.appendChild(modal);
+      document.body.appendChild(ov);
+
+      document.getElementById("sum-modal-confirm").onclick = function() {
+        var sysPrompt = document.getElementById("sum-modal-system").value.trim();
+        var usrPrompt = document.getElementById("sum-modal-user").value.trim();
+        var saveDefault = document.getElementById("sum-modal-save-default").checked;
+        document.body.removeChild(ov);
+        if (saveDefault) {
+          db.summariseSystemPrompt = sysPrompt || DEFAULT_SUMMARISE_SYSTEM_PROMPT;
+          db.summariseUserPrompt = usrPrompt || DEFAULT_SUMMARISE_USER_PROMPT;
+          saveDB();
+        }
+        summariseDocument(jobId, msgIdx, sumBtn, sysPrompt || DEFAULT_SUMMARISE_SYSTEM_PROMPT, usrPrompt || DEFAULT_SUMMARISE_USER_PROMPT);
+      };
+      document.getElementById("sum-modal-cancel").onclick = function() { document.body.removeChild(ov); };
+      ov.addEventListener("keydown", function(e) { if (e.key === "Escape") { document.body.removeChild(ov); } });
+      document.getElementById("sum-modal-system").focus();
+    }
+
+    async function summariseDocument(jobId, msgIdx, sumBtn, customSystemPrompt, customUserPrompt) {
       var job = getJob(jobId); if (!job) return;
       var msg = job.messages[msgIdx]; if (!msg || !msg.isDocument) return;
       var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : anthropicToken);
@@ -4650,8 +4704,8 @@
       sumBtn.textContent = "⏳ Summarising...";
       sumBtn.disabled = true;
 
-      var systemMsg = "You are a document summariser. Summarise the following document concisely, preserving all key facts, figures, names, dates, and actionable information. The summary should be detailed enough to be useful as reference material.";
-      var userMsg = "Please summarise this document:\n\n" + msg.content;
+      var systemMsg = customSystemPrompt || db.summariseSystemPrompt || DEFAULT_SUMMARISE_SYSTEM_PROMPT;
+      var userMsg = (customUserPrompt || db.summariseUserPrompt || DEFAULT_SUMMARISE_USER_PROMPT) + "\n\n" + msg.content;
       var r, d, summary;
 
       try {
@@ -4730,6 +4784,8 @@
             if (!db.summaryTitle) db.summaryTitle = "Document Summary";
             if (!db.summaryStyle) db.summaryStyle = { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" };
             if (db.extractDocImages === undefined) db.extractDocImages = false;
+            if (!db.summariseSystemPrompt) db.summariseSystemPrompt = DEFAULT_SUMMARISE_SYSTEM_PROMPT;
+            if (!db.summariseUserPrompt) db.summariseUserPrompt = DEFAULT_SUMMARISE_USER_PROMPT;
             saveDB(); renderSidebar(); renderView();
           }
         } catch (err) { alert("Failed to parse: " + err.message); }
@@ -4763,7 +4819,9 @@
         extractDocImages: false,
         activeProvider: savedProvider,
         autosaveEnabled: true,
-        autosaveIntervalMin: DEFAULT_AUTOSAVE_INTERVAL_MIN
+        autosaveIntervalMin: DEFAULT_AUTOSAVE_INTERVAL_MIN,
+        summariseSystemPrompt: DEFAULT_SUMMARISE_SYSTEM_PROMPT,
+        summariseUserPrompt: DEFAULT_SUMMARISE_USER_PROMPT
       };
       token = savedToken;
       openaiToken = savedOpenaiToken;
