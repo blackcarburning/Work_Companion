@@ -167,6 +167,16 @@
     }
     #context-bar.visible { display: flex; align-items: center; justify-content: space-between; }
 
+    #storage-warning-banner {
+      display: none; padding: 0.35rem 1rem; background: #fff1e0; border-bottom: 1px solid #d4851a;
+      font-size: 0.78rem; color: #7d3500; align-items: center; justify-content: space-between; gap: 0.5rem;
+    }
+    #storage-warning-banner.visible { display: flex; }
+    #storage-warning-banner button { background: none; border: none; cursor: pointer; font-size: 0.78rem; color: #7d3500; text-decoration: underline; padding: 0; margin-left: 0.5rem; }
+
+    .storage-indicator { font-size: 0.7rem; color: #8b949e; padding: 0.2rem 0; }
+    .storage-indicator span { font-weight: 600; }
+
     #content-area { flex: 1; display: flex; overflow: hidden; }
 
     #chat-panel { flex: 1; display: flex; flex-direction: column; border-right: 1px solid #d0d7de; }
@@ -525,6 +535,7 @@
           💾 Autosave every 5 min
         </label>
       </div>
+      <div class="storage-indicator" id="storage-indicator" title="localStorage usage">💾 Storage: <span id="storage-usage-text">calculating…</span></div>
     </div>
     <div id="summary-tab" class="active" onclick="showSummary()">
       <span>📄</span>&nbsp;
@@ -559,6 +570,10 @@
     <div id="context-bar">
       <span id="context-bar-text"></span>
       <button onclick="editSystemPrompt()" style="background:none;border:none;cursor:pointer;font-size:0.78rem;color:#6a5300;text-decoration:underline;">Edit System Prompt</button>
+    </div>
+    <div id="storage-warning-banner">
+      <span>⚠️ Storage limit reached. Images are stored temporarily and may be lost on reload. <strong>Export your data</strong> to save your work.</span>
+      <button onclick="hideStorageWarning()">Dismiss</button>
     </div>
     <div id="content-area"></div>
   </div>
@@ -641,6 +656,7 @@
     var OPENAI_TOKEN_KEY = "openai_token";
     var ANTHROPIC_TOKEN_KEY = "anthropic_token";
     var MODELS_CACHE_KEY = "github_models_cache";
+    var _imageRefCounter = 0;
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
     var DEFAULT_MAX_DOC_CHARS = 15000;
@@ -813,9 +829,178 @@
       breaks: true
     });
 
+    // ===== IMAGE STORE (IndexedDB) =====
+    var ImageStore = (function() {
+      var DB_NAME = 'work_companion_images';
+      var STORE_NAME = 'images';
+      var DB_VERSION = 1;
+      var _db = null;
+
+      function openDB() {
+        return new Promise(function(resolve, reject) {
+          if (_db) { resolve(_db); return; }
+          var req = indexedDB.open(DB_NAME, DB_VERSION);
+          req.onupgradeneeded = function(e) {
+            var db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+              db.createObjectStore(STORE_NAME);
+            }
+          };
+          req.onsuccess = function(e) { _db = e.target.result; resolve(_db); };
+          req.onerror = function(e) { reject(e.target.error); };
+        });
+      }
+
+      function save(key, dataUrl) {
+        return openDB().then(function(db) {
+          return new Promise(function(resolve, reject) {
+            var tx = db.transaction(STORE_NAME, 'readwrite');
+            var store = tx.objectStore(STORE_NAME);
+            var req = store.put(dataUrl, key);
+            req.onsuccess = function() { resolve(); };
+            req.onerror = function(e) { reject(e.target.error); };
+          });
+        });
+      }
+
+      function get(key) {
+        return openDB().then(function(db) {
+          return new Promise(function(resolve, reject) {
+            var tx = db.transaction(STORE_NAME, 'readonly');
+            var store = tx.objectStore(STORE_NAME);
+            var req = store.get(key);
+            req.onsuccess = function() { resolve(req.result || null); };
+            req.onerror = function(e) { reject(e.target.error); };
+          });
+        });
+      }
+
+      function remove(key) {
+        return openDB().then(function(db) {
+          return new Promise(function(resolve, reject) {
+            var tx = db.transaction(STORE_NAME, 'readwrite');
+            var store = tx.objectStore(STORE_NAME);
+            var req = store.delete(key);
+            req.onsuccess = function() { resolve(); };
+            req.onerror = function(e) { reject(e.target.error); };
+          });
+        });
+      }
+
+      function count() {
+        return openDB().then(function(db) {
+          return new Promise(function(resolve, reject) {
+            var tx = db.transaction(STORE_NAME, 'readonly');
+            var store = tx.objectStore(STORE_NAME);
+            var req = store.count();
+            req.onsuccess = function() { resolve(req.result); };
+            req.onerror = function(e) { reject(e.target.error); };
+          });
+        });
+      }
+
+      return { save: save, get: get, remove: remove, count: count };
+    })();
+
+    // ===== STORAGE UTILITIES =====
+    function getLocalStorageUsageKB() {
+      var total = 0;
+      try {
+        for (var key in localStorage) {
+          if (Object.prototype.hasOwnProperty.call(localStorage, key)) {
+            total += (localStorage[key].length + key.length) * 2; // UTF-16 chars = 2 bytes each
+          }
+        }
+      } catch(e) {}
+      return Math.round(total / 1024);
+    }
+
+    function updateStorageIndicator() {
+      var el = document.getElementById('storage-usage-text');
+      if (!el) return;
+      var usedKB = getLocalStorageUsageKB();
+      var limitKB = 5120; // ~5MB
+      var pct = Math.min(100, Math.round(usedKB / limitKB * 100));
+      var color = pct > 85 ? '#cf222e' : pct > 65 ? '#d4851a' : '#8b949e';
+      el.innerHTML = '<span style="color:' + color + '">' + (usedKB > 1024 ? (usedKB/1024).toFixed(1) + ' MB' : usedKB + ' KB') + ' / 5 MB (' + pct + '%)</span>';
+      ImageStore.count().then(function(n) {
+        if (n > 0) {
+          el.innerHTML += ' · <span>' + n + ' image' + (n !== 1 ? 's' : '') + ' in IndexedDB</span>';
+        }
+      }).catch(function() {});
+    }
+
+    function showStorageWarning() {
+      var banner = document.getElementById('storage-warning-banner');
+      if (banner) banner.classList.add('visible');
+      updateStorageIndicator();
+    }
+
+    function hideStorageWarning() {
+      var banner = document.getElementById('storage-warning-banner');
+      if (banner) banner.classList.remove('visible');
+    }
+
     // ===== DB =====
-    function saveDB() { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
-    function loadDB() {
+    function saveDB() {
+      try {
+        // First pass: ensure every live image message has a stable imageRef key
+        db.jobs.forEach(function(job) {
+          job.messages.forEach(function(msg) {
+            if (msg.imageData && !msg.imageRef) {
+              msg.imageRef = 'img_' + job.id + '_' + Date.now() + '_' + (++_imageRefCounter);
+            }
+          });
+        });
+        // Build a stripped copy for localStorage — imageData removed, imageRef retained
+        var dbCopy = JSON.parse(JSON.stringify(db));
+        var imagePromises = [];
+        db.jobs.forEach(function(job, ji) {
+          job.messages.forEach(function(msg, mi) {
+            if (msg.imageData && msg.imageRef) {
+              // Queue save of image data to IndexedDB (fire-and-forget)
+              imagePromises.push(ImageStore.save(msg.imageRef, msg.imageData).catch(function(err) {
+                debugLog('[DB] ⚠️ IndexedDB image save failed for ' + msg.imageRef + ': ' + err.message, 'warn');
+              }));
+              // Strip imageData from the localStorage copy
+              delete dbCopy.jobs[ji].messages[mi].imageData;
+            }
+          });
+        });
+        localStorage.setItem(DB_KEY, JSON.stringify(dbCopy));
+        // Fire-and-forget: persist images to IndexedDB in parallel
+        if (imagePromises.length) {
+          Promise.all(imagePromises).then(function() {
+            updateStorageIndicator();
+          }).catch(function(err) {
+            debugLog('[DB] ⚠️ One or more IndexedDB image saves failed: ' + (err && err.message), 'warn');
+            updateStorageIndicator();
+          });
+        } else {
+          updateStorageIndicator();
+        }
+      } catch(e) {
+        if (e.name === 'QuotaExceededError') {
+          debugLog('[DB] ⚠️ localStorage quota exceeded! Data is preserved in memory but may not survive page reload. Use Export to save your work.', 'error');
+          showStorageWarning();
+          // Last-ditch fallback: try saving with all imageData stripped
+          try {
+            var stripped = JSON.parse(JSON.stringify(db));
+            stripped.jobs.forEach(function(job) {
+              job.messages.forEach(function(msg) { delete msg.imageData; });
+            });
+            localStorage.setItem(DB_KEY, JSON.stringify(stripped));
+            debugLog('[DB] Saved stripped DB (no image data) after quota exceeded.', 'warn');
+          } catch(e2) {
+            debugLog('[DB] ❌ Could not save even stripped DB: ' + e2.message, 'error');
+          }
+        } else {
+          debugLog('[DB] ❌ saveDB error: ' + e.message, 'error');
+        }
+      }
+    }
+
+    async function loadDB() {
       var raw = localStorage.getItem(DB_KEY);
       if (raw) {
         try {
@@ -831,6 +1016,25 @@
           if (db.extractDocImages === undefined) db.extractDocImages = false;
           if (db.autosaveEnabled === undefined) db.autosaveEnabled = true;
           if (db.autosaveIntervalMin === undefined) db.autosaveIntervalMin = DEFAULT_AUTOSAVE_INTERVAL_MIN;
+          // Rehydrate imageData from IndexedDB for messages that have imageRef
+          for (var i = 0; i < db.jobs.length; i++) {
+            var job = db.jobs[i];
+            for (var k = 0; k < job.messages.length; k++) {
+              var msg = job.messages[k];
+              if (msg.imageRef && !msg.imageData) {
+                try {
+                  var data = await ImageStore.get(msg.imageRef);
+                  if (data) {
+                    msg.imageData = data;
+                  } else {
+                    debugLog('[DB] ⚠️ Image not found in IndexedDB for ref ' + msg.imageRef + ' — image may be lost', 'warn');
+                  }
+                } catch(imgErr) {
+                  debugLog('[DB] ⚠️ IndexedDB error rehydrating ' + msg.imageRef + ' (' + imgErr.name + '): ' + imgErr.message, 'warn');
+                }
+              }
+            }
+          }
         } catch(e) {
           db = { jobs:[], activeJobId:null, activeView:"summary", summary:"", summaryTitle:"Document Summary",
             summaryStyle:{ fontFamily:"sans-serif", fontSize:16, textColor:"#1f2328", bgColor:"#ffffff" },
@@ -4393,8 +4597,8 @@
       debugLog('[IMG] handleImageFile called: name="' + name + '", blob=' + (blob && blob.size != null ? blob.size + ' bytes, type=' + blob.type : (blob ? 'unknown size' : 'null')), 'info');
       if (!db.activeJobId) { debugLog('[IMG] ⚠️ No active job — image ignored', 'warn'); return; }
       var job = getJob(db.activeJobId); if (!job) { debugLog('[IMG] ⚠️ Job not found — image ignored', 'warn'); return; }
-      var MAX_WIDTH = 1920;
-      var JPEG_QUALITY = 0.85;
+      var MAX_WIDTH = 1280;
+      var JPEG_QUALITY = 0.7;
       var reader = new FileReader();
       reader.onload = function(e) {
         var dataUrl = e.target.result;
@@ -4529,15 +4733,18 @@
     function escapeHtml(t) { var d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
 
     // ===== INIT =====
-    loadDB(); loadToken(); renderSidebar(); renderView();
-    var _mdci = document.getElementById("max-doc-chars-input");
-    if (_mdci) _mdci.value = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
-    var _edti = document.getElementById("extract-doc-images-toggle");
-    if (_edti) _edti.checked = !!db.extractDocImages;
-    var _asti = document.getElementById("autosave-toggle");
-    if (_asti) _asti.checked = db.autosaveEnabled !== false;
-    if (db.autosaveEnabled !== false) startAutosave();
-    if (activeProvider === "github" && token) setTimeout(fetchModels, 500);
+    (async function() {
+      await loadDB(); loadToken(); renderSidebar(); renderView();
+      var _mdci = document.getElementById("max-doc-chars-input");
+      if (_mdci) _mdci.value = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+      var _edti = document.getElementById("extract-doc-images-toggle");
+      if (_edti) _edti.checked = !!db.extractDocImages;
+      var _asti = document.getElementById("autosave-toggle");
+      if (_asti) _asti.checked = db.autosaveEnabled !== false;
+      if (db.autosaveEnabled !== false) startAutosave();
+      if (activeProvider === "github" && token) setTimeout(fetchModels, 500);
+      updateStorageIndicator();
+    })();
       /* ===== Open all external links in a new tab ===== */
   document.addEventListener('click', function (e) {
     var link = e.target.closest('a[href]');
