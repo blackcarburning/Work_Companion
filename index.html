@@ -305,6 +305,7 @@
       transition: background 0.15s;
     }
     .ui-theme-actions button:hover { background: rgba(255,255,255,0.13); }
+    .sidebar-btn.active-theme-btn { background: var(--accent-light-bg) !important; }
 
     #summary-tab {
       padding: 0.6rem 0.8rem;
@@ -856,7 +857,7 @@
           💾 Autosave every 5 min
         </label>
       </div>
-      <div class="storage-indicator" id="storage-indicator" title="localStorage usage" style="margin-top:0.25rem">💾 Storage: <span id="storage-usage-text">calculating…</span></div>
+      <div class="storage-indicator" id="storage-indicator" title="localStorage usage" style="margin-top:0.25rem">💾 Storage: <span id="storage-usage-text">calculating...</span></div>
     </div>
 
     <!-- ===== SIDEBAR HEADER — buttons/controls ===== -->
@@ -1266,7 +1267,7 @@
       { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" }
     ];
 
-    if (typeof marked !== 'undefined' && marked.setOptions) {
+    if (typeof marked !== 'undefined' && marked !== null && marked.setOptions) {
       marked.setOptions({
         highlight: function(code, lang) {
           if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
@@ -5365,7 +5366,7 @@
         ? "linear-gradient(180deg, " + t.sidebarBg1 + " 0%, " + t.sidebarBg2 + " 50%, " + (t.sidebarBg3 || t.sidebarBg2) + " 100%)"
         : t.sidebarBg1;
       // Derive rgba versions for sidebar elements based on whether sidebar is light or dark
-      var isLightSidebar = _isLightColor(t.sidebarBg1 || t.sidebarBg2 || "#1a1a2e");
+      var isLightSidebar = _isLightColor(t.sidebarBg1 ? t.sidebarBg1 : (t.sidebarBg2 || "#1a1a2e"));
       var sidebarBorder = isLightSidebar ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.07)";
       var sidebarHover = isLightSidebar ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.07)";
       var sidebarActiveBg = isLightSidebar
@@ -5592,7 +5593,7 @@
       panel.classList.toggle("open");
       var isOpen = panel.classList.contains("open");
       var btn = document.getElementById("ui-theme-toggle-btn");
-      if (btn) btn.style.background = isOpen ? "rgba(99,102,241,0.18)" : "";
+      if (btn) btn.classList.toggle("active-theme-btn", isOpen);
       if (isOpen) {
         // Refresh preview bar when opening
         var t = (_currentUITheme === "custom" && _customUITheme) ? _customUITheme : (UI_THEMES[_currentUITheme] || UI_THEMES["professional"]);
