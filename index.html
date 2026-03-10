@@ -1384,7 +1384,31 @@
         });
       }
 
-      return { save: save, get: get, remove: remove, count: count };
+      function getAllKeys() {
+        return openDB().then(function(db) {
+          return new Promise(function(resolve, reject) {
+            var tx = db.transaction(STORE_NAME, 'readonly');
+            var store = tx.objectStore(STORE_NAME);
+            var req = store.getAllKeys();
+            req.onsuccess = function() { resolve(req.result || []); };
+            req.onerror = function(e) { reject(e.target.error); };
+          });
+        });
+      }
+
+      function clear() {
+        return openDB().then(function(db) {
+          return new Promise(function(resolve, reject) {
+            var tx = db.transaction(STORE_NAME, 'readwrite');
+            var store = tx.objectStore(STORE_NAME);
+            var req = store.clear();
+            req.onsuccess = function() { resolve(); };
+            req.onerror = function(e) { reject(e.target.error); };
+          });
+        });
+      }
+
+      return { save: save, get: get, remove: remove, count: count, getAllKeys: getAllKeys, clear: clear };
     })();
 
     // ===== STORAGE UTILITIES =====
@@ -1424,6 +1448,41 @@
     function hideStorageWarning() {
       var banner = document.getElementById('storage-warning-banner');
       if (banner) banner.classList.remove('visible');
+    }
+
+    async function purgeOrphanedImages() {
+      try {
+        var allKeys = await ImageStore.getAllKeys();
+        if (!allKeys || allKeys.length === 0) return;
+
+        // Build set of all imageRef values currently in use
+        var liveRefs = {};
+        db.jobs.forEach(function(job) {
+          job.messages.forEach(function(msg) {
+            if (msg.imageRef) {
+              liveRefs[msg.imageRef] = true;
+            }
+          });
+        });
+
+        // Remove any IndexedDB keys that aren't referenced by current messages
+        var orphaned = allKeys.filter(function(key) { return !liveRefs[key]; });
+        if (orphaned.length === 0) return;
+
+        debugLog('[DB] 🧹 Purging ' + orphaned.length + ' orphaned image(s) from IndexedDB (keeping ' + (allKeys.length - orphaned.length) + ' live)', 'info');
+
+        var removePromises = orphaned.map(function(key) {
+          return ImageStore.remove(key).catch(function(err) {
+            debugLog('[DB] ⚠️ Failed to remove orphaned image ' + key + ': ' + err.message, 'warn');
+          });
+        });
+
+        await Promise.all(removePromises);
+        debugLog('[DB] ✅ Purged ' + orphaned.length + ' orphaned image(s)', 'info');
+        updateStorageIndicator();
+      } catch(err) {
+        debugLog('[DB] ⚠️ purgeOrphanedImages error: ' + err.message, 'warn');
+      }
     }
 
     // ===== DB =====
@@ -4044,6 +4103,7 @@
       db.jobs = db.jobs.filter(function(j) { return j.id !== id; });
       if (db.activeJobId === id) { db.activeJobId = db.jobs.length ? db.jobs[0].id : null; if (!db.activeJobId) db.activeView = "summary"; }
       saveDB(); renderSidebar(); renderView();
+      purgeOrphanedImages();
     }
     function editSystemPrompt() {
       if (!db.activeJobId) return; var j = getJob(db.activeJobId); if (!j) return;
@@ -4079,6 +4139,7 @@
 
       saveDB();
       renderView();
+      purgeOrphanedImages();
     }
 
     function saveCurrentNotes() {
@@ -4804,6 +4865,7 @@
         job.messages[msgIdx] = { role: "user", content: summaryContent, isDocument: true, documentName: summaryName, documentInfo: summaryInfo };
         saveDB();
         renderView();
+        purgeOrphanedImages();
         debugLog('[SUMMARISE] ✅ Document "' + origName + '" summarised successfully (' + wordCount + ' words)', 'info');
       } catch (err) {
         sumBtn.textContent = origBtnText;
@@ -4854,6 +4916,7 @@
             if (!db.summariseSystemPrompt) db.summariseSystemPrompt = DEFAULT_SUMMARISE_SYSTEM_PROMPT;
             if (!db.summariseUserPrompt) db.summariseUserPrompt = DEFAULT_SUMMARISE_USER_PROMPT;
             saveDB(); renderSidebar(); renderView();
+            purgeOrphanedImages();
           }
         } catch (err) { alert("Failed to parse: " + err.message); }
       };
@@ -4895,6 +4958,13 @@
       anthropicToken = savedAnthropicToken;
       activeProvider = savedProvider;
       saveDB();
+      // Clear ALL images from IndexedDB since workspace is reset
+      ImageStore.clear().then(function() {
+        debugLog('[DB] 🧹 Cleared all images from IndexedDB on workspace reset', 'info');
+        updateStorageIndicator();
+      }).catch(function(err) {
+        debugLog('[DB] ⚠️ Failed to clear IndexedDB on reset: ' + err.message, 'warn');
+      });
       var _mdci = document.getElementById("max-doc-chars-input");
       if (_mdci) _mdci.value = db.maxDocChars;
       var _edti = document.getElementById("extract-doc-images-toggle");
@@ -5969,6 +6039,7 @@
       if (db.autosaveEnabled !== false) startAutosave();
       if (activeProvider === "github" && token) setTimeout(fetchModels, 500);
       updateStorageIndicator();
+      purgeOrphanedImages();
     })();
       /* ===== Open all external links in a new tab ===== */
   document.addEventListener('click', function (e) {
