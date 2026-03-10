@@ -882,6 +882,7 @@
           💾 Autosave every 5 min
         </label>
       </div>
+      <button class="sidebar-btn" onclick="purgeStorage()" aria-label="Purge all stored images from browser storage" style="margin-top:0.3rem; background:#fef2f2; border-color:#fca5a5; color:#c0202a;">🧹 Purge Storage</button>
       <div class="storage-indicator" id="storage-indicator" title="localStorage usage" style="margin-top:0.25rem;display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">💾 <span id="storage-usage-text">calculating...</span><button class="sidebar-btn" onclick="cleanStorage()" style="font-size:0.68rem;padding:0.1rem 0.4rem;margin:0;line-height:1.4" title="Purge orphaned images and clear models cache">🧹 Clean</button></div>
     </div>
 
@@ -1521,6 +1522,63 @@
         btn.disabled = true;
         setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 3000);
       }
+    }
+
+    async function purgeStorage() {
+      debugLog('[STORAGE] 🧹 Purge Storage initiated by user', 'info');
+
+      // Step 1: Offer to export data first
+      var wantsExport = confirm(
+        "⚠️ Purge Storage\n\n" +
+        "This will clear ALL images stored in IndexedDB and remove image data from your current session.\n\n" +
+        "Your conversations and text content will NOT be affected.\n\n" +
+        "Would you like to export your data first?"
+      );
+      if (wantsExport) {
+        try {
+          await exportData();
+        } catch(e) {
+          debugLog('[STORAGE] ⚠️ Export failed before purge: ' + e.message, 'warn');
+          alert('⚠️ Export failed. Purge aborted to protect your data. Please try exporting manually before purging.');
+          return;
+        }
+      }
+
+      // Step 2: Final confirmation
+      var confirmed = confirm(
+        "Are you absolutely sure?\n\n" +
+        "This will permanently delete all stored images. This cannot be undone."
+      );
+      if (!confirmed) {
+        debugLog('[STORAGE] 🧹 Purge Storage cancelled by user', 'info');
+        return;
+      }
+
+      debugLog('[STORAGE] 🧹 Purge Storage confirmed — clearing IndexedDB and session image data', 'info');
+
+      // Clear all IndexedDB image data
+      try {
+        await ImageStore.clear();
+      } catch(e) {
+        debugLog('[STORAGE] ⚠️ ImageStore.clear() error: ' + e.message, 'warn');
+      }
+
+      // Strip imageData and imageRef from all messages in memory
+      db.jobs.forEach(function(job) {
+        job.messages.forEach(function(msg) {
+          if (msg.imageData || msg.imageRef) {
+            delete msg.imageData;
+            delete msg.imageRef;
+          }
+        });
+      });
+
+      // Persist cleaned state and refresh indicator
+      saveDB();
+      updateStorageIndicator();
+
+      debugLog('[STORAGE] 🧹 Storage purged: all images cleared from IndexedDB and session', 'info');
+      alert('✅ Storage purged successfully. All images have been removed.');
     }
 
     function showStorageWarning() {
