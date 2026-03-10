@@ -4479,6 +4479,9 @@
             eb.onclick = function() { enterEditMode(db.activeJobId, i, msgDiv, bd, eb); };
           })(idx, editBtnRef, body);
         }
+      } else if (role === "error") {
+        body.style.whiteSpace = "pre-wrap";
+        body.textContent = content;
       }
 
       msgDiv.appendChild(label); msgDiv.appendChild(body); chatDiv.appendChild(msgDiv); chatDiv.scrollTop = chatDiv.scrollHeight;
@@ -4499,6 +4502,54 @@
     }
 
     // ===== CHAT =====
+    function formatErrorMessage(status, errorText, elapsed, providerName) {
+      var elapsedSec = Math.round(elapsed / 1000);
+
+      if (status === 429) {
+        return "⚠️ Rate Limited by " + providerName + "\n\n" +
+          "The API returned 429 (Too Many Requests) after " + RATE_LIMIT_MAX_RETRIES + " retries over ~" + elapsedSec + " seconds.\n\n" +
+          "💡 What you can do:\n" +
+          "• Wait a minute or two and try again\n" +
+          "• Switch to a different model (some models have higher rate limits)\n" +
+          "• Reduce the conversation length by deleting or excluding older messages\n" +
+          "• Try a different provider (GitHub Models / OpenAI / Anthropic)";
+      }
+
+      if (status === 401 || status === 403) {
+        return "🔑 Authentication Error (" + status + ") from " + providerName + "\n\n" +
+          "Your API token was rejected. This usually means:\n" +
+          "• The token has expired or been revoked\n" +
+          "• The token doesn't have the required permissions\n" +
+          "• You've entered the wrong token for this provider\n\n" +
+          "💡 Try re-saving your API token in the settings above.";
+      }
+
+      if (status === 400) {
+        return "❌ Bad Request (400) from " + providerName + "\n\n" +
+          "The API couldn't process this request. This may happen if:\n" +
+          "• The conversation context is too large (try excluding some messages)\n" +
+          "• A document attachment is too long (try summarising it first)\n" +
+          "• The selected model doesn't support this request format\n\n" +
+          "💡 Check the Debug Console (🐛) for the full error details.";
+      }
+
+      if (status === 404) {
+        return "❌ Model Not Found (404) from " + providerName + "\n\n" +
+          "The selected model \"" + selectedModel + "\" was not found.\n\n" +
+          "💡 Try refreshing the model list (🔄) or selecting a different model.";
+      }
+
+      if (status >= 500) {
+        return "🔧 Server Error (" + status + ") from " + providerName + "\n\n" +
+          "The " + providerName + " API is experiencing issues (responded in " + elapsedSec + "s).\n\n" +
+          "💡 This is usually temporary — wait a moment and try again.";
+      }
+
+      return "❌ Error " + status + " from " + providerName + " (after " + elapsedSec + "s)\n\n" +
+        (errorText || "").substring(0, 300) + ((errorText || "").length > 300 ? "..." : "") + "\n\n" +
+        "💡 Check the Debug Console (🐛) for full details.";
+    }
+
     function showTyping() { var c = document.getElementById("chat"); if (!c) return; var m = document.createElement("div"); m.className = "message message-assistant"; m.id = "typing-indicator"; m.innerHTML = '<div class="message-label"><span>Assistant</span></div><div><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>'; c.appendChild(m); c.scrollTop = c.scrollHeight; }
     function removeTyping() { var e = document.getElementById("typing-indicator"); if (e) e.remove(); }
 
@@ -4595,7 +4646,7 @@
           if (!r.ok) {
             var et = await r.text();
             debugLog('[API] ❌ Anthropic error HTTP ' + r.status + ' (' + elapsed + 'ms): ' + et, 'error');
-            addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB();
+            addMessageToDOM("error", formatErrorMessage(r.status, et, elapsed, "Anthropic"), false); job.messages.pop(); saveDB();
           } else {
             debugLog('[API] ✅ Anthropic response HTTP ' + r.status + ' in ' + elapsed + 'ms', 'info');
             d = await r.json();
@@ -4626,7 +4677,7 @@
           if (!r.ok) {
             var et = await r.text();
             debugLog('[API] ❌ Error HTTP ' + r.status + ' (' + elapsed + 'ms): ' + et, 'error');
-            addMessageToDOM("error", "Error " + r.status + ": " + et, false); job.messages.pop(); saveDB();
+            addMessageToDOM("error", formatErrorMessage(r.status, et, elapsed, activeProvider === "openai" ? "OpenAI" : "GitHub Models"), false); job.messages.pop(); saveDB();
           } else {
             debugLog('[API] ✅ Response HTTP ' + r.status + ' in ' + elapsed + 'ms', 'info');
             d = await r.json();
@@ -4641,7 +4692,16 @@
         removeTyping();
         debugLog('[API] ❌ Caught exception: name="' + err.name + '", message="' + err.message + '"', 'error');
         if (err.stack) debugLog('[API] Stack: ' + err.stack, 'error');
-        addMessageToDOM("error", err.message, false); job.messages.pop(); saveDB();
+        var friendlyErr = err.message;
+        if (err.message && err.message.indexOf("Failed to fetch") !== -1) {
+          friendlyErr = "🌐 Network Error\n\nCould not reach the " + (activeProvider === "github" ? "GitHub Models" : activeProvider === "openai" ? "OpenAI" : "Anthropic") + " API.\n\n💡 Check your internet connection and try again.";
+        } else if (err.message && err.message.indexOf("API error") !== -1) {
+          var statusMatch = err.message.match(/API error (\d+)/);
+          if (statusMatch) {
+            friendlyErr = formatErrorMessage(parseInt(statusMatch[1]), err.message, 0, activeProvider === "github" ? "GitHub Models" : activeProvider === "openai" ? "OpenAI" : "Anthropic");
+          }
+        }
+        addMessageToDOM("error", friendlyErr, false); job.messages.pop(); saveDB();
       }
 
       input.disabled = false; document.getElementById("sendBtn").disabled = false; input.focus();
@@ -4749,7 +4809,14 @@
         sumBtn.textContent = origBtnText;
         sumBtn.disabled = false;
         debugLog('[SUMMARISE] ❌ Error: ' + err.message, 'error');
-        alert("Summarisation failed: " + err.message);
+        var alertMsg = err.message;
+        if (err.message && err.message.indexOf("API error") !== -1) {
+          var statusMatch = err.message.match(/API error (\d+)/);
+          if (statusMatch) {
+            alertMsg = formatErrorMessage(parseInt(statusMatch[1]), err.message, 0, activeProvider === "github" ? "GitHub Models" : activeProvider === "openai" ? "OpenAI" : "Anthropic");
+          }
+        }
+        alert("Summarisation failed:\n\n" + alertMsg);
       }
     }
 
