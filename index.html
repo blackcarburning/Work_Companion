@@ -419,6 +419,22 @@
     #token-status { font-size: 0.72rem; }
     .saved { color: var(--accent); font-weight: 600; }
     .error-text { color: #d93025; }
+    #name-section { display: flex; align-items: center; gap: 0.35rem; }
+    #name-section label { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+    #name-section input {
+      padding: 0.28rem 0.5rem;
+      border: 1px solid var(--border-light); border-radius: 7px; font-size: 0.75rem; font-family: var(--font-family);
+      transition: border-color 0.18s, box-shadow 0.18s; background: var(--bg-input); color: var(--text-primary);
+    }
+    #name-section input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+    #name-section button {
+      padding: 0.28rem 0.6rem; background: linear-gradient(135deg, var(--accent), var(--accent-alt)); color: #fff;
+      border: none; border-radius: 7px; cursor: pointer; font-weight: 600; font-size: 0.72rem;
+      font-family: var(--font-family); transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    #name-section button:hover { background: linear-gradient(135deg, var(--accent-dark), var(--accent-darker)); transform: translateY(-1px); box-shadow: 0 4px 12px var(--accent-light-bg); }
+    #name-section button:active { transform: translateY(0); box-shadow: none; }
+    #name-status { font-size: 0.72rem; }
 
     #context-bar {
       padding: 0.35rem 1.1rem; background: #fffbeb; border-bottom: 1px solid #f0d060;
@@ -688,10 +704,17 @@
     .document-indicator { font-size: 0.93rem; font-weight: 600; color: #4f46e5; }
     .document-toggle-btn {
       margin-top: 0.4rem; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 7px;
-      padding: 0.18rem 0.65rem; font-size: 0.73rem; cursor: pointer; color: #4f46e5; font-weight: 600; display: block;
+      padding: 0.18rem 0.65rem; font-size: 0.73rem; cursor: pointer; color: #4f46e5; font-weight: 600; display: inline-block;
       font-family: inherit; transition: background 0.15s;
     }
     .document-toggle-btn:hover { background: #dbeafe; }
+    .document-summarise-btn {
+      margin-top: 0.4rem; margin-left: 0.4rem; background: #fefce8; border: 1px solid #fde68a; border-radius: 7px;
+      padding: 0.18rem 0.65rem; font-size: 0.73rem; cursor: pointer; color: #92400e; font-weight: 600; display: inline-block;
+      font-family: inherit; transition: background 0.15s;
+    }
+    .document-summarise-btn:hover { background: #fef08a; }
+    .document-summarise-btn:disabled { opacity: 0.6; cursor: not-allowed; }
     .document-content {
       max-height: 300px; overflow-y: auto; background: #f5f7fb; border: 1px solid #dde1ea;
       border-radius: 8px; padding: 0.75rem; font-family: monospace; font-size: 0.8rem;
@@ -1011,6 +1034,12 @@
         <button onclick="saveToken()">Save</button>
         <span id="token-status"></span>
       </div>
+      <div id="name-section">
+        <label for="nameInput">Name:</label>
+        <input type="text" id="nameInput" placeholder="Your name" style="width:110px" />
+        <button onclick="saveName()">Save</button>
+        <span id="name-status"></span>
+      </div>
     </div>
     <div id="context-bar">
       <span id="context-bar-text"></span>
@@ -1102,6 +1131,8 @@
     var OPENAI_TOKEN_KEY = "openai_token";
     var ANTHROPIC_TOKEN_KEY = "anthropic_token";
     var MODELS_CACHE_KEY = "github_models_cache";
+    var NAME_KEY = "wc_user_name";
+    var userName = "";
     var _imageRefCounter = 0;
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
@@ -1528,6 +1559,27 @@
       updateProviderUI();
     }
 
+    // ===== USER NAME =====
+    function saveName() {
+      var input = document.getElementById("nameInput").value.trim();
+      userName = input;
+      if (input) {
+        localStorage.setItem(NAME_KEY, input);
+      } else {
+        localStorage.removeItem(NAME_KEY);
+      }
+      document.getElementById("name-status").innerHTML = '<span class="saved">✅ Saved</span>';
+      setTimeout(function() { document.getElementById("name-status").innerHTML = ""; }, 2000);
+    }
+    function loadName() {
+      var saved = localStorage.getItem(NAME_KEY);
+      if (saved) {
+        userName = saved;
+        var nameInput = document.getElementById("nameInput");
+        if (nameInput) nameInput.value = saved;
+      }
+    }
+
     // ===== PROVIDER =====
     function onProviderChange() {
       activeProvider = document.getElementById("provider-select").value;
@@ -1660,6 +1712,11 @@
           msgs = [sys].concat(first).concat(pinnedInMiddle).concat(last);
         }
         debugLog('[CTX] Sliding window trimmed ' + skip + ' messages (kept first ' + KEEP_FIRST + ' + last ' + KEEP_LAST + ' exchanges)', 'warn');
+      }
+      // Inject user name as a developer message right after the system message
+      if (userName) {
+        msgs = [msgs[0]].concat([{ role: "developer", content: "My name is " + userName }]).concat(msgs.slice(1));
+        debugLog('[CTX] Injected user name developer message: "My name is ' + userName + '"', 'info');
       }
       // Convert image messages to vision multipart format for supported providers
       var isVisionCapable = (activeProvider === "openai" || activeProvider === "github");
@@ -4345,6 +4402,13 @@
             };
           })(toggleBtn, contentDiv);
           body.appendChild(toggleBtn);
+          var sumBtn = document.createElement("button");
+          sumBtn.className = "document-summarise-btn";
+          sumBtn.textContent = "📝 Summarise & Delete";
+          (function(jId, mIdx, sb) {
+            sb.onclick = function() { summariseDocument(jId, mIdx, sb); };
+          })(db.activeJobId, actualIndex, sumBtn);
+          body.appendChild(sumBtn);
           body.appendChild(contentDiv);
           if (editBtnRef) { editBtnRef.disabled = true; editBtnRef.title = "Document messages cannot be edited"; }
         } else if (msg && msg.isManualContent) {
@@ -4574,6 +4638,65 @@
 
       input.disabled = false; document.getElementById("sendBtn").disabled = false; input.focus();
       updateContextBar(); renderSidebar();
+    }
+
+    async function summariseDocument(jobId, msgIdx, sumBtn) {
+      var job = getJob(jobId); if (!job) return;
+      var msg = job.messages[msgIdx]; if (!msg || !msg.isDocument) return;
+      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : anthropicToken);
+      if (!activeToken) { alert("Please save your API token first."); return; }
+
+      var origBtnText = sumBtn.textContent;
+      sumBtn.textContent = "⏳ Summarising...";
+      sumBtn.disabled = true;
+
+      var systemMsg = "You are a document summariser. Summarise the following document concisely, preserving all key facts, figures, names, dates, and actionable information. The summary should be detailed enough to be useful as reference material.";
+      var userMsg = "Please summarise this document:\n\n" + msg.content;
+      var r, d, summary;
+
+      try {
+        if (activeProvider === "anthropic") {
+          var anthropicBody = JSON.stringify({ model: selectedModel, max_tokens: 4096, system: systemMsg, messages: [{ role: "user", content: userMsg }] });
+          r = await fetchWithRetry(ANTHROPIC_DIRECT_URL, {
+            method: "POST",
+            headers: { "x-api-key": anthropicToken, "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+            body: anthropicBody
+          }, "Anthropic");
+          if (!r.ok) { var et = await r.text(); throw new Error("API error " + r.status + ": " + et); }
+          d = await r.json();
+          summary = (d.content && d.content[0] && d.content[0].text) || "";
+        } else {
+          var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
+          var authToken = activeProvider === "openai" ? openaiToken : token;
+          var openaiBody = JSON.stringify({ model: selectedModel, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userMsg }] });
+          r = await fetchWithRetry(endpoint, {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
+            body: openaiBody
+          }, activeProvider === "openai" ? "OpenAI" : "GitHub Models");
+          if (!r.ok) { var et = await r.text(); throw new Error("API error " + r.status + ": " + et); }
+          d = await r.json();
+          summary = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
+        }
+
+        if (!summary) throw new Error("No summary returned.");
+
+        var origName = msg.documentName;
+        var summaryName = origName + " (Summary)";
+        var wordCount = summary.trim() ? summary.trim().split(/\s+/).length : 0;
+        var summaryInfo = "Summary - " + wordCount + " words";
+        var summaryContent = "📄 Summary of \"" + origName + "\":\n\n" + summary;
+
+        job.messages[msgIdx] = { role: "user", content: summaryContent, isDocument: true, documentName: summaryName, documentInfo: summaryInfo };
+        saveDB();
+        renderView();
+        debugLog('[SUMMARISE] ✅ Document "' + origName + '" summarised successfully (' + wordCount + ' words)', 'info');
+      } catch (err) {
+        sumBtn.textContent = origBtnText;
+        sumBtn.disabled = false;
+        debugLog('[SUMMARISE] ❌ Error: ' + err.message, 'error');
+        alert("Summarisation failed: " + err.message);
+      }
     }
 
     // ===== EXPORT =====
@@ -5711,7 +5834,7 @@
     // ===== INIT =====
     (async function() {
       loadUIThemeSetting();
-      await loadDB(); loadToken(); renderSidebar(); renderView();
+      await loadDB(); loadToken(); loadName(); renderSidebar(); renderView();
       var _mdci = document.getElementById("max-doc-chars-input");
       if (_mdci) _mdci.value = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
       var _edti = document.getElementById("extract-doc-images-toggle");
