@@ -2292,24 +2292,421 @@
         var contentW = pageW - marginL - theme.spacing.marginRight;
         var y = marginT;
 
-        function lh(fontSize) { return fontSize * 0.45; }
+        function lh(fs) { return fs * 0.45; }
 
-        function checkBreak(needed) {
-          if (y + needed > pageH - marginB) {
-            pdf.addPage();
-            y = marginT;
-          }
+        function hexToRgbLocal(hex) {
+          hex = (hex || "#888888").replace("#", "");
+          if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+          if (hex.length !== 6) return [136, 136, 136];
+          return [parseInt(hex.slice(0,2),16), parseInt(hex.slice(2,4),16), parseInt(hex.slice(4,6),16)];
         }
 
-        function writeWrapped(text, fontSize, style) {
-          pdf.setFontSize(fontSize);
-          if (style) pdf.setFont(theme.fonts.body, style);
-          var lines = pdf.splitTextToSize(text, contentW);
-          lines.forEach(function(line) {
-            checkBreak(lh(fontSize) + 1);
-            pdf.text(line, marginL, y);
-            y += lh(fontSize) + 0.5;
+        function checkBreak(needed) {
+          if (y + needed > pageH - marginB) { pdf.addPage(); y = marginT; }
+        }
+
+        function setStyle(fs, style, r, g, b) {
+          pdf.setFontSize(fs);
+          pdf.setFont(theme.fonts.body, style || "normal");
+          if (r !== undefined) { pdf.setTextColor(r, g, b); } else { pdf.setTextColor(...theme.colors.body); }
+        }
+
+        function writeWrapped(text, fs, style, indent, r, g, b) {
+          if (!text) return;
+          setStyle(fs, style, r, g, b);
+          var x = marginL + (indent || 0);
+          var w = contentW - (indent || 0);
+          var lines = pdf.splitTextToSize(text, w);
+          var lineH = lh(fs);
+          for (var i = 0; i < lines.length; i++) {
+            checkBreak(lineH);
+            pdf.text(lines[i], x, y);
+            y += lineH;
+          }
+          if (r !== undefined) { pdf.setTextColor(...theme.colors.body); }
+        }
+
+        function hRule(thickness, colorArr) {
+          checkBreak(3);
+          pdf.setLineWidth(thickness || 0.3);
+          var c = colorArr || theme.colors.sectionDivider;
+          pdf.setDrawColor(c[0], c[1], c[2]);
+          pdf.line(marginL, y, pageW - theme.spacing.marginRight, y);
+          pdf.setDrawColor(0, 0, 0);
+          y += 2;
+        }
+
+        // ===== MARKDOWN / CARD RENDERING HELPERS =====
+
+        function pdfRenderCodeBlock(codeLines, startX, startY, maxW) {
+          var code = codeLines.join('\n');
+          var padding = 3;
+          pdf.setFont("courier", "normal");
+          pdf.setFontSize(8.5);
+          var wrappedLines = pdf.splitTextToSize(code, maxW - padding * 2);
+          var lineH = 3.5;
+          var blockH = wrappedLines.length * lineH + padding * 2;
+          if (startY > marginT) { startY += 3; }
+          if (startY + blockH > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFillColor(22, 27, 34);
+          pdf.rect(startX, startY, maxW, blockH, 'F');
+          pdf.setTextColor(230, 237, 243);
+          pdf.text(wrappedLines, startX + padding, startY + padding + lineH);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          return startY + blockH + 5;
+        }
+
+        function pdfRenderHeading(text, level, startX, startY, maxW) {
+          var fs = level === 1 ? theme.sizes.h1 : (level === 2 ? theme.sizes.h2 : theme.sizes.h3);
+          var spaceBefore = level === 1 ? 8 : (level === 2 ? 6 : 4);
+          var lineHv = lh(fs) + 1;
+          if (startY > marginT) { startY += spaceBefore; }
+          if (startY + lineHv + 4 > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFont(theme.fonts.heading, "bold");
+          pdf.setFontSize(fs);
+          pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
+          var textLines = pdf.splitTextToSize(text, maxW);
+          for (var ti = 0; ti < textLines.length; ti++) {
+            pdf.text(textLines[ti], startX, startY);
+            startY += lineHv;
+          }
+          if (level <= 2) {
+            pdf.setDrawColor(theme.colors.sectionDivider[0], theme.colors.sectionDivider[1], theme.colors.sectionDivider[2]);
+            pdf.setLineWidth(0.2);
+            pdf.line(startX, startY, startX + maxW, startY);
+            pdf.setDrawColor(0, 0, 0);
+            startY += 2;
+          }
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          return startY + 1;
+        }
+
+        function pdfRenderBullet(text, startX, startY, maxW) {
+          var lineHv = lh(theme.sizes.body);
+          var indent = 5;
+          if (startY + lineHv > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          pdf.text("\u2022", startX + indent - 3, startY);
+          var textLines = pdf.splitTextToSize(text, maxW - indent - 2);
+          for (var ti = 0; ti < textLines.length; ti++) {
+            if (startY > pageH - marginB) { pdf.addPage(); startY = marginT; }
+            pdf.text(textLines[ti], startX + indent, startY);
+            startY += lineHv;
+          }
+          return startY + 1;
+        }
+
+        function pdfRenderNumberedItem(text, startX, startY, maxW) {
+          var lineHv = lh(theme.sizes.body);
+          var indent = 7;
+          if (startY + lineHv > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          var textLines = pdf.splitTextToSize(text, maxW - indent);
+          for (var ti = 0; ti < textLines.length; ti++) {
+            if (ti > 0 && startY > pageH - marginB) { pdf.addPage(); startY = marginT; }
+            pdf.text(textLines[ti], startX + indent, startY);
+            startY += lineHv;
+          }
+          return startY + 1;
+        }
+
+        function pdfRenderBlockquote(text, startX, startY, maxW) {
+          var lineHv = lh(theme.sizes.body);
+          var indent = 5;
+          if (startY + lineHv > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          pdf.setFont(theme.fonts.body, "italic");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(87, 96, 106);
+          var textLines = pdf.splitTextToSize(text, maxW - indent - 2);
+          var bqStartY = startY;
+          for (var ti = 0; ti < textLines.length; ti++) {
+            if (startY > pageH - marginB) { pdf.addPage(); startY = marginT; bqStartY = startY; }
+            pdf.text(textLines[ti], startX + indent, startY);
+            startY += lineHv;
+          }
+          pdf.setFillColor(208, 215, 222);
+          pdf.rect(startX, bqStartY - lineHv + 1, 1, startY - bqStartY + lineHv - 1, 'F');
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          return startY + 3;
+        }
+
+        function pdfRenderHRule(startX, startY, maxW) {
+          pdf.setDrawColor(theme.colors.sectionDivider[0], theme.colors.sectionDivider[1], theme.colors.sectionDivider[2]);
+          pdf.setLineWidth(0.3);
+          pdf.line(startX, startY, startX + maxW, startY);
+          pdf.setDrawColor(0, 0, 0);
+          return startY + 4;
+        }
+
+        function pdfRenderTable(rows, startX, startY, maxW) {
+          var parsedRows = rows.filter(function(r) {
+            return !r.trim().match(/^\|[\s\-:|]+\|$/);
+          }).map(function(r) {
+            return r.split('|').slice(1, -1).map(function(c) { return c.trim(); });
           });
+          if (parsedRows.length === 0) return startY;
+          var colCount = parsedRows[0].length;
+          if (colCount === 0) return startY;
+          var colWidth = maxW / colCount;
+          var rowHeight = 6;
+          if (startY + rowHeight * 2 > pageH - marginB) { pdf.addPage(); startY = marginT; }
+          for (var ri = 0; ri < parsedRows.length; ri++) {
+            if (startY + rowHeight > pageH - marginB) { pdf.addPage(); startY = marginT; }
+            var row = parsedRows[ri];
+            for (var ci = 0; ci < row.length; ci++) {
+              var cellX = startX + ci * colWidth;
+              if (ri === 0) {
+                pdf.setFillColor(246, 248, 250);
+                pdf.rect(cellX, startY, colWidth, rowHeight, 'F');
+                pdf.setFont(theme.fonts.body, "bold");
+              } else {
+                pdf.setFont(theme.fonts.body, "normal");
+              }
+              pdf.setDrawColor(208, 215, 222);
+              pdf.setLineWidth(0.2);
+              pdf.rect(cellX, startY, colWidth, rowHeight, 'S');
+              pdf.setFontSize(8.5);
+              pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+              var cellText = pdf.splitTextToSize(row[ci] || '', colWidth - 3);
+              pdf.text(cellText[0] || '', cellX + 1.5, startY + 4);
+            }
+            startY += rowHeight;
+          }
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setFont(theme.fonts.body, "normal");
+          return startY + 3;
+        }
+
+        function pdfRenderInlinePara(text, startX, startY, maxW) {
+          var clean = text
+            .replace(/\*\*([^*]+)\*\*/g, "$1")
+            .replace(/\*([^*]+)\*/g, "$1")
+            .replace(/__([^_]+)__/g, "$1")
+            .replace(/_([^_]+)_/g, "$1")
+            .replace(/`([^`]+)`/g, "$1")
+            .replace(/<[^>]+>/g, "");
+          var lineHv = lh(theme.sizes.body);
+          if (!clean.trim()) return startY + lineHv * 0.6;
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+          var textLines = pdf.splitTextToSize(clean, maxW);
+          for (var ti = 0; ti < textLines.length; ti++) {
+            if (startY > pageH - marginB) { pdf.addPage(); startY = marginT; }
+            pdf.text(textLines[ti], startX, startY);
+            startY += lineHv;
+          }
+          return startY;
+        }
+
+        function pdfRenderMarkdown(markdown, startX, startY, maxW) {
+          if (!markdown) return startY;
+          var lines = markdown.split('\n');
+          var inCodeBlock = false;
+          var codeBlockLines = [];
+          var tableRows = [];
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (line.trim().indexOf('```') === 0) {
+              if (inCodeBlock) {
+                startY = pdfRenderCodeBlock(codeBlockLines, startX, startY, maxW);
+                codeBlockLines = [];
+                inCodeBlock = false;
+              } else {
+                inCodeBlock = true;
+              }
+              continue;
+            }
+            if (inCodeBlock) { codeBlockLines.push(line); continue; }
+            if (line.trim().charAt(0) === '|' && line.trim().charAt(line.trim().length - 1) === '|') {
+              tableRows.push(line);
+              continue;
+            } else if (tableRows.length > 0) {
+              startY = pdfRenderTable(tableRows, startX, startY, maxW);
+              tableRows = [];
+            }
+            if (line.indexOf('### ') === 0) { startY = pdfRenderHeading(line.slice(4), 3, startX, startY, maxW); continue; }
+            if (line.indexOf('## ') === 0) { startY = pdfRenderHeading(line.slice(3), 2, startX, startY, maxW); continue; }
+            if (line.indexOf('# ') === 0) { startY = pdfRenderHeading(line.slice(2), 1, startX, startY, maxW); continue; }
+            if (line.match(/^\s*[-*]\s/)) { startY = pdfRenderBullet(line.replace(/^\s*[-*]\s/, ''), startX, startY, maxW); continue; }
+            if (line.match(/^\d+\.\s+\*\*.*\*\*/)) { startY = pdfRenderHeading(line.replace(/^\d+\.\s+/, '').replace(/\*\*/g, ''), 2, startX, startY, maxW); continue; }
+            if (line.match(/^\s*\d+\.\s/)) { startY = pdfRenderNumberedItem(line, startX, startY, maxW); continue; }
+            if (line.indexOf('> ') === 0) { startY = pdfRenderBlockquote(line.slice(2), startX, startY, maxW); continue; }
+            if (line.match(/^---+$/)) { startY = pdfRenderHRule(startX, startY, maxW); continue; }
+            startY = pdfRenderInlinePara(line, startX, startY, maxW);
+          }
+          if (tableRows.length > 0) startY = pdfRenderTable(tableRows, startX, startY, maxW);
+          if (inCodeBlock && codeBlockLines.length > 0) startY = pdfRenderCodeBlock(codeBlockLines, startX, startY, maxW);
+          return startY;
+        }
+
+        function renderMessageCard(msg) {
+          var bgColor, borderColor, accentColor, labelColor, label, contentText;
+          var pV = 4;
+          var pL = 6;
+          var cardX = marginL;
+          var cardW = contentW;
+          var innerW = cardW - pL - 1 - 4;
+
+          if (msg.isDocument) {
+            bgColor = [240, 246, 255]; borderColor = [9, 105, 218]; accentColor = [9, 105, 218];
+            labelColor = [9, 105, 218]; label = "[Document] " + (msg.documentName || "attachment");
+            contentText = null;
+          } else if (msg.isImage) {
+            if (msg.imageData) {
+              try {
+                var imgLabel = msg.imageName || "image";
+                if (msg.imageInfo) imgLabel += " (" + msg.imageInfo + ")";
+                checkBreak(10);
+                pdf.setFont(theme.fonts.body, "italic");
+                pdf.setFontSize(theme.sizes.small || 8);
+                pdf.setTextColor(255, 128, 0);
+                pdf.text(imgLabel, marginL, y);
+                y += lh(theme.sizes.body) + 1;
+                var imgProps = pdf.getImageProperties(msg.imageData);
+                var imgW = contentW;
+                var imgH = (imgProps.height / imgProps.width) * imgW;
+                var maxImgH = 180;
+                if (imgH > maxImgH) {
+                  imgW = (imgProps.width / imgProps.height) * maxImgH;
+                  imgH = maxImgH;
+                }
+                checkBreak(imgH + 4);
+                pdf.addImage(msg.imageData, marginL, y, imgW, imgH);
+                y += imgH + 4;
+              } catch (imgErr) {
+                pdf.setFont(theme.fonts.body, "italic");
+                pdf.setFontSize(theme.sizes.body);
+                pdf.setTextColor(255, 128, 0);
+                pdf.text("[Image: " + (msg.imageName || "image") + "]", marginL, y);
+                y += lh(theme.sizes.body) + 2;
+              }
+              pdf.setFont(theme.fonts.body, "normal");
+              pdf.setFontSize(theme.sizes.body);
+              pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+              y += theme.spacing.paragraphGap;
+            }
+            return;
+          } else if (msg.isManualContent) {
+            bgColor = [240, 255, 244]; borderColor = [45, 164, 78]; accentColor = [45, 164, 78];
+            labelColor = [26, 127, 55]; label = "[Content] " + (msg.contentTitle || "content");
+            contentText = null;
+          } else if (msg.role === "user") {
+            bgColor = null; label = null; contentText = msg.content || "";
+          } else if (msg.role === "assistant") {
+            bgColor = null; label = null; contentText = msg.content || "";
+          } else {
+            return;
+          }
+
+          if (!bgColor) {
+            if (contentText) {
+              if (msg.role === "assistant") {
+                y = pdfRenderMarkdown(contentText, marginL, y, contentW);
+              } else {
+                writeWrapped(contentText, theme.sizes.body, "normal");
+              }
+              y += theme.spacing.paragraphGap;
+            }
+            return;
+          }
+
+          var labelLineH = lh(theme.sizes.body) + 1;
+          var bodyLineH = lh(theme.sizes.body);
+          var pageMaxH = pageH - marginT - marginB - 10;
+
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          var estimatedLines = 0;
+          if (contentText) {
+            var textToMeasure = msg.role === "assistant" ? stripMarkdown(contentText) : contentText;
+            estimatedLines = pdf.splitTextToSize(textToMeasure, innerW).length;
+          }
+          var estimatedContentH = contentText ? (estimatedLines * bodyLineH + pV) : 0;
+          var cardH = pV * 2 + (label ? labelLineH : 0) + estimatedContentH;
+          var isLongMessage = cardH > pageMaxH * 0.75;
+
+          if (!isLongMessage) {
+            checkBreak(cardH);
+            var cardY = y;
+            pdf.setFillColor(bgColor[0], bgColor[1], bgColor[2]);
+            pdf.rect(cardX, cardY, cardW, cardH, 'F');
+            pdf.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+            pdf.setLineWidth(0.3);
+            pdf.rect(cardX, cardY, cardW, cardH, 'S');
+            pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
+            pdf.rect(cardX, cardY, 1, cardH, 'F');
+            y = cardY + pV;
+            if (label) {
+              pdf.setFont(theme.fonts.body, "bold");
+              pdf.setFontSize(theme.sizes.body);
+              pdf.setTextColor(labelColor[0], labelColor[1], labelColor[2]);
+              pdf.text(label, cardX + pL, y);
+              y += labelLineH;
+            }
+            if (contentText) {
+              pdf.setFont(theme.fonts.body, "normal");
+              pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+              var wrappedContent = pdf.splitTextToSize(
+                msg.role === "assistant" ? stripMarkdown(contentText) : contentText,
+                innerW
+              );
+              var maxContentY = cardY + cardH - pV;
+              for (var li = 0; li < wrappedContent.length; li++) {
+                if (y + bodyLineH > maxContentY) { break; }
+                pdf.text(wrappedContent[li], cardX + pL, y);
+                y += bodyLineH;
+              }
+            }
+            y = cardY + cardH + theme.spacing.paragraphGap;
+          } else {
+            var headerH = pV * 2 + (label ? labelLineH : 0);
+            checkBreak(headerH);
+            var headerY = y;
+            pdf.setFillColor(bgColor[0], bgColor[1], bgColor[2]);
+            pdf.rect(cardX, headerY, cardW, headerH, 'F');
+            pdf.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+            pdf.setLineWidth(0.3);
+            pdf.rect(cardX, headerY, cardW, headerH, 'S');
+            pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
+            pdf.rect(cardX, headerY, 1, headerH, 'F');
+            y = headerY + pV;
+            if (label) {
+              pdf.setFont(theme.fonts.body, "bold");
+              pdf.setFontSize(theme.sizes.body);
+              pdf.setTextColor(labelColor[0], labelColor[1], labelColor[2]);
+              pdf.text(label, cardX + pL, y);
+            }
+            y = headerY + headerH + 2;
+            if (contentText) {
+              var contentStartY = y;
+              pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
+              if (msg.role === "assistant") {
+                y = pdfRenderMarkdown(contentText, cardX + pL + 1, y, innerW);
+              } else {
+                writeWrapped(contentText, theme.sizes.body, "normal", pL + 1);
+              }
+              var accentBarH = Math.min(y, pageH - marginB) - contentStartY;
+              if (accentBarH > 0) {
+                pdf.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
+                pdf.rect(cardX, contentStartY, 1, accentBarH, 'F');
+              }
+            }
+            y += theme.spacing.paragraphGap;
+          }
+
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
         }
 
         // === TITLE ===
@@ -2343,45 +2740,7 @@
 
         [userMsg, assistantMsg].forEach(function(msg) {
           if (!msg) return;
-
-          var isUser = msg.role === "user";
-          var isAssistant = msg.role === "assistant";
-          var roleLabel = isUser ? "YOU" : isAssistant ? "ASSISTANT" : msg.role.toUpperCase();
-
-          checkBreak(15);
-
-          // Role label
-          pdf.setFont(theme.fonts.heading, "bold");
-          pdf.setFontSize(theme.sizes.small);
-          if (isUser) {
-            pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
-          } else if (isAssistant) {
-            pdf.setTextColor(theme.colors.accent[0], theme.colors.accent[1], theme.colors.accent[2]);
-          } else {
-            pdf.setTextColor(theme.colors.muted[0], theme.colors.muted[1], theme.colors.muted[2]);
-          }
-          pdf.text(roleLabel, marginL, y);
-          y += lh(theme.sizes.small) + 1;
-
-          // Message content
-          pdf.setFont(theme.fonts.body, "normal");
-          pdf.setFontSize(theme.sizes.body);
-          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
-
-          var content = msg.content || "";
-          if (msg.isDocument) {
-            content = '[Document: "' + (msg.documentName || "Untitled") + '"]';
-          } else if (msg.isImage) {
-            content = "[Image attached]";
-          } else if (msg.isManualContent) {
-            content = "[Manual content added]";
-          }
-
-          // Strip HTML tags and base64 data blobs
-          content = content.replace(/<[^>]*>/g, '').replace(/data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+/g, '[image]');
-
-          writeWrapped(content, theme.sizes.body, "normal");
-          y += theme.spacing.paragraphGap || 3;
+          renderMessageCard(msg);
         });
 
         // Save
