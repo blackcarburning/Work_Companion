@@ -2256,6 +2256,139 @@
       return PDF_THEMES[db.pdfTheme] || PDF_THEMES["professional"];
     }
 
+    function exportJobToPDF() {
+      if (!db.activeJobId) { alert("No active job."); return; }
+      var job = getJob(db.activeJobId);
+      if (!job) return;
+
+      showModal("Export Conversation to PDF", "Enter a title for the PDF:", job.name, false, function(title) {
+        if (!title) return;
+        generateJobPDF(job, title);
+      });
+    }
+
+    async function generateJobPDF(job, title) {
+      if (!window.jspdf) {
+        alert("PDF library is still loading. Please try again in a moment.");
+        return;
+      }
+
+      try {
+        var theme = getActivePdfTheme();
+        var jsPDF = window.jspdf.jsPDF;
+        var pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+
+        var pageW = pdf.internal.pageSize.getWidth();
+        var pageH = pdf.internal.pageSize.getHeight();
+        var marginL = theme.spacing.marginLeft;
+        var marginT = theme.spacing.marginTop;
+        var marginB = theme.spacing.marginBottom;
+        var contentW = pageW - marginL - theme.spacing.marginRight;
+        var y = marginT;
+
+        function lh(fontSize) { return fontSize * 0.45; }
+
+        function checkBreak(needed) {
+          if (y + needed > pageH - marginB) {
+            pdf.addPage();
+            y = marginT;
+          }
+        }
+
+        function writeWrapped(text, fontSize, style) {
+          pdf.setFontSize(fontSize);
+          if (style) pdf.setFont(theme.fonts.body, style);
+          var lines = pdf.splitTextToSize(text, contentW);
+          lines.forEach(function(line) {
+            checkBreak(lh(fontSize) + 1);
+            pdf.text(line, marginL, y);
+            y += lh(fontSize) + 0.5;
+          });
+        }
+
+        // === TITLE ===
+        pdf.setFont(theme.fonts.heading, "bold");
+        pdf.setFontSize(theme.sizes.h1);
+        pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
+        var titleLines = pdf.splitTextToSize(title, contentW);
+        titleLines.forEach(function(line) {
+          pdf.text(line, marginL, y);
+          y += lh(theme.sizes.h1);
+        });
+        y += 3;
+
+        // Horizontal rule under title
+        pdf.setDrawColor(theme.colors.sectionDivider[0], theme.colors.sectionDivider[1], theme.colors.sectionDivider[2]);
+        pdf.setLineWidth(0.3);
+        pdf.line(marginL, y, marginL + contentW, y);
+        y += 5;
+
+        // Date
+        var dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+        pdf.setFont(theme.fonts.body, "normal");
+        pdf.setFontSize(theme.sizes.small);
+        pdf.setTextColor(theme.colors.muted[0], theme.colors.muted[1], theme.colors.muted[2]);
+        pdf.text(dateStr, marginL, y);
+        y += lh(theme.sizes.small) + 5;
+
+        // === MESSAGES ===
+        var messages = job.messages.slice(1); // skip system prompt
+
+        messages.forEach(function(msg) {
+          if (msg.excluded) return; // skip excluded messages
+
+          var isUser = msg.role === "user";
+          var isAssistant = msg.role === "assistant";
+          var label = isUser ? "YOU" : isAssistant ? "ASSISTANT" : msg.role.toUpperCase();
+
+          // Check if we need a page break (at least 15mm for a message)
+          checkBreak(15);
+
+          // Role label
+          pdf.setFont(theme.fonts.heading, "bold");
+          pdf.setFontSize(theme.sizes.small);
+          if (isUser) {
+            pdf.setTextColor(theme.colors.heading[0], theme.colors.heading[1], theme.colors.heading[2]);
+          } else if (isAssistant) {
+            pdf.setTextColor(theme.colors.accent[0], theme.colors.accent[1], theme.colors.accent[2]);
+          } else {
+            pdf.setTextColor(theme.colors.muted[0], theme.colors.muted[1], theme.colors.muted[2]);
+          }
+          pdf.text(label, marginL, y);
+          y += lh(theme.sizes.small) + 1;
+
+          // Message content
+          pdf.setFont(theme.fonts.body, "normal");
+          pdf.setFontSize(theme.sizes.body);
+          pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
+
+          var content = msg.content || "";
+          // For documents, show the document name instead of full content
+          if (msg.isDocument) {
+            content = "[Document: " + (msg.documentName || "Untitled") + "]";
+          } else if (msg.isImage) {
+            content = "[Image attached]";
+          } else if (msg.isManualContent) {
+            content = "[Manual content: " + (msg.contentTitle || "Untitled") + " (" + (msg.contentType || "Text") + ")]";
+          }
+
+          // Strip any HTML tags and base64 images from content
+          content = content.replace(/<[^>]*>/g, '').replace(/data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+/g, '[image]');
+
+          writeWrapped(content, theme.sizes.body, "normal");
+          y += theme.spacing.paragraphGap || 3;
+        });
+
+        // Save
+        var filename = title.replace(/[^a-z0-9_\-]/gi, "_") + "_" + new Date().toISOString().slice(0, 10) + ".pdf";
+        pdf.save(filename);
+
+      } catch (err) {
+        alert("PDF export failed: " + err.message);
+        debugLog('[PDF] ❌ Job PDF export error: ' + err.message, 'error');
+      }
+    }
+
     async function exportToPDF(btn) {
       if (!window.jspdf) {
         alert("PDF library is still loading. Please try again in a moment.");
@@ -4406,6 +4539,7 @@
         '<button class="input-attach-btn" id="manual-content-btn" onclick="openManualContentModal()" title="Add Content">📋</button>' +
         '<button class="input-attach-btn" id="image-btn" onclick="openImagePicker()" title="Add Screenshot">📷</button>' +
         '<button class="input-attach-btn" id="view-context-btn" onclick="viewApiContext()" title="View API Context">🔍</button>' +
+        '<button class="input-attach-btn" id="export-pdf-btn" onclick="exportJobToPDF()" title="Export this conversation to PDF">📄</button>' +
         '</div>' +
         '<input type="text" id="userInput" placeholder="Ask a question..." />' +
         '<button onclick="sendMessage()" id="sendBtn">Send</button></div></div>' +
