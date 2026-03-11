@@ -417,6 +417,7 @@
     #token-section button:hover { background: linear-gradient(135deg, var(--accent-dark), var(--accent-darker)); transform: translateY(-1px); box-shadow: 0 4px 12px var(--accent-light-bg); }
     #token-section button:active { transform: translateY(0); box-shadow: none; }
     #token-status { font-size: 0.72rem; }
+    #watsonx-token-hint { display: none; font-size: 0.70rem; color: var(--text-secondary); word-break: break-all; max-width: 420px; line-height: 1.4; }
     .saved { color: var(--accent); font-weight: 600; }
     .error-text { color: #d93025; }
     #name-section { display: flex; align-items: center; gap: 0.35rem; }
@@ -1038,6 +1039,7 @@
         <button onclick="saveToken()">Save</button>
         <span id="token-status"></span>
       </div>
+      <div id="watsonx-token-hint">ℹ️ Generate token via CLI: curl -X POST "https://iam.cloud.ibm.com/identity/token" -H "Content-Type: application/x-www-form-urlencoded" -d "grant_type=urn:ibm:params:oauth:grant-type:apikey&amp;apikey=YOUR_IBM_CLOUD_API_KEY" &mdash; copy the <code>access_token</code> value (~1 hr validity)</div>
       <div id="watsonx-project-section" style="display:none">
         <label for="watsonxProjectInput">Project ID:</label>
         <input type="text" id="watsonxProjectInput" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="width:230px" />
@@ -1146,8 +1148,6 @@
     var WATSONX_TOKEN_KEY = "watsonx_token";
     var WATSONX_PROJECT_ID_KEY = "watsonx_project_id";
     var WATSONX_PARAMS = { max_new_tokens: 4096, temperature: 0.7, top_p: 0.95, repetition_penalty: 1.05, stop_sequences: ["<|endoftext|>", "<|user|>"] };
-    var _watsonxBearerToken = null;
-    var _watsonxBearerExpiry = 0;
     var MODELS_CACHE_KEY = "github_models_cache";
     var NAME_KEY = "wc_user_name";
     var userName = "";
@@ -1841,6 +1841,7 @@
       var tokenStatus = document.getElementById("token-status");
       var refreshBtn = document.getElementById("model-refresh-btn");
       var watsonxProjectSection = document.getElementById("watsonx-project-section");
+      var watsonxHint = document.getElementById("watsonx-token-hint");
 
       providerSelect.value = activeProvider;
 
@@ -1850,6 +1851,7 @@
         tokenStatus.innerHTML = token ? '<span class="saved">✅</span>' : '';
         refreshBtn.style.display = "";
         watsonxProjectSection.style.display = "none";
+        if (watsonxHint) watsonxHint.style.display = "none";
         loadCachedModels();
       } else if (activeProvider === "openai") {
         tokenInput.placeholder = "sk-...";
@@ -1857,6 +1859,7 @@
         tokenStatus.innerHTML = openaiToken ? '<span class="saved">✅</span>' : '';
         refreshBtn.style.display = "none";
         watsonxProjectSection.style.display = "none";
+        if (watsonxHint) watsonxHint.style.display = "none";
         populateModelSelect(OPENAI_MODELS);
       } else if (activeProvider === "anthropic") {
         tokenInput.placeholder = "sk-ant-...";
@@ -1864,13 +1867,15 @@
         tokenStatus.innerHTML = anthropicToken ? '<span class="saved">✅</span>' : '';
         refreshBtn.style.display = "none";
         watsonxProjectSection.style.display = "none";
+        if (watsonxHint) watsonxHint.style.display = "none";
         populateModelSelect(ANTHROPIC_MODELS);
       } else if (activeProvider === "watsonx") {
-        tokenInput.placeholder = "IBM Cloud API Key";
+        tokenInput.placeholder = "IBM IAM Bearer Token";
         tokenInput.value = watsonxToken;
         tokenStatus.innerHTML = watsonxToken ? '<span class="saved">✅</span>' : '';
         refreshBtn.style.display = "none";
         watsonxProjectSection.style.display = "";
+        if (watsonxHint) watsonxHint.style.display = "";
         var projInput = document.getElementById("watsonxProjectInput");
         if (projInput) projInput.value = watsonxProjectId;
         var projStatus = document.getElementById("watsonx-project-status");
@@ -4833,23 +4838,8 @@
     }
 
     async function getWatsonxBearerToken() {
-      var now = Date.now();
-      if (_watsonxBearerToken && now < _watsonxBearerExpiry) return _watsonxBearerToken;
-      debugLog('[API] Fetching IBM IAM token...', 'info');
-      var iamResp = await fetch("https://iam.cloud.ibm.com/identity/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: "grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey=" + encodeURIComponent(watsonxToken)
-      });
-      if (!iamResp.ok) {
-        var iamErr = await iamResp.text();
-        throw new Error("IBM IAM auth error " + iamResp.status + ": " + iamErr);
-      }
-      var iamData = await iamResp.json();
-      _watsonxBearerToken = iamData.access_token;
-      _watsonxBearerExpiry = now + ((iamData.expires_in || 3600) - 60) * 1000;
-      debugLog('[API] IBM IAM token obtained (expires in ~' + Math.round(((iamData.expires_in || 3600) - 60) / 60) + ' min).', 'info');
-      return _watsonxBearerToken;
+      if (!watsonxToken) throw new Error("Please save your IBM IAM Bearer Token first.");
+      return watsonxToken;
     }
 
     function cleanWatsonxResponse(text) {
@@ -4872,7 +4862,7 @@
 
       if (!ut || !activeToken) {
         if (!activeToken) {
-          var label = activeProvider === "github" ? "GitHub token" : (activeProvider === "openai" ? "OpenAI API key" : (activeProvider === "watsonx" ? "IBM Cloud API key" : "Anthropic API key"));
+          var label = activeProvider === "github" ? "GitHub token" : (activeProvider === "openai" ? "OpenAI API key" : (activeProvider === "watsonx" ? "IBM IAM Bearer Token" : "Anthropic API key"));
           alert("Please save your " + label + " first.");
         }
         return;
