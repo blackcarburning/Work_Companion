@@ -1156,7 +1156,7 @@
     var MODELS_URL = "https://models.github.ai/inference/models";
     var OPENAI_DIRECT_URL = "https://api.openai.com/v1/chat/completions";
     var ANTHROPIC_DIRECT_URL = "https://api.anthropic.com/v1/messages";
-    var WATSONX_URL = "https://us-south.ml.cloud.ibm.com/ml/v1/text/generation?version=2023-05-29";
+    var WATSONX_CHAT_PATH = "/ml/v1/text/chat?version=2024-10-08";
     var selectedModel = "openai/gpt-4.1";
     var token = "";
     var openaiToken = "";
@@ -1172,7 +1172,6 @@
     var WATSONX_TOKEN_KEY = "watsonx_token";
     var WATSONX_PROJECT_ID_KEY = "watsonx_project_id";
     var WATSONX_PROXY_URL_KEY = "watsonx_proxy_url";
-    var WATSONX_PARAMS = { max_new_tokens: 4096, temperature: 0.7, top_p: 0.95, repetition_penalty: 1.05, stop_sequences: ["<|endoftext|>", "<|user|>"] };
     var MODELS_CACHE_KEY = "github_models_cache";
     var NAME_KEY = "wc_user_name";
     var userName = "";
@@ -4979,18 +4978,15 @@
         } else if (activeProvider === "watsonx") {
           var bearerToken = await getWatsonxBearerToken();
 
-          // Build a single prompt string from context messages
-          var promptParts = [];
-          ctx.forEach(function(m) {
+          // Build messages array for chat API (same format the app already uses)
+          var watsonxMessages = ctx.map(function(m) {
             var role = m.role === "developer" ? "system" : m.role;
             var content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-            promptParts.push("<|" + role + "|>\n" + content);
+            return { role: role, content: content };
           });
-          promptParts.push("<|assistant|>");
-          var fullPrompt = promptParts.join("\n");
 
-          var watsonxBody = JSON.stringify({ model_id: selectedModel, input: fullPrompt, parameters: WATSONX_PARAMS, project_id: watsonxProjectId });
-          var watsonxEndpoint = watsonxProxyUrl + "/ml/v1/text/generation?version=2023-05-29";
+          var watsonxBody = JSON.stringify({ model_id: selectedModel, project_id: watsonxProjectId, messages: watsonxMessages, max_tokens: 4096 });
+          var watsonxEndpoint = watsonxProxyUrl + WATSONX_CHAT_PATH;
 
           debugLog('[API] Fetching watsonx.ai — model=' + selectedModel + ', payload ' + (watsonxBody.length / 1024).toFixed(1) + ' KB', 'info');
           var requestStartTime = Date.now();
@@ -5014,7 +5010,7 @@
           } else {
             debugLog('[API] ✅ watsonx response HTTP ' + r.status + ' in ' + elapsed + 'ms', 'info');
             d = await r.json();
-            reply = cleanWatsonxResponse((d.results && d.results[0] && d.results[0].generated_text) || "No response.");
+            reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
@@ -5145,9 +5141,16 @@
           summary = (d.content && d.content[0] && d.content[0].text) || "";
         } else if (activeProvider === "watsonx") {
           var bearerToken = await getWatsonxBearerToken();
-          var fullPrompt = "<|system|>\n" + systemMsg + "\n<|user|>\n" + userMsg + "\n<|assistant|>";
-          var watsonxBody = JSON.stringify({ model_id: selectedModel, input: fullPrompt, parameters: WATSONX_PARAMS, project_id: watsonxProjectId });
-          var watsonxEndpoint = watsonxProxyUrl + "/ml/v1/text/generation?version=2023-05-29";
+          var watsonxBody = JSON.stringify({
+            model_id: selectedModel,
+            project_id: watsonxProjectId,
+            messages: [
+              { role: "system", content: systemMsg },
+              { role: "user", content: userMsg }
+            ],
+            max_tokens: 4096
+          });
+          var watsonxEndpoint = watsonxProxyUrl + WATSONX_CHAT_PATH;
           r = await fetchWithRetry(watsonxEndpoint, {
             method: "POST",
             headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json" },
@@ -5155,7 +5158,7 @@
           }, "IBM watsonx.ai");
           if (!r.ok) { var et = await r.text(); throw new Error("API error " + r.status + ": " + et); }
           d = await r.json();
-          summary = cleanWatsonxResponse((d.results && d.results[0] && d.results[0].generated_text) || "");
+          summary = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
         } else {
           var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
           var authToken = activeProvider === "openai" ? openaiToken : token;
