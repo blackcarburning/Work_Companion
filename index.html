@@ -1025,6 +1025,7 @@
           <option value="github">GitHub Models</option>
           <option value="openai">OpenAI Direct</option>
           <option value="anthropic">Anthropic Direct</option>
+          <option value="watsonx">IBM watsonx.ai</option>
         </select>
       </div>
       <div id="model-section">
@@ -1036,6 +1037,12 @@
         <input type="password" id="tokenInput" placeholder="ghp_xxxxxxxxxxxx" />
         <button onclick="saveToken()">Save</button>
         <span id="token-status"></span>
+      </div>
+      <div id="watsonx-project-section" style="display:none">
+        <label for="watsonxProjectInput">Project ID:</label>
+        <input type="text" id="watsonxProjectInput" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="width:230px" />
+        <button onclick="saveWatsonxProjectId()">Save</button>
+        <span id="watsonx-project-status"></span>
       </div>
       <div id="name-section">
         <label for="nameInput">Name:</label>
@@ -1124,15 +1131,23 @@
     var MODELS_URL = "https://models.github.ai/inference/models";
     var OPENAI_DIRECT_URL = "https://api.openai.com/v1/chat/completions";
     var ANTHROPIC_DIRECT_URL = "https://api.anthropic.com/v1/messages";
+    var WATSONX_URL = "https://us-south.ml.cloud.ibm.com/ml/v1/text/generation?version=2023-05-29";
     var selectedModel = "openai/gpt-4.1";
     var token = "";
     var openaiToken = "";
     var anthropicToken = "";
+    var watsonxToken = "";
+    var watsonxProjectId = "";
     var activeProvider = "github";
     var DB_KEY = "github_chat_db";
     var TOKEN_KEY = "github_token";
     var OPENAI_TOKEN_KEY = "openai_token";
     var ANTHROPIC_TOKEN_KEY = "anthropic_token";
+    var WATSONX_TOKEN_KEY = "watsonx_token";
+    var WATSONX_PROJECT_ID_KEY = "watsonx_project_id";
+    var WATSONX_PARAMS = { max_new_tokens: 4096, temperature: 0.7, top_p: 0.95, repetition_penalty: 1.05, stop_sequences: ["<|endoftext|>", "<|user|>"] };
+    var _watsonxBearerToken = null;
+    var _watsonxBearerExpiry = 0;
     var MODELS_CACHE_KEY = "github_models_cache";
     var NAME_KEY = "wc_user_name";
     var userName = "";
@@ -1303,6 +1318,15 @@
       { id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet" },
       { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
       { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" }
+    ];
+
+    var WATSONX_MODELS = [
+      { id: "ibm/granite-3-8b-instruct", name: "Granite 3 8B Instruct" },
+      { id: "ibm/granite-3-2b-instruct", name: "Granite 3 2B Instruct" },
+      { id: "ibm/granite-34b-code-instruct", name: "Granite 34B Code Instruct" },
+      { id: "meta-llama/llama-3-1-70b-instruct", name: "Llama 3.1 70B Instruct" },
+      { id: "meta-llama/llama-3-1-8b-instruct", name: "Llama 3.1 8B Instruct" },
+      { id: "mistralai/mixtral-8x7b-instruct-v01", name: "Mixtral 8x7B Instruct" }
     ];
 
     if (typeof marked !== 'undefined' && marked !== null && marked.setOptions) {
@@ -1755,6 +1779,9 @@
       } else if (activeProvider === "anthropic") {
         anthropicToken = input;
         localStorage.setItem(ANTHROPIC_TOKEN_KEY, anthropicToken);
+      } else if (activeProvider === "watsonx") {
+        watsonxToken = input;
+        localStorage.setItem(WATSONX_TOKEN_KEY, watsonxToken);
       }
       document.getElementById("token-status").innerHTML = '<span class="saved">✅ Saved</span>';
     }
@@ -1765,7 +1792,18 @@
       if (savedOpenai) openaiToken = savedOpenai;
       var savedAnthropic = localStorage.getItem(ANTHROPIC_TOKEN_KEY);
       if (savedAnthropic) anthropicToken = savedAnthropic;
+      var savedWatsonx = localStorage.getItem(WATSONX_TOKEN_KEY);
+      if (savedWatsonx) watsonxToken = savedWatsonx;
+      var savedWatsonxProjectId = localStorage.getItem(WATSONX_PROJECT_ID_KEY);
+      if (savedWatsonxProjectId) watsonxProjectId = savedWatsonxProjectId;
       updateProviderUI();
+    }
+    function saveWatsonxProjectId() {
+      var input = document.getElementById("watsonxProjectInput").value.trim();
+      if (!input) { document.getElementById("watsonx-project-status").innerHTML = '<span class="error-text">Enter Project ID</span>'; return; }
+      watsonxProjectId = input;
+      localStorage.setItem(WATSONX_PROJECT_ID_KEY, watsonxProjectId);
+      document.getElementById("watsonx-project-status").innerHTML = '<span class="saved">✅ Saved</span>';
     }
 
     // ===== USER NAME =====
@@ -1802,6 +1840,7 @@
       var tokenInput = document.getElementById("tokenInput");
       var tokenStatus = document.getElementById("token-status");
       var refreshBtn = document.getElementById("model-refresh-btn");
+      var watsonxProjectSection = document.getElementById("watsonx-project-section");
 
       providerSelect.value = activeProvider;
 
@@ -1810,19 +1849,33 @@
         tokenInput.value = token;
         tokenStatus.innerHTML = token ? '<span class="saved">✅</span>' : '';
         refreshBtn.style.display = "";
+        watsonxProjectSection.style.display = "none";
         loadCachedModels();
       } else if (activeProvider === "openai") {
         tokenInput.placeholder = "sk-...";
         tokenInput.value = openaiToken;
         tokenStatus.innerHTML = openaiToken ? '<span class="saved">✅</span>' : '';
         refreshBtn.style.display = "none";
+        watsonxProjectSection.style.display = "none";
         populateModelSelect(OPENAI_MODELS);
       } else if (activeProvider === "anthropic") {
         tokenInput.placeholder = "sk-ant-...";
         tokenInput.value = anthropicToken;
         tokenStatus.innerHTML = anthropicToken ? '<span class="saved">✅</span>' : '';
         refreshBtn.style.display = "none";
+        watsonxProjectSection.style.display = "none";
         populateModelSelect(ANTHROPIC_MODELS);
+      } else if (activeProvider === "watsonx") {
+        tokenInput.placeholder = "IBM Cloud API Key";
+        tokenInput.value = watsonxToken;
+        tokenStatus.innerHTML = watsonxToken ? '<span class="saved">✅</span>' : '';
+        refreshBtn.style.display = "none";
+        watsonxProjectSection.style.display = "";
+        var projInput = document.getElementById("watsonxProjectInput");
+        if (projInput) projInput.value = watsonxProjectId;
+        var projStatus = document.getElementById("watsonx-project-status");
+        if (projStatus) projStatus.innerHTML = watsonxProjectId ? '<span class="saved">✅</span>' : '';
+        populateModelSelect(WATSONX_MODELS);
       }
     }
 
@@ -4779,10 +4832,34 @@
       return r;
     }
 
+    async function getWatsonxBearerToken() {
+      var now = Date.now();
+      if (_watsonxBearerToken && now < _watsonxBearerExpiry) return _watsonxBearerToken;
+      debugLog('[API] Fetching IBM IAM token...', 'info');
+      var iamResp = await fetch("https://iam.cloud.ibm.com/identity/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey=" + encodeURIComponent(watsonxToken)
+      });
+      if (!iamResp.ok) {
+        var iamErr = await iamResp.text();
+        throw new Error("IBM IAM auth error " + iamResp.status + ": " + iamErr);
+      }
+      var iamData = await iamResp.json();
+      _watsonxBearerToken = iamData.access_token;
+      _watsonxBearerExpiry = now + ((iamData.expires_in || 3600) - 60) * 1000;
+      debugLog('[API] IBM IAM token obtained (expires in ~' + Math.round(((iamData.expires_in || 3600) - 60) / 60) + ' min).', 'info');
+      return _watsonxBearerToken;
+    }
+
+    function cleanWatsonxResponse(text) {
+      return (text || "").replace(/<\|endoftext\|>/g, '').replace(/<\|user\|>/g, '').trim();
+    }
+
     async function sendMessage() {
       if (!db.activeJobId) return; var job = getJob(db.activeJobId); if (!job) return;
       var input = document.getElementById("userInput"), ut = input.value.trim();
-      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : anthropicToken);
+      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
 
       // If no text typed but last message is a pending image, auto-generate a prompt
       if (!ut && job.messages.length > 0) {
@@ -4795,7 +4872,7 @@
 
       if (!ut || !activeToken) {
         if (!activeToken) {
-          var label = activeProvider === "github" ? "GitHub token" : (activeProvider === "openai" ? "OpenAI API key" : "Anthropic API key");
+          var label = activeProvider === "github" ? "GitHub token" : (activeProvider === "openai" ? "OpenAI API key" : (activeProvider === "watsonx" ? "IBM Cloud API key" : "Anthropic API key"));
           alert("Please save your " + label + " first.");
         }
         return;
@@ -4858,6 +4935,48 @@
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
           }
+        } else if (activeProvider === "watsonx") {
+          var bearerToken = await getWatsonxBearerToken();
+
+          // Build a single prompt string from context messages
+          var promptParts = [];
+          ctx.forEach(function(m) {
+            var role = m.role === "developer" ? "system" : m.role;
+            var content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+            promptParts.push("<|" + role + "|>\n" + content);
+          });
+          promptParts.push("<|assistant|>");
+          var fullPrompt = promptParts.join("\n");
+
+          var watsonxBody = JSON.stringify({ model_id: selectedModel, input: fullPrompt, parameters: WATSONX_PARAMS, project_id: watsonxProjectId });
+
+          debugLog('[API] Fetching watsonx.ai — model=' + selectedModel + ', payload ' + (watsonxBody.length / 1024).toFixed(1) + ' KB', 'info');
+          var requestStartTime = Date.now();
+          var waitingLogInterval = setInterval(function() {
+            var elapsed = Math.round((Date.now() - requestStartTime) / 1000);
+            debugLog('[API] Still waiting for watsonx response... ' + elapsed + 's', 'warn');
+          }, 10000);
+          try {
+            r = await fetchWithRetry(WATSONX_URL, {
+              method: "POST",
+              headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json" },
+              body: watsonxBody
+            }, "IBM watsonx.ai");
+          } finally { clearInterval(waitingLogInterval); }
+          var elapsed = Date.now() - requestStartTime;
+          removeTyping();
+          if (!r.ok) {
+            var et = await r.text();
+            debugLog('[API] ❌ watsonx error HTTP ' + r.status + ' (' + elapsed + 'ms): ' + et, 'error');
+            addMessageToDOM("error", formatErrorMessage(r.status, et, elapsed, "IBM watsonx.ai"), false); job.messages.pop(); saveDB();
+          } else {
+            debugLog('[API] ✅ watsonx response HTTP ' + r.status + ' in ' + elapsed + 'ms', 'info');
+            d = await r.json();
+            reply = cleanWatsonxResponse((d.results && d.results[0] && d.results[0].generated_text) || "No response.");
+            debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
+            job.messages.push({ role: "assistant", content: reply }); saveDB();
+            addMessageToDOM("assistant", reply, false, job.messages.length - 2);
+          }
         } else {
           var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
           var authToken = activeProvider === "openai" ? openaiToken : token;
@@ -4897,11 +5016,11 @@
         if (err.stack) debugLog('[API] Stack: ' + err.stack, 'error');
         var friendlyErr = err.message;
         if (err.message && err.message.indexOf("Failed to fetch") !== -1) {
-          friendlyErr = "🌐 Network Error\n\nCould not reach the " + (activeProvider === "github" ? "GitHub Models" : activeProvider === "openai" ? "OpenAI" : "Anthropic") + " API.\n\n💡 Check your internet connection and try again.";
+          friendlyErr = "🌐 Network Error\n\nCould not reach the " + (activeProvider === "github" ? "GitHub Models" : activeProvider === "openai" ? "OpenAI" : activeProvider === "watsonx" ? "IBM watsonx.ai" : "Anthropic") + " API.\n\n💡 Check your internet connection and try again.";
         } else if (err.message && err.message.indexOf("API error") !== -1) {
           var statusMatch = err.message.match(/API error (\d+)/);
           if (statusMatch) {
-            friendlyErr = formatErrorMessage(parseInt(statusMatch[1]), err.message, 0, activeProvider === "github" ? "GitHub Models" : activeProvider === "openai" ? "OpenAI" : "Anthropic");
+            friendlyErr = formatErrorMessage(parseInt(statusMatch[1]), err.message, 0, activeProvider === "github" ? "GitHub Models" : activeProvider === "openai" ? "OpenAI" : activeProvider === "watsonx" ? "IBM watsonx.ai" : "Anthropic");
           }
         }
         addMessageToDOM("error", friendlyErr, false); job.messages.pop(); saveDB();
@@ -4960,7 +5079,7 @@
     async function summariseDocument(jobId, msgIdx, sumBtn, customSystemPrompt, customUserPrompt) {
       var job = getJob(jobId); if (!job) return;
       var msg = job.messages[msgIdx]; if (!msg || !msg.isDocument) return;
-      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : anthropicToken);
+      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
       if (!activeToken) { alert("Please save your API token first."); return; }
 
       var origBtnText = sumBtn.textContent;
@@ -4982,6 +5101,18 @@
           if (!r.ok) { var et = await r.text(); throw new Error("API error " + r.status + ": " + et); }
           d = await r.json();
           summary = (d.content && d.content[0] && d.content[0].text) || "";
+        } else if (activeProvider === "watsonx") {
+          var bearerToken = await getWatsonxBearerToken();
+          var fullPrompt = "<|system|>\n" + systemMsg + "\n<|user|>\n" + userMsg + "\n<|assistant|>";
+          var watsonxBody = JSON.stringify({ model_id: selectedModel, input: fullPrompt, parameters: WATSONX_PARAMS, project_id: watsonxProjectId });
+          r = await fetchWithRetry(WATSONX_URL, {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json" },
+            body: watsonxBody
+          }, "IBM watsonx.ai");
+          if (!r.ok) { var et = await r.text(); throw new Error("API error " + r.status + ": " + et); }
+          d = await r.json();
+          summary = cleanWatsonxResponse((d.results && d.results[0] && d.results[0].generated_text) || "");
         } else {
           var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
           var authToken = activeProvider === "openai" ? openaiToken : token;
@@ -5017,7 +5148,7 @@
         if (err.message && err.message.indexOf("API error") !== -1) {
           var statusMatch = err.message.match(/API error (\d+)/);
           if (statusMatch) {
-            alertMsg = formatErrorMessage(parseInt(statusMatch[1]), err.message, 0, activeProvider === "github" ? "GitHub Models" : activeProvider === "openai" ? "OpenAI" : "Anthropic");
+            alertMsg = formatErrorMessage(parseInt(statusMatch[1]), err.message, 0, activeProvider === "github" ? "GitHub Models" : activeProvider === "openai" ? "OpenAI" : activeProvider === "watsonx" ? "IBM watsonx.ai" : "Anthropic");
           }
         }
         alert("Summarisation failed:\n\n" + alertMsg);
