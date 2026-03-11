@@ -418,22 +418,6 @@
     #token-section button:active { transform: translateY(0); box-shadow: none; }
     #token-status { font-size: 0.72rem; }
     #watsonx-token-hint { display: none; font-size: 0.70rem; color: var(--text-secondary); word-break: break-all; max-width: 420px; line-height: 1.4; }
-    #watsonx-proxy-section { display: none; align-items: center; gap: 0.35rem; }
-    #watsonx-proxy-section label { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
-    #watsonx-proxy-section input {
-      width: 160px; padding: 0.28rem 0.5rem;
-      border: 1px solid var(--border-light); border-radius: 7px; font-size: 0.75rem; font-family: var(--font-family);
-      transition: border-color 0.18s, box-shadow 0.18s; background: var(--bg-input); color: var(--text-primary);
-    }
-    #watsonx-proxy-section input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
-    #watsonx-proxy-section button {
-      padding: 0.28rem 0.6rem; background: linear-gradient(135deg, var(--accent), var(--accent-alt)); color: #fff;
-      border: none; border-radius: 7px; cursor: pointer; font-weight: 600; font-size: 0.72rem;
-      font-family: var(--font-family); transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    #watsonx-proxy-section button:hover { background: linear-gradient(135deg, var(--accent-dark), var(--accent-darker)); transform: translateY(-1px); box-shadow: 0 4px 12px var(--accent-light-bg); }
-    #watsonx-proxy-section button:active { transform: translateY(0); box-shadow: none; }
-    #watsonx-help-hint { display: none; font-size: 0.68rem; color: #4f46e5; background: #f0f6ff; border-radius: 6px; padding: 0.3rem 0.5rem; white-space: nowrap; }
     .saved { color: var(--accent); font-weight: 600; }
     .error-text { color: #d93025; }
     #name-section { display: flex; align-items: center; gap: 0.35rem; }
@@ -1062,13 +1046,6 @@
         <button onclick="saveWatsonxProjectId()">Save</button>
         <span id="watsonx-project-status"></span>
       </div>
-      <div id="watsonx-proxy-section">
-        <label for="watsonxProxyUrlInput">Proxy URL:</label>
-        <input type="text" id="watsonxProxyUrlInput" placeholder="http://localhost:9090" />
-        <button onclick="saveWatsonxProxyUrl()">Save</button>
-        <span id="watsonx-proxy-status"></span>
-      </div>
-      <div id="watsonx-help-hint">💡 Run: npx local-cors-proxy --proxyUrl https://&lt;region&gt;.ml.cloud.ibm.com --port 9090 (e.g. us-south)</div>
       <div id="name-section">
         <label for="nameInput">Name:</label>
         <input type="text" id="nameInput" placeholder="Your name" style="width:110px" />
@@ -1156,14 +1133,13 @@
     var MODELS_URL = "https://models.github.ai/inference/models";
     var OPENAI_DIRECT_URL = "https://api.openai.com/v1/chat/completions";
     var ANTHROPIC_DIRECT_URL = "https://api.anthropic.com/v1/messages";
-    var WATSONX_CHAT_PATH = "/ml/v1/text/chat?version=2024-10-08";
+    var WATSONX_CHAT_URL = "https://us-south.ml.cloud.ibm.com/ml/v1/text/chat?version=2024-10-08";
     var selectedModel = "openai/gpt-4.1";
     var token = "";
     var openaiToken = "";
     var anthropicToken = "";
     var watsonxToken = "";
     var watsonxProjectId = "";
-    var watsonxProxyUrl = "http://localhost:9090";
     var activeProvider = "github";
     var DB_KEY = "github_chat_db";
     var TOKEN_KEY = "github_token";
@@ -1171,7 +1147,6 @@
     var ANTHROPIC_TOKEN_KEY = "anthropic_token";
     var WATSONX_TOKEN_KEY = "watsonx_token";
     var WATSONX_PROJECT_ID_KEY = "watsonx_project_id";
-    var WATSONX_PROXY_URL_KEY = "watsonx_proxy_url";
     var MODELS_CACHE_KEY = "github_models_cache";
     var NAME_KEY = "wc_user_name";
     var userName = "";
@@ -1820,8 +1795,6 @@
       if (savedWatsonx) watsonxToken = savedWatsonx;
       var savedWatsonxProjectId = localStorage.getItem(WATSONX_PROJECT_ID_KEY);
       if (savedWatsonxProjectId) watsonxProjectId = savedWatsonxProjectId;
-      var savedWatsonxProxyUrl = localStorage.getItem(WATSONX_PROXY_URL_KEY);
-      if (savedWatsonxProxyUrl) watsonxProxyUrl = savedWatsonxProxyUrl;
       updateProviderUI();
     }
     function saveWatsonxProjectId() {
@@ -1830,16 +1803,6 @@
       watsonxProjectId = input;
       localStorage.setItem(WATSONX_PROJECT_ID_KEY, watsonxProjectId);
       document.getElementById("watsonx-project-status").innerHTML = '<span class="saved">✅ Saved</span>';
-    }
-    function saveWatsonxProxyUrl() {
-      var input = document.getElementById("watsonxProxyUrlInput").value.trim();
-      if (!input) { document.getElementById("watsonx-proxy-status").innerHTML = ''; return; }
-      try { new URL(input); } catch (e) {
-        document.getElementById("watsonx-proxy-status").innerHTML = '<span class="error-text">Invalid URL</span>'; return;
-      }
-      watsonxProxyUrl = input;
-      localStorage.setItem(WATSONX_PROXY_URL_KEY, watsonxProxyUrl);
-      document.getElementById("watsonx-proxy-status").innerHTML = '<span class="saved">✅ Saved</span>';
     }
 
     // ===== USER NAME =====
@@ -1878,8 +1841,6 @@
       var refreshBtn = document.getElementById("model-refresh-btn");
       var watsonxProjectSection = document.getElementById("watsonx-project-section");
       var watsonxHint = document.getElementById("watsonx-token-hint");
-      var watsonxProxySection = document.getElementById("watsonx-proxy-section");
-      var watsonxHelpHint = document.getElementById("watsonx-help-hint");
 
       providerSelect.value = activeProvider;
 
@@ -1890,8 +1851,6 @@
         refreshBtn.style.display = "";
         watsonxProjectSection.style.display = "none";
         if (watsonxHint) watsonxHint.style.display = "none";
-        if (watsonxProxySection) watsonxProxySection.style.display = "none";
-        if (watsonxHelpHint) watsonxHelpHint.style.display = "none";
         loadCachedModels();
       } else if (activeProvider === "openai") {
         tokenInput.placeholder = "sk-...";
@@ -1900,8 +1859,6 @@
         refreshBtn.style.display = "none";
         watsonxProjectSection.style.display = "none";
         if (watsonxHint) watsonxHint.style.display = "none";
-        if (watsonxProxySection) watsonxProxySection.style.display = "none";
-        if (watsonxHelpHint) watsonxHelpHint.style.display = "none";
         populateModelSelect(OPENAI_MODELS);
       } else if (activeProvider === "anthropic") {
         tokenInput.placeholder = "sk-ant-...";
@@ -1910,8 +1867,6 @@
         refreshBtn.style.display = "none";
         watsonxProjectSection.style.display = "none";
         if (watsonxHint) watsonxHint.style.display = "none";
-        if (watsonxProxySection) watsonxProxySection.style.display = "none";
-        if (watsonxHelpHint) watsonxHelpHint.style.display = "none";
         populateModelSelect(ANTHROPIC_MODELS);
       } else if (activeProvider === "watsonx") {
         tokenInput.placeholder = "IBM IAM Bearer Token";
@@ -1920,16 +1875,10 @@
         refreshBtn.style.display = "none";
         watsonxProjectSection.style.display = "";
         if (watsonxHint) watsonxHint.style.display = "";
-        if (watsonxProxySection) watsonxProxySection.style.display = "flex";
-        if (watsonxHelpHint) watsonxHelpHint.style.display = "";
         var projInput = document.getElementById("watsonxProjectInput");
         if (projInput) projInput.value = watsonxProjectId;
         var projStatus = document.getElementById("watsonx-project-status");
         if (projStatus) projStatus.innerHTML = watsonxProjectId ? '<span class="saved">✅</span>' : '';
-        var proxyInput = document.getElementById("watsonxProxyUrlInput");
-        if (proxyInput) proxyInput.value = watsonxProxyUrl;
-        var proxyStatus = document.getElementById("watsonx-proxy-status");
-        if (proxyStatus) proxyStatus.innerHTML = watsonxProxyUrl ? '<span class="saved">✅</span>' : '';
         populateModelSelect(WATSONX_MODELS);
       }
     }
@@ -4899,10 +4848,6 @@
       return watsonxToken;
     }
 
-    function cleanWatsonxResponse(text) {
-      return (text || "").replace(/<\|endoftext\|>/g, '').replace(/<\|user\|>/g, '').trim();
-    }
-
     async function sendMessage() {
       if (!db.activeJobId) return; var job = getJob(db.activeJobId); if (!job) return;
       var input = document.getElementById("userInput"), ut = input.value.trim();
@@ -4993,7 +4938,6 @@
           });
 
           var watsonxBody = JSON.stringify({ model_id: selectedModel, project_id: watsonxProjectId, messages: watsonxMessages, max_tokens: 4096 });
-          var watsonxEndpoint = watsonxProxyUrl + WATSONX_CHAT_PATH;
 
           debugLog('[API] Fetching watsonx.ai — model=' + selectedModel + ', payload ' + (watsonxBody.length / 1024).toFixed(1) + ' KB', 'info');
           var requestStartTime = Date.now();
@@ -5002,7 +4946,7 @@
             debugLog('[API] Still waiting for watsonx response... ' + elapsed + 's', 'warn');
           }, 10000);
           try {
-            r = await fetchWithRetry(watsonxEndpoint, {
+            r = await fetchWithRetry(WATSONX_CHAT_URL, {
               method: "POST",
               headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json" },
               body: watsonxBody
@@ -5157,8 +5101,7 @@
             ],
             max_tokens: 4096
           });
-          var watsonxEndpoint = watsonxProxyUrl + WATSONX_CHAT_PATH;
-          r = await fetchWithRetry(watsonxEndpoint, {
+          r = await fetchWithRetry(WATSONX_CHAT_URL, {
             method: "POST",
             headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json" },
             body: watsonxBody
