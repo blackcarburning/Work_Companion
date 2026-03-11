@@ -4754,6 +4754,13 @@
           })(mcToggleBtn, mcContentDiv);
           body.appendChild(mcToggleBtn);
           body.appendChild(mcContentDiv);
+          var mcSumBtn = document.createElement("button");
+          mcSumBtn.className = "document-summarise-btn";
+          mcSumBtn.textContent = "📝 Summarise & Simplify";
+          (function(jId, mIdx, sb) {
+            sb.onclick = function() { openSummariseModal(jId, mIdx, sb); };
+          })(db.activeJobId, actualIndex, mcSumBtn);
+          body.appendChild(mcSumBtn);
           if (editBtnRef) { editBtnRef.disabled = true; editBtnRef.title = "Manual content messages cannot be edited"; }
         } else if (msg && msg.isImage) {
           msgDiv.classList.add("message-image");
@@ -5070,8 +5077,8 @@
 
     function openSummariseModal(jobId, msgIdx, sumBtn) {
       var job = getJob(jobId); if (!job) return;
-      var msg = job.messages[msgIdx]; if (!msg || !msg.isDocument) return;
-      var docName = msg.documentName || "document";
+      var msg = job.messages[msgIdx]; if (!msg || (!msg.isDocument && !msg.isManualContent)) return;
+      var docName = msg.documentName || msg.contentTitle || "content";
 
       var ov = document.createElement("div"); ov.className = "modal-overlay";
       var modal = document.createElement("div"); modal.className = "modal"; modal.style.cssText = "width:580px;max-width:95vw;";
@@ -5116,7 +5123,7 @@
 
     async function summariseDocument(jobId, msgIdx, sumBtn, customSystemPrompt, customUserPrompt) {
       var job = getJob(jobId); if (!job) return;
-      var msg = job.messages[msgIdx]; if (!msg || !msg.isDocument) return;
+      var msg = job.messages[msgIdx]; if (!msg || (!msg.isDocument && !msg.isManualContent)) return;
       var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
       if (!activeToken) { alert("Please save your API token first."); return; }
 
@@ -5175,12 +5182,15 @@
 
         if (!summary) throw new Error("No summary returned.");
 
-        var origName = msg.documentName;
+        var origName = msg.documentName || msg.contentTitle || "content";
         var summaryName = origName + " (Summary)";
         var wordCount = summary.trim() ? summary.trim().split(/\s+/).length : 0;
         var summaryInfo = "Summary - " + wordCount + " words";
         var summaryContent = "📄 Summary of \"" + origName + "\":\n\n" + summary;
 
+        if (msg.isManualContent) {
+          summaryInfo = wordCount + " words (summarised from " + msg.contentType + ")";
+        }
         job.messages[msgIdx] = { role: "user", content: summaryContent, isDocument: true, documentName: summaryName, documentInfo: summaryInfo };
         saveDB();
         renderView();
