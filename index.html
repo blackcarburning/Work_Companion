@@ -642,6 +642,13 @@
       transition: background 0.15s;
     }
     .msg-exclude-btn:hover { background: #f5e070; }
+    .msg-pdf-btn {
+      background: #f0f2f5; border: 1px solid #dde1ea; border-radius: 5px;
+      padding: 0.18rem 0.55rem; font-size: 0.68rem; cursor: pointer;
+      color: #6b7280; font-weight: 600; font-family: inherit;
+      transition: background 0.15s, color 0.15s;
+    }
+    .msg-pdf-btn:hover { background: #e3e7ef; color: #1c1f26; }
     .msg-edit-textarea {
       width: 100%; min-height: 150px; resize: vertical;
       border: 2px solid var(--accent); border-radius: 10px;
@@ -2256,18 +2263,17 @@
       return PDF_THEMES[db.pdfTheme] || PDF_THEMES["professional"];
     }
 
-    function exportJobToPDF() {
-      if (!db.activeJobId) { alert("No active job."); return; }
-      var job = getJob(db.activeJobId);
+    function exportExchangeToPDF(jobId, convIdx) {
+      var job = getJob(jobId);
       if (!job) return;
-
-      showModal("Export Conversation to PDF", "Enter a title for the PDF:", job.name, false, function(title) {
+      var actualIndex = convIdx + 1; // skip index 0 (system prompt); convIdx is 0-based exchange index
+      showModal("Export Exchange to PDF", "Enter a title for the PDF:", job.name + " - Exchange " + (convIdx + 1), false, function(title) {
         if (!title) return;
-        generateJobPDF(job, title);
+        generateExchangePDF(job, actualIndex, title);
       });
     }
 
-    async function generateJobPDF(job, title) {
+    async function generateExchangePDF(job, actualIndex, title) {
       if (!window.jspdf) {
         alert("PDF library is still loading. Please try again in a moment.");
         return;
@@ -2331,17 +2337,17 @@
         pdf.text(dateStr, marginL, y);
         y += lh(theme.sizes.small) + 5;
 
-        // === MESSAGES ===
-        var messages = job.messages.slice(1); // skip system prompt
+        // === EXCHANGE MESSAGES (user question + assistant response) ===
+        var userMsg = job.messages[actualIndex];
+        var assistantMsg = job.messages[actualIndex + 1];
 
-        messages.forEach(function(msg) {
-          if (msg.excluded) return; // skip excluded messages
+        [userMsg, assistantMsg].forEach(function(msg) {
+          if (!msg) return;
 
           var isUser = msg.role === "user";
           var isAssistant = msg.role === "assistant";
-          var label = isUser ? "YOU" : isAssistant ? "ASSISTANT" : msg.role.toUpperCase();
+          var roleLabel = isUser ? "YOU" : isAssistant ? "ASSISTANT" : msg.role.toUpperCase();
 
-          // Check if we need a page break (at least 15mm for a message)
           checkBreak(15);
 
           // Role label
@@ -2354,7 +2360,7 @@
           } else {
             pdf.setTextColor(theme.colors.muted[0], theme.colors.muted[1], theme.colors.muted[2]);
           }
-          pdf.text(label, marginL, y);
+          pdf.text(roleLabel, marginL, y);
           y += lh(theme.sizes.small) + 1;
 
           // Message content
@@ -2363,16 +2369,15 @@
           pdf.setTextColor(theme.colors.body[0], theme.colors.body[1], theme.colors.body[2]);
 
           var content = msg.content || "";
-          // For documents, show the document name instead of full content
           if (msg.isDocument) {
-            content = "[Document: " + (msg.documentName || "Untitled") + "]";
+            content = '[Document: "' + (msg.documentName || "Untitled") + '"]';
           } else if (msg.isImage) {
             content = "[Image attached]";
           } else if (msg.isManualContent) {
-            content = "[Manual content: " + (msg.contentTitle || "Untitled") + " (" + (msg.contentType || "Text") + ")]";
+            content = "[Manual content added]";
           }
 
-          // Strip any HTML tags and base64 images from content
+          // Strip HTML tags and base64 data blobs
           content = content.replace(/<[^>]*>/g, '').replace(/data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+/g, '[image]');
 
           writeWrapped(content, theme.sizes.body, "normal");
@@ -2385,7 +2390,7 @@
 
       } catch (err) {
         alert("PDF export failed: " + err.message);
-        debugLog('[PDF] ❌ Job PDF export error: ' + err.message, 'error');
+        debugLog('[PDF] ❌ Exchange PDF export error: ' + err.message, 'error');
       }
     }
 
@@ -4539,7 +4544,7 @@
         '<button class="input-attach-btn" id="manual-content-btn" onclick="openManualContentModal()" title="Add Content">📋</button>' +
         '<button class="input-attach-btn" id="image-btn" onclick="openImagePicker()" title="Add Screenshot">📷</button>' +
         '<button class="input-attach-btn" id="view-context-btn" onclick="viewApiContext()" title="View API Context">🔍</button>' +
-        '<button class="input-attach-btn" id="export-pdf-btn" onclick="exportJobToPDF()" title="Export this conversation to PDF">📄</button>' +
+
         '</div>' +
         '<input type="text" id="userInput" placeholder="Ask a question..." />' +
         '<button onclick="sendMessage()" id="sendBtn">Send</button></div></div>' +
@@ -4754,6 +4759,13 @@
           saveDB(); renderView();
         }; })(idx, actualIndex);
         actions.appendChild(exclBtn);
+
+        var pdfBtn = document.createElement("button");
+        pdfBtn.className = "msg-pdf-btn";
+        pdfBtn.textContent = "📄 PDF";
+        pdfBtn.title = "Export this exchange to PDF";
+        (function(i) { pdfBtn.onclick = function() { exportExchangeToPDF(db.activeJobId, i); }; })(idx);
+        actions.appendChild(pdfBtn);
 
       } else if (role === "user") {
         var uEditBtn = document.createElement("button"); uEditBtn.className = "msg-edit-btn"; uEditBtn.textContent = "✏️ Edit";
