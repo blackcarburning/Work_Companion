@@ -896,6 +896,10 @@
           <input type="checkbox" id="autosave-toggle" checked onchange="toggleAutosave(this.checked)">
           💾 Autosave every 5 min
         </label>
+        <label>
+          <input type="checkbox" id="anthropic-cache-toggle" checked onchange="db.anthropicCacheEnabled=this.checked;saveDB();debugLog('[CACHE] Anthropic prompt caching ' + (this.checked ? 'enabled' : 'disabled'))">
+          💾 Anthropic prompt caching
+        </label>
       </div>
       <button class="sidebar-btn" onclick="purgeStorage()" aria-label="Purge all stored images from browser storage" style="margin-top:0.3rem; background:#fef2f2; border-color:#fca5a5; color:#c0202a;">🧹 Purge Storage</button>
       <div class="storage-indicator" id="storage-indicator" title="localStorage usage" style="margin-top:0.25rem;display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">💾 <span id="storage-usage-text">calculating...</span><button class="sidebar-btn" onclick="cleanStorage()" style="font-size:0.68rem;padding:0.1rem 0.4rem;margin:0;line-height:1.4" title="Purge orphaned images and clear models cache">🧹 Clean</button></div>
@@ -1330,17 +1334,14 @@
 
     var ANTHROPIC_MODELS = [
       { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
-      { id: "claude-opus-4-5-20250414", name: "Claude Opus 4.5" },
-      { id: "claude-opus-4-1-20250620", name: "Claude Opus 4.1" },
+      { id: "claude-opus-4-5-20250918", name: "Claude Opus 4.5" },
+      { id: "claude-opus-4-1-20250630", name: "Claude Opus 4.1" },
       { id: "claude-opus-4-20250514", name: "Claude Opus 4" },
       { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-      { id: "claude-sonnet-4-5-20250514", name: "Claude Sonnet 4.5" },
+      { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5" },
       { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
       { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-      { id: "claude-3-haiku-20240307", name: "Claude Haiku 3" },
-      { id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet" },
-      { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
-      { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" }
+      { id: "claude-3-haiku-20240307", name: "Claude Haiku 3" }
     ];
 
     var WATSONX_MODELS = [
@@ -1749,6 +1750,7 @@
           if (db.extractDocImages === undefined) db.extractDocImages = false;
           if (db.autosaveEnabled === undefined) db.autosaveEnabled = true;
           if (db.autosaveIntervalMin === undefined) db.autosaveIntervalMin = DEFAULT_AUTOSAVE_INTERVAL_MIN;
+          if (db.anthropicCacheEnabled === undefined) db.anthropicCacheEnabled = true;
           if (!db.summariseSystemPrompt) db.summariseSystemPrompt = DEFAULT_SUMMARISE_SYSTEM_PROMPT;
           if (!db.summariseUserPrompt) db.summariseUserPrompt = DEFAULT_SUMMARISE_USER_PROMPT;
           // Rehydrate imageData from IndexedDB for messages that have imageRef
@@ -5142,6 +5144,55 @@
           theme = applyWordThemeColors(themeDoc, theme);
         }
 
+        // Also try to parse word/document.xml for page layout and background
+        var docFile = zip.file("word/document.xml");
+        if (docFile) {
+          try {
+            var docXml = await docFile.async("string");
+            var docDoc = parser.parseFromString(docXml, "application/xml");
+
+            // Extract page background color from <w:background w:color="XXXXXX">
+            var bgEls = docDoc.getElementsByTagName("w:background");
+            if (bgEls.length > 0) {
+              var bgColor = bgEls[0].getAttribute("w:color");
+              if (bgColor && bgColor !== "auto" && bgColor.length >= 6) {
+                bgColor = bgColor.replace("#", "");
+                if (bgColor.length === 6) {
+                  var bgRgb = [parseInt(bgColor.substring(0,2),16), parseInt(bgColor.substring(2,4),16), parseInt(bgColor.substring(4,6),16)];
+                  theme.colors.pageBg = bgRgb;
+                  theme.colors.coverBg = bgRgb;
+                  theme._pageBgFromDocument = true;
+                  debugLog("[WordImport] Page background color: #" + bgColor, "info");
+                }
+              }
+            }
+
+            // Extract page margins from <w:sectPr><w:pgMar ...>
+            var sectPrs = docDoc.getElementsByTagName("w:sectPr");
+            if (sectPrs.length > 0) {
+              var pgMars = sectPrs[sectPrs.length - 1].getElementsByTagName("w:pgMar");
+              if (pgMars.length > 0) {
+                var pgMar = pgMars[0];
+                // Twips to points: divide by 1440 for inches, multiply by 72 for points (= /20)
+                // twips → points: divide by 1440 for inches, multiply by 72 for points (= /20)
+                function twipsToPoints(val) { return val ? Math.round(parseInt(val, 10) / 20) : null; }
+                var mLeft = twipsToPoints(pgMar.getAttribute("w:left"));
+                var mRight = twipsToPoints(pgMar.getAttribute("w:right"));
+                var mTop = twipsToPoints(pgMar.getAttribute("w:top"));
+                var mBottom = twipsToPoints(pgMar.getAttribute("w:bottom"));
+                if (!theme.spacing) theme.spacing = {};
+                if (mLeft !== null && mLeft > 0) theme.spacing.marginLeft = Math.min(Math.max(mLeft, 18), 108);
+                if (mRight !== null && mRight > 0) theme.spacing.marginRight = Math.min(Math.max(mRight, 18), 108);
+                if (mTop !== null && mTop > 0) theme.spacing.marginTop = Math.min(Math.max(mTop, 18), 108);
+                if (mBottom !== null && mBottom > 0) theme.spacing.marginBottom = Math.min(Math.max(mBottom, 18), 108);
+                debugLog("[WordImport] Page margins (pt): left=" + mLeft + " right=" + mRight + " top=" + mTop + " bottom=" + mBottom, "info");
+              }
+            }
+          } catch (docErr) {
+            debugLog("[WordImport] Could not parse document.xml: " + docErr.message, "warn");
+          }
+        }
+
         db.pdfTheme = "custom";
 
         // ===== LOGO EXTRACTION =====
@@ -5365,9 +5416,15 @@
       if (headingRgb) {
         base.colors.heading = headingRgb;
         base.colors.title = headingRgb;
+        base._headingColorFromStyles = true;
+      } else {
+        base._headingColorFromStyles = false;
       }
       if (bodyRgb) {
         base.colors.body = bodyRgb;
+        base._bodyColorFromStyles = true;
+      } else {
+        base._bodyColorFromStyles = false;
       }
       if (accentRgb) {
         base.colors.primary = accentRgb;
@@ -5386,7 +5443,9 @@
 
     function applyWordThemeColors(themeDoc, theme) {
       function hexToRgbWord(hex) {
-        if (!hex || hex.length !== 6) return null;
+        if (!hex) return null;
+        hex = hex.replace("#", "");
+        if (hex.length !== 6) return null;
         return [parseInt(hex.substring(0,2),16), parseInt(hex.substring(2,4),16), parseInt(hex.substring(4,6),16)];
       }
 
@@ -5408,18 +5467,29 @@
             colorMap[tagName] = sysClr.getAttribute("lastClr");
           }
         }
-        // Map theme roles to PDF theme
-        // dk1 → body text color only (not heading/title, which come from style definitions)
-        if (colorMap["dk1"]) {
+        // dk1 → body text color, only if styles.xml did not provide an explicit body color
+        if (colorMap["dk1"] && !theme._bodyColorFromStyles) {
           var rgb = hexToRgbWord(colorMap["dk1"]);
           if (rgb) { theme.colors.body = rgb; }
         }
-        // lt1 → cover background (usually white)
+        // lt1 → cover/page background (usually white or near-white)
         if (colorMap["lt1"]) {
           var rgb = hexToRgbWord(colorMap["lt1"]);
-          if (rgb) { theme.colors.coverBg = rgb; }
+          if (rgb) {
+            theme.colors.coverBg = rgb;
+            // Only set pageBg from lt1 if not already set (document.xml background takes precedence)
+            if (!theme._pageBgFromDocument) {
+              theme.colors.pageBg = rgb;
+            }
+          }
         }
-        // accent1 → primary, accentBarColor, headerLine, sectionDivider
+        // dk2 → secondary color
+        var dk2Rgb = null;
+        if (colorMap["dk2"]) {
+          dk2Rgb = hexToRgbWord(colorMap["dk2"]);
+          if (dk2Rgb) { theme.colors.secondary = dk2Rgb; }
+        }
+        // accent1 → primary, accentBarColor, headerLine, sectionDivider, userLabel
         var accent1Rgb = null;
         if (colorMap["accent1"]) {
           accent1Rgb = hexToRgbWord(colorMap["accent1"]);
@@ -5433,30 +5503,43 @@
               Math.min(255, Math.round(accent1Rgb[1] * 0.3 + 200)),
               Math.min(255, Math.round(accent1Rgb[2] * 0.3 + 200))
             ];
+            // userLabel from accent1
+            theme.colors.userLabel = accent1Rgb;
+            // tocDots: lighter version of accent1
+            theme.colors.tocDots = [
+              Math.min(255, Math.round(accent1Rgb[0] * 0.4 + 160)),
+              Math.min(255, Math.round(accent1Rgb[1] * 0.4 + 160)),
+              Math.min(255, Math.round(accent1Rgb[2] * 0.4 + 160))
+            ];
           }
         }
-        // accent2 → accent color
+        // accent2 → accent color, assistantLabel
+        var accent2Rgb = null;
         if (colorMap["accent2"]) {
-          var rgb = hexToRgbWord(colorMap["accent2"]);
-          if (rgb) { theme.colors.accent = rgb; }
+          accent2Rgb = hexToRgbWord(colorMap["accent2"]);
+          if (accent2Rgb) {
+            theme.colors.accent = accent2Rgb;
+            theme.colors.assistantLabel = accent2Rgb;
+          }
         } else if (accent1Rgb) {
           theme.colors.accent = accent1Rgb;
+          // assistantLabel: slightly different shade of accent1
+          theme.colors.assistantLabel = [
+            Math.min(255, Math.round(accent1Rgb[0] * 0.7 + 60)),
+            Math.min(255, Math.round(accent1Rgb[1] * 0.7 + 60)),
+            Math.min(255, Math.round(accent1Rgb[2] * 0.7 + 60))
+          ];
         }
         // heading: use explicit heading color from styles if available, else accent1, else dk2
-        // Check if heading was set from Heading1 style (non-default professional value)
-        var defaultProfessionalHeadingColor = [31, 35, 40];
-        var headingColorNotCustomized = theme.colors.heading &&
-          theme.colors.heading[0] === defaultProfessionalHeadingColor[0] &&
-          theme.colors.heading[1] === defaultProfessionalHeadingColor[1] &&
-          theme.colors.heading[2] === defaultProfessionalHeadingColor[2];
-        if (headingColorNotCustomized) {
+        // Use the _headingColorFromStyles flag set by extractThemeFromWordStyles
+        if (!theme._headingColorFromStyles) {
           // No explicit heading color from styles.xml, use accent1 or dk2
           if (accent1Rgb) {
             theme.colors.heading = accent1Rgb;
             theme.colors.title = accent1Rgb;
-          } else if (colorMap["dk2"]) {
-            var rgb = hexToRgbWord(colorMap["dk2"]);
-            if (rgb) { theme.colors.heading = rgb; theme.colors.title = rgb; }
+          } else if (dk2Rgb) {
+            theme.colors.heading = dk2Rgb;
+            theme.colors.title = dk2Rgb;
           }
         }
         // muted: lighter version of body color
@@ -5467,11 +5550,17 @@
             Math.min(255, Math.round(b[1] * 0.5 + 128)),
             Math.min(255, Math.round(b[2] * 0.5 + 128))
           ];
+          // notesBg: very light version of lt1 or body background
+          var lt1Rgb = colorMap["lt1"] ? hexToRgbWord(colorMap["lt1"]) : null;
+          if (lt1Rgb) {
+            theme.colors.notesBg = [
+              Math.min(255, Math.round(lt1Rgb[0] * 0.95 + 12)),
+              Math.min(255, Math.round(lt1Rgb[1] * 0.95 + 12)),
+              Math.min(255, Math.round(lt1Rgb[2] * 0.95 + 12))
+            ];
+          }
         }
-        if (colorMap["hyperlink"]) {
-          var rgb = hexToRgbWord(colorMap["hyperlink"]);
-          if (rgb) { theme.colors.primary = rgb; theme.decorations.accentBarColor = rgb; }
-        }
+        // hyperlink color is NOT mapped to primary/accent — it would override the brand color
       }
 
       // Parse font scheme from <a:fontScheme>
@@ -6170,11 +6259,26 @@
             return { role: m.role === "developer" ? "user" : m.role, content: m.content };
           });
           var systemContent = (sysMsg && sysMsg.content) || "";
+          var cacheEnabled = db.anthropicCacheEnabled !== false;
+          var systemPayload = cacheEnabled
+            ? [{ type: "text", text: systemContent, cache_control: { type: "ephemeral" } }]
+            : systemContent;
+          if (cacheEnabled && convMsgs.length > 1) {
+            // Mark the second-to-last message with cache_control so the conversation
+            // prefix (everything before the current user query) is cached server-side,
+            // enabling ~90% cost reduction on cached tokens in follow-up turns.
+            var lastCacheIdx = convMsgs.length - 2;
+            if (typeof convMsgs[lastCacheIdx].content === "string") {
+              convMsgs[lastCacheIdx] = {
+                role: convMsgs[lastCacheIdx].role,
+                content: [{ type: "text", text: convMsgs[lastCacheIdx].content, cache_control: { type: "ephemeral" } }]
+              };
+            }
+          }
           var anthropicBody = JSON.stringify({ 
             model: selectedModel, 
             max_tokens: 4096, 
-            cache_control: { type: "ephemeral" },
-            system: systemContent, 
+            system: systemPayload, 
             messages: convMsgs 
           });
           debugLog('[API] Fetching ' + ANTHROPIC_DIRECT_URL + ' — payload ' + (anthropicBody.length / 1024).toFixed(1) + ' KB', 'info');
@@ -6184,14 +6288,18 @@
             debugLog('[API] Still waiting for Anthropic response... ' + elapsed + 's', 'warn');
           }, 10000);
           try {
+            var anthropicHeaders = {
+              "x-api-key": anthropicToken,
+              "Content-Type": "application/json",
+              "anthropic-version": "2023-06-01",
+              "anthropic-dangerous-direct-browser-access": "true"
+            };
+            if (cacheEnabled) {
+              anthropicHeaders["anthropic-beta"] = "prompt-caching-2024-07-31";
+            }
             r = await fetchWithRetry(ANTHROPIC_DIRECT_URL, {
               method: "POST",
-              headers: {
-                "x-api-key": anthropicToken,
-                "Content-Type": "application/json",
-                "anthropic-version": "2023-06-01",
-                "anthropic-dangerous-direct-browser-access": "true"
-              },
+              headers: anthropicHeaders,
               body: anthropicBody
             }, "Anthropic");
           } finally { clearInterval(waitingLogInterval); }
@@ -7609,6 +7717,8 @@
       if (_edti) _edti.checked = !!db.extractDocImages;
       var _asti = document.getElementById("autosave-toggle");
       if (_asti) _asti.checked = db.autosaveEnabled !== false;
+      var _acti = document.getElementById("anthropic-cache-toggle");
+      if (_acti) _acti.checked = db.anthropicCacheEnabled !== false;
       if (db.autosaveEnabled !== false) startAutosave();
       if (activeProvider === "github" && token) setTimeout(fetchModels, 500);
       updateStorageIndicator();
