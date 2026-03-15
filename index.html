@@ -1328,8 +1328,15 @@
     ];
 
     var ANTHROPIC_MODELS = [
+      { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
+      { id: "claude-opus-4-5-20250414", name: "Claude Opus 4.5" },
+      { id: "claude-opus-4-1-20250620", name: "Claude Opus 4.1" },
       { id: "claude-opus-4-20250514", name: "Claude Opus 4" },
+      { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { id: "claude-sonnet-4-5-20250514", name: "Claude Sonnet 4.5" },
       { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
+      { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+      { id: "claude-3-haiku-20240307", name: "Claude Haiku 3" },
       { id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet" },
       { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
       { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" }
@@ -5882,7 +5889,13 @@
             return { role: m.role === "developer" ? "user" : m.role, content: m.content };
           });
           var systemContent = (sysMsg && sysMsg.content) || "";
-          var anthropicBody = JSON.stringify({ model: selectedModel, max_tokens: 4096, system: systemContent, messages: convMsgs });
+          var anthropicBody = JSON.stringify({ 
+            model: selectedModel, 
+            max_tokens: 4096, 
+            cache_control: { type: "ephemeral" },
+            system: systemContent, 
+            messages: convMsgs 
+          });
           debugLog('[API] Fetching ' + ANTHROPIC_DIRECT_URL + ' — payload ' + (anthropicBody.length / 1024).toFixed(1) + ' KB', 'info');
           var requestStartTime = Date.now();
           var waitingLogInterval = setInterval(function() {
@@ -5910,6 +5923,19 @@
           } else {
             debugLog('[API] ✅ Anthropic response HTTP ' + r.status + ' in ' + elapsed + 'ms', 'info');
             d = await r.json();
+            // Log Anthropic prompt caching stats
+            if (d.usage) {
+              var cacheCreate = d.usage.cache_creation_input_tokens || 0;
+              var cacheRead = d.usage.cache_read_input_tokens || 0;
+              var inputTokens = d.usage.input_tokens || 0;
+              var outputTokens = d.usage.output_tokens || 0;
+              debugLog('[API] 📊 Anthropic usage — input: ' + inputTokens + ', output: ' + outputTokens + ', cache_create: ' + cacheCreate + ', cache_read: ' + cacheRead, 'info');
+              if (cacheRead > 0) {
+                debugLog('[API] ✅ Prompt cache HIT — ' + cacheRead + ' tokens read from cache (saving ~90% on those tokens)', 'info');
+              } else if (cacheCreate > 0) {
+                debugLog('[API] 📝 Prompt cache WRITE — ' + cacheCreate + ' tokens cached for future requests', 'info');
+              }
+            }
             reply = (d.content && d.content[0] && d.content[0].text) || "No response.";
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
             job.messages.push({ role: "assistant", content: reply }); saveDB();
@@ -5983,6 +6009,12 @@
             var respStr = JSON.stringify(d);
             reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens), response JSON ' + (respStr.length / 1024).toFixed(1) + ' KB', 'log');
+            // Log OpenAI prompt caching stats (automatic, no request changes needed)
+            if (d.usage && d.usage.prompt_tokens_details && d.usage.prompt_tokens_details.cached_tokens) {
+              var cachedTokens = d.usage.prompt_tokens_details.cached_tokens;
+              var totalPromptTokens = d.usage.prompt_tokens || 0;
+              debugLog('[API] ✅ OpenAI prompt cache HIT — ' + cachedTokens + '/' + totalPromptTokens + ' input tokens cached (50% discount on cached tokens)', 'info');
+            }
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
           }
