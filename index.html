@@ -1084,6 +1084,7 @@
   <input type="file" id="theme-import-file" accept=".json" style="display:none" onchange="handleThemeImport(event)" />
   <input type="file" id="word-template-file" accept=".docx,.dotx" style="display:none" onchange="handleWordTemplateImport(event)" />
   <input type="file" id="ui-theme-import-file" accept=".json" style="display:none" onchange="handleUIThemeImport(event)" />
+  <input type="file" id="logo-upload-file" accept="image/*" style="display:none" onchange="handleLogoUpload(event)" aria-label="Upload logo image" />
 
   <div id="debug-console">
     <div id="debug-console-toolbar">
@@ -2592,6 +2593,32 @@
         var imageRelationships = [];
         var imageFiles = [];
 
+        // Logo at start of document
+        if (theme.logo && theme.logo.data) {
+          try {
+            var logoParts = theme.logo.data.split(",");
+            var logoMimeMatch = logoParts[0].match(/data:image\/(png|jpeg|jpg|gif);/);
+            var logoExt = (logoMimeMatch && logoMimeMatch[1]) ? (logoMimeMatch[1] === "jpg" ? "jpeg" : logoMimeMatch[1]) : "png";
+            var logoBase64 = logoParts[1];
+            imageFiles.push({ filename: "word/media/logo." + logoExt, base64: logoBase64 });
+            imageRelationships.push({ id: "rIdLogo", target: "media/logo." + logoExt, type: logoExt });
+            body += '<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:after="120"/></w:pPr><w:r>' +
+              '<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">' +
+              '<wp:extent cx="2000000" cy="800000"/>' +
+              '<wp:docPr id="9999" name="Logo"/>' +
+              '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+              '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+              '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+              '<pic:nvPicPr><pic:cNvPr id="9999" name="Logo"/><pic:cNvPicPr/></pic:nvPicPr>' +
+              '<pic:blipFill><a:blip r:embed="rIdLogo"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+              '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2000000" cy="800000"/></a:xfrm>' +
+              '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
+              '</pic:pic></a:graphicData></a:graphic>' +
+              '</wp:inline></w:drawing>' +
+              '</w:r></w:p>';
+          } catch(logoErr) { debugLog("[Word] \u26a0\ufe0f Could not add logo to exchange Word: " + logoErr.message, "warn"); }
+        }
+
         // Title and date header
         body += makePara(makeRun(title, { bold: true, font: headingFont, sz: titleSz, color: headingHex }), { spaceAfter: 120 });
         body += makePara(makeRun(dateStr, { font: bodyFont, sz: bodySz, color: bodyHex }), { spaceAfter: 80 });
@@ -3216,6 +3243,15 @@
         pdf.setTextColor(theme.colors.muted[0], theme.colors.muted[1], theme.colors.muted[2]);
         pdf.text(dateStr, marginL, y);
         y += lh(theme.sizes.small) + 5;
+
+        // Logo at top-right of first page
+        if (theme.logo && theme.logo.data) {
+          try {
+            var logoMaxW = 40;
+            var logoMaxH = 20;
+            pdf.addImage(theme.logo.data, pageW - theme.spacing.marginRight - logoMaxW, marginT, logoMaxW, logoMaxH);
+          } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to exchange PDF: " + e.message, "warn"); }
+        }
 
         // === EXCHANGE MESSAGES (user question + assistant response) ===
         var userMsg = job.messages[actualIndex];
@@ -3878,6 +3914,9 @@
           pdf.setFontSize(theme.sizes.small);
           pdf.text("Job Sections: " + totalJobs, marginL + 8, ty); ty += lh(theme.sizes.small) + 2;
           pdf.text("Total Exchanges: " + totalExchanges, marginL + 8, ty);
+          if (theme.logo && theme.logo.data && (theme.logo.placement === "cover" || theme.logo.placement === "both")) {
+            try { pdf.addImage(theme.logo.data, marginL + 8, marginT, 50, 25); } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to cover: " + e.message, "warn"); }
+          }
         } else if (coverStyle === "minimal") {
           pdf.setFillColor(...theme.colors.coverBg);
           pdf.rect(0, 0, pageW, pageH, "F");
@@ -3896,6 +3935,9 @@
             pdf.setFont(theme.fonts.body, "normal");
             pdf.setTextColor(...theme.colors.muted);
             pdf.text(dateStr, pageW / 2, ty, { align: "center" });
+          }
+          if (theme.logo && theme.logo.data && (theme.logo.placement === "cover" || theme.logo.placement === "both")) {
+            try { pdf.addImage(theme.logo.data, marginL, marginT, 50, 25); } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to cover: " + e.message, "warn"); }
           }
         } else {
           // centered (default)
@@ -3934,6 +3976,9 @@
           pdf.text("Job Sections: " + totalJobs, pageW / 2, y, { align: "center" });
           y += 8;
           pdf.text("Total Exchanges: " + totalExchanges, pageW / 2, y, { align: "center" });
+          if (theme.logo && theme.logo.data && (theme.logo.placement === "cover" || theme.logo.placement === "both")) {
+            try { pdf.addImage(theme.logo.data, marginL, marginT, 50, 25); } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to cover: " + e.message, "warn"); }
+          }
         }
 
         // ===== PAGE 2: TABLE OF CONTENTS (placeholder) =====
@@ -4029,6 +4074,13 @@
             pdf.setDrawColor(hlc[0], hlc[1], hlc[2]);
             pdf.line(marginL, theme.spacing.headerHeight, pageW - theme.spacing.marginRight, theme.spacing.headerHeight);
             pdf.setDrawColor(0, 0, 0);
+          }
+          if (p > 1 && theme.logo && theme.logo.data && (theme.logo.placement === "header" || theme.logo.placement === "both")) {
+            try {
+              var hLogoW = 20;
+              var hLogoH = 8;
+              pdf.addImage(theme.logo.data, pageW - theme.spacing.marginRight - hLogoW, 2, hLogoW, hLogoH);
+            } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to header: " + e.message, "warn"); }
           }
           pdf.setTextColor(...theme.colors.body);
         }
@@ -4544,6 +4596,32 @@
         var imageRelationships = [];
         var imageFiles = [];
 
+        // Logo at start of document
+        if (theme.logo && theme.logo.data) {
+          try {
+            var logoParts = theme.logo.data.split(",");
+            var logoMimeMatch = logoParts[0].match(/data:image\/(png|jpeg|jpg|gif);/);
+            var logoExt = (logoMimeMatch && logoMimeMatch[1]) ? (logoMimeMatch[1] === "jpg" ? "jpeg" : logoMimeMatch[1]) : "png";
+            var logoBase64 = logoParts[1];
+            imageFiles.push({ filename: "word/media/logo." + logoExt, base64: logoBase64 });
+            imageRelationships.push({ id: "rIdLogo", target: "media/logo." + logoExt, type: logoExt });
+            body += '<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:after="200"/></w:pPr><w:r>' +
+              '<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">' +
+              '<wp:extent cx="2000000" cy="800000"/>' +
+              '<wp:docPr id="9999" name="Logo"/>' +
+              '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+              '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+              '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+              '<pic:nvPicPr><pic:cNvPr id="9999" name="Logo"/><pic:cNvPicPr/></pic:nvPicPr>' +
+              '<pic:blipFill><a:blip r:embed="rIdLogo"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+              '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2000000" cy="800000"/></a:xfrm>' +
+              '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
+              '</pic:pic></a:graphicData></a:graphic>' +
+              '</wp:inline></w:drawing>' +
+              '</w:r></w:p>';
+          } catch(logoErr) { debugLog("[Word] \u26a0\ufe0f Could not add logo to Word export: " + logoErr.message, "warn"); }
+        }
+
         // ===== COVER PAGE =====
         body += makePara(makeRun(docTitle, { bold: true, font: headingFont, sz: titleSz, color: headingHex }), { spaceAfter: 400 });
         body += makePara(makeRun(dateStr, { font: bodyFont, sz: h3Sz, color: bodyHex }), { spaceAfter: 200 });
@@ -4734,6 +4812,7 @@
 
     function openPdfThemeEditor() {
       var currentTheme = JSON.parse(JSON.stringify(getActivePdfTheme()));
+      window._themeLogo = currentTheme.logo ? JSON.parse(JSON.stringify(currentTheme.logo)) : null;
       var ov = document.createElement("div");
       ov.className = "modal-overlay pdf-theme-modal";
 
@@ -4836,6 +4915,27 @@
           '</select></div>' +
           '</div></div>' +
 
+          '<div class="theme-section">' +
+          '<div class="theme-section-title">Logo</div>' +
+          '<div id="theme-logo-preview" style="margin-bottom:0.4rem;min-height:30px">' +
+          (window._themeLogo && window._themeLogo.data
+            ? '<img src="' + window._themeLogo.data + '" style="max-width:120px;max-height:60px;border:1px solid #d0d7de;border-radius:4px;" alt="Logo preview">'
+            : '<span style="color:#57606a;font-size:0.8rem;font-style:italic">No logo</span>') +
+          '</div>' +
+          '<div class="theme-field">' +
+          '<label>Placement</label>' +
+          '<select id="theme-logo-placement">' +
+          '<option value="cover"' + ((window._themeLogo && window._themeLogo.placement === "cover") ? " selected" : "") + '>Cover Page Only</option>' +
+          '<option value="header"' + ((window._themeLogo && window._themeLogo.placement === "header") ? " selected" : "") + '>Page Header Only</option>' +
+          '<option value="both"' + ((!window._themeLogo || window._themeLogo.placement === "both") ? " selected" : "") + '>Both</option>' +
+          '</select>' +
+          '</div>' +
+          '<div style="display:flex;gap:0.35rem;margin-top:0.3rem">' +
+          '<button onclick="document.getElementById(\'logo-upload-file\').click()" style="font-size:0.8rem">📤 Upload Logo</button>' +
+          '<button onclick="removeThemeLogo()" style="font-size:0.8rem">🗑️ Remove Logo</button>' +
+          '</div>' +
+          '</div>' +
+
           '<div class="theme-import-export">' +
           '<button onclick="exportPdfTheme()">⬇ Export Theme</button>' +
           '<button onclick="document.getElementById(\'theme-import-file\').click()">⬆ Import Theme</button>' +
@@ -4858,6 +4958,7 @@
           var key = this.value;
           if (key === "custom") return;
           currentTheme = JSON.parse(JSON.stringify(PDF_THEMES[key]));
+          window._themeLogo = currentTheme.logo ? JSON.parse(JSON.stringify(currentTheme.logo)) : null;
           ov.innerHTML = buildEditorHTML(currentTheme);
           document.getElementById("theme-preset").value = key;
           bindHandlers();
@@ -4891,6 +4992,13 @@
         t.decorations.showTimestamp = document.getElementById("td-showTimestamp").checked;
         t.decorations.coverStyle = document.getElementById("td-coverStyle").value;
         t.decorations.tocStyle = document.getElementById("td-tocStyle").value;
+        var logoPlacementEl = document.getElementById("theme-logo-placement");
+        var logoPlacement = logoPlacementEl ? logoPlacementEl.value : "both";
+        if (window._themeLogo && window._themeLogo.data) {
+          t.logo = { data: window._themeLogo.data, width: window._themeLogo.width || null, height: window._themeLogo.height || null, placement: logoPlacement };
+        } else {
+          t.logo = null;
+        }
         return t;
       }
 
@@ -4909,7 +5017,8 @@
             JSON.stringify(t.colors) !== JSON.stringify(preset.colors) ||
             JSON.stringify(t.fonts) !== JSON.stringify(preset.fonts) ||
             JSON.stringify(t.spacing) !== JSON.stringify(preset.spacing) ||
-            JSON.stringify(t.decorations) !== JSON.stringify(preset.decorations);
+            JSON.stringify(t.decorations) !== JSON.stringify(preset.decorations) ||
+            (t.logo != null);
           if (modified) {
             db.pdfTheme = "custom";
             db.customPdfTheme = t;
@@ -4958,6 +5067,56 @@
       reader.readAsText(file);
     }
 
+    function updateLogoPreview() {
+      var previewEl = document.getElementById("theme-logo-preview");
+      if (!previewEl) return;
+      if (window._themeLogo && window._themeLogo.data) {
+        previewEl.innerHTML = '<img src="' + window._themeLogo.data + '" style="max-width:120px;max-height:60px;border:1px solid #d0d7de;border-radius:4px;" alt="Logo preview">';
+      } else {
+        previewEl.innerHTML = '<span style="color:#57606a;font-size:0.8rem;font-style:italic">No logo</span>';
+      }
+      var placementEl = document.getElementById("theme-logo-placement");
+      if (placementEl && window._themeLogo) placementEl.value = window._themeLogo.placement || "both";
+    }
+
+    function handleLogoUpload(event) {
+      var file = event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        var dataUrl = e.target.result;
+        var base64Part = dataUrl.split(",")[1] || "";
+        var currentPlacement = (window._themeLogo && window._themeLogo.placement) || "both";
+        if (base64Part.length > 666000) { // ~500KB threshold (base64 ≈ 4/3 × raw bytes, so 666000 ≈ 500KB)
+          debugLog("[Logo] Logo exceeds 500KB; resizing for storage.", "warn");
+          var img = new Image();
+          img.onload = function() {
+            var canvas = document.createElement("canvas");
+            var maxDim = 400;
+            var scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+            var resized = canvas.toDataURL("image/png", 0.85);
+            debugLog("[Logo] Resized to " + canvas.width + "\u00d7" + canvas.height, "info");
+            window._themeLogo = { data: resized, width: canvas.width, height: canvas.height, placement: currentPlacement };
+            updateLogoPreview();
+          };
+          img.src = dataUrl;
+        } else {
+          window._themeLogo = { data: dataUrl, width: null, height: null, placement: currentPlacement };
+          updateLogoPreview();
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function removeThemeLogo() {
+      window._themeLogo = null;
+      updateLogoPreview();
+    }
+
     async function handleWordTemplateImport(event) {
       var file = event.target.files[0];
       event.target.value = "";
@@ -4984,6 +5143,127 @@
         }
 
         db.pdfTheme = "custom";
+
+        // ===== LOGO EXTRACTION =====
+        var logoFound = false;
+        var logoSource = "none";
+        try {
+          var logoDataUrl = null;
+          var logoImgExt = "png";
+
+          // Step 1: Look for images referenced in header files
+          var headerNums = [1, 2, 3];
+          for (var hi = 0; hi < headerNums.length && !logoDataUrl; hi++) {
+            var hNum = headerNums[hi];
+            var headerRelsFile = zip.file("word/_rels/header" + hNum + ".xml.rels");
+            if (!headerRelsFile) continue;
+            var headerRelsXml = await headerRelsFile.async("string");
+            var headerRelsDoc = parser.parseFromString(headerRelsXml, "application/xml");
+            var rels = headerRelsDoc.getElementsByTagName("Relationship");
+            for (var ri = 0; ri < rels.length && !logoDataUrl; ri++) {
+              var relType = rels[ri].getAttribute("Type") || "";
+              var relTarget = rels[ri].getAttribute("Target") || "";
+              if (relType.indexOf("/image") !== -1 && relTarget) {
+                var imgPath = relTarget.indexOf("media/") === 0 ? "word/" + relTarget : relTarget;
+                var imgFile = zip.file(imgPath);
+                if (imgFile) {
+                  var extMatch = imgPath.match(/\.(png|jpe?g|gif|bmp|webp)$/i);
+                  logoImgExt = extMatch ? (extMatch[1].toLowerCase() === "jpg" ? "jpeg" : extMatch[1].toLowerCase()) : "png";
+                  var imgBase64 = await imgFile.async("base64");
+                  logoDataUrl = "data:image/" + logoImgExt + ";base64," + imgBase64;
+                  logoSource = "header";
+                  debugLog("[Logo] Found logo in header" + hNum + ".xml: " + imgPath, "info");
+                }
+              }
+            }
+          }
+
+          // Step 2: Look for first image in document.xml relationships
+          if (!logoDataUrl) {
+            var docRelsFile = zip.file("word/_rels/document.xml.rels");
+            if (docRelsFile) {
+              var docRelsXml = await docRelsFile.async("string");
+              var docRelsDoc = parser.parseFromString(docRelsXml, "application/xml");
+              var docRels = docRelsDoc.getElementsByTagName("Relationship");
+              for (var dri = 0; dri < docRels.length && !logoDataUrl; dri++) {
+                var drType = docRels[dri].getAttribute("Type") || "";
+                var drTarget = docRels[dri].getAttribute("Target") || "";
+                if (drType.indexOf("/image") !== -1 && drTarget) {
+                  var dImgPath = drTarget.indexOf("media/") === 0 ? "word/" + drTarget : drTarget;
+                  var dImgFile = zip.file(dImgPath);
+                  if (dImgFile) {
+                    var dExtMatch = dImgPath.match(/\.(png|jpe?g|gif|bmp|webp)$/i);
+                    logoImgExt = dExtMatch ? (dExtMatch[1].toLowerCase() === "jpg" ? "jpeg" : dExtMatch[1].toLowerCase()) : "png";
+                    var dImgBase64 = await dImgFile.async("base64");
+                    logoDataUrl = "data:image/" + logoImgExt + ";base64," + dImgBase64;
+                    logoSource = "document";
+                    debugLog("[Logo] Found logo in document.xml: " + dImgPath, "info");
+                  }
+                }
+              }
+            }
+          }
+
+          // Step 3: Scan word/media/ and take the smallest image file
+          if (!logoDataUrl) {
+            var mediaFiles = [];
+            zip.forEach(function(relativePath, zipEntry) {
+              if (relativePath.indexOf("word/media/") === 0 && !zipEntry.dir) {
+                var extM = relativePath.match(/\.(png|jpe?g|gif|bmp|webp)$/i);
+                if (extM) mediaFiles.push({ path: relativePath, ext: extM[1].toLowerCase(), entry: zipEntry });
+              }
+            });
+            if (mediaFiles.length > 0) {
+              // Take smallest file (most likely to be a logo)
+              var smallest = null;
+              for (var mi = 0; mi < mediaFiles.length; mi++) {
+                var mData = await mediaFiles[mi].entry.async("uint8array");
+                if (!smallest || mData.length < smallest.size) {
+                  smallest = { path: mediaFiles[mi].path, ext: mediaFiles[mi].ext, size: mData.length, entry: mediaFiles[mi].entry };
+                }
+              }
+              if (smallest) {
+                logoImgExt = smallest.ext === "jpg" ? "jpeg" : smallest.ext;
+                var sBase64 = await smallest.entry.async("base64");
+                logoDataUrl = "data:image/" + logoImgExt + ";base64," + sBase64;
+                logoSource = "media folder";
+                debugLog("[Logo] Found logo (smallest media file): " + smallest.path, "info");
+              }
+            }
+          }
+
+          if (logoDataUrl) {
+            // Resize if > 500KB (base64 ≈ 4/3 × raw bytes, so 666000 ≈ 500KB)
+            var base64Part = logoDataUrl.split(",")[1] || "";
+            var logoWidth = null;
+            var logoHeight = null;
+            if (base64Part.length > 666000) {
+              debugLog("[Logo] Logo from template exceeds 500KB; resizing.", "warn");
+              var resizeResult = await new Promise(function(resolve) {
+                var img = new Image();
+                img.onload = function() {
+                  var canvas = document.createElement("canvas");
+                  var maxDim = 400;
+                  var scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
+                  canvas.width = Math.round(img.width * scale);
+                  canvas.height = Math.round(img.height * scale);
+                  canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+                  resolve({ dataUrl: canvas.toDataURL("image/png", 0.85), w: canvas.width, h: canvas.height });
+                };
+                img.src = logoDataUrl;
+              });
+              logoDataUrl = resizeResult.dataUrl;
+              logoWidth = resizeResult.w;
+              logoHeight = resizeResult.h;
+              debugLog("[Logo] Resized to " + logoWidth + "\u00d7" + logoHeight, "info");
+            }
+            theme.logo = { data: logoDataUrl, width: logoWidth, height: logoHeight, placement: "both" };
+            logoFound = true;
+          }
+        } catch (logoErr) {
+          debugLog("[Logo] Could not extract logo: " + logoErr.message, "warn");
+        }
+
         db.customPdfTheme = theme;
         saveDB();
         alert(
@@ -4992,7 +5272,8 @@
           "\u2022 Heading font: " + theme.extractedInfo.headingFont + "\n" +
           "\u2022 Body font: " + theme.extractedInfo.bodyFont + "\n" +
           "\u2022 Primary color: " + theme.extractedInfo.primaryColor + "\n" +
-          "\u2022 " + theme.extractedInfo.stylesFound + " styles found"
+          "\u2022 " + theme.extractedInfo.stylesFound + " styles found\n" +
+          "\u2022 Logo/graphic extracted: " + (logoFound ? "Yes (from " + logoSource + ")" : "None found")
         );
         var existingModal = document.querySelector(".pdf-theme-modal");
         if (existingModal) {
