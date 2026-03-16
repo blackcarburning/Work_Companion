@@ -4020,6 +4020,15 @@
         var dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
         var dateFileStr = now.toISOString().slice(0, 10);
 
+        // ===== COVER IMAGE PAGE (from imported Word template) =====
+        if (theme.coverImage && theme.coverImage.data) {
+          try {
+            pdf.addImage(theme.coverImage.data, 0, 0, pageW, pageH);
+            debugLog('[PDF] Cover image added as first page (' + pageW + 'x' + pageH + 'mm)', 'info');
+            pdf.addPage();
+          } catch(covImgErr) { debugLog('[PDF] \u26a0\ufe0f Could not add cover image: ' + covImgErr.message, 'warn'); }
+        }
+
         // ===== PAGE 1: COVER =====
         var coverStyle = theme.decorations.coverStyle || "centered";
         if (coverStyle === "left-aligned") {
@@ -4763,6 +4772,38 @@
         var imageRelationships = [];
         var imageFiles = [];
 
+        // ===== COVER PAGE IMAGE (from imported Word template) =====
+        if (theme.coverImage && theme.coverImage.data) {
+          try {
+            var covImgParts = theme.coverImage.data.split(",");
+            var covImgMimeMatch = covImgParts[0].match(/data:image\/(png|jpeg|jpg|gif);/);
+            var covImgExt = (covImgMimeMatch && covImgMimeMatch[1]) ? (covImgMimeMatch[1] === "jpg" ? "jpeg" : covImgMimeMatch[1]) : "png";
+            var covImgBase64 = covImgParts[1];
+            imageFiles.push({ filename: "word/media/coverimage." + covImgExt, base64: covImgBase64 });
+            imageRelationships.push({ id: "rIdCoverImg", target: "media/coverimage." + covImgExt });
+            // A4 page size in EMUs: 210mm * 36000 EMU/mm = 7560000, 297mm * 36000 = 10692000
+            var covImgCx = 7560000;
+            var covImgCy = 10692000;
+            body += '<w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r>' +
+              '<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">' +
+              '<wp:extent cx="' + covImgCx + '" cy="' + covImgCy + '"/>' +
+              '<wp:docPr id="9998" name="CoverImage"/>' +
+              '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+              '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+              '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+              '<pic:nvPicPr><pic:cNvPr id="9998" name="CoverImage"/><pic:cNvPicPr/></pic:nvPicPr>' +
+              '<pic:blipFill><a:blip r:embed="rIdCoverImg"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+              '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + covImgCx + '" cy="' + covImgCy + '"/></a:xfrm>' +
+              '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
+              '</pic:pic></a:graphicData></a:graphic>' +
+              '</wp:inline></w:drawing>' +
+              '</w:r></w:p>';
+            // Section break to put cover image on its own page
+            body += '<w:p><w:pPr><w:sectPr><w:type w:val="nextPage"/><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:pPr></w:p>';
+            debugLog('[WORD-EXPORT] Cover image added as first page', 'info');
+          } catch(covImgErr) { debugLog('[WORD-EXPORT] \u26a0\ufe0f Could not add cover image: ' + covImgErr.message, 'warn'); }
+        }
+
         // Logo at start of document (honours AI placement/sizing instructions if available)
         if (theme.logo && theme.logo.data) {
           try {
@@ -5345,7 +5386,7 @@
         var r = await fetch(endpoint, {
           method: "POST",
           headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
-          body: JSON.stringify({ model: selectedModel, max_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userContent }] })
+          body: JSON.stringify({ model: selectedModel, max_completion_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userContent }] })
         });
         if (!r.ok) { var et = await r.text(); throw new Error('API error ' + r.status + ': ' + et); }
         var d = await r.json();
@@ -6004,7 +6045,7 @@
               { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. When a logo image is provided, specify its placement and sizing. Return ONLY valid JSON, no markdown fences, no explanation." },
               { role: "user", content: openaiUserContent }
             ],
-            max_tokens: 4096
+            max_completion_tokens: 4096
           })
         });
         if (!r.ok) {
@@ -6062,7 +6103,7 @@
               { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. When a logo image is provided, specify its placement and sizing. Return ONLY valid JSON, no markdown fences, no explanation." },
               { role: "user", content: githubUserContent }
             ],
-            max_tokens: 4096
+            max_completion_tokens: 4096
           })
         });
         if (!r.ok) {
@@ -6237,6 +6278,81 @@
           debugLog("[Logo] Could not extract logo: " + logoErr.message, "warn");
         }
 
+        // ===== COVER IMAGE EXTRACTION =====
+        // Scan word/document.xml for large <w:drawing> elements (>5M EMUs) which are typically cover page images
+        var coverImageDataUrl = null;
+        var coverImageExt = "png";
+        try {
+          var docFileForCover = zip.file("word/document.xml");
+          var docRelsFileForCover = zip.file("word/_rels/document.xml.rels");
+          if (docFileForCover && docRelsFileForCover) {
+            var docXmlForCover = await docFileForCover.async("string");
+            var docDocForCover = parser.parseFromString(docXmlForCover, "application/xml");
+            var docRelsXmlForCover = await docRelsFileForCover.async("string");
+            var docRelsDocForCover = parser.parseFromString(docRelsXmlForCover, "application/xml");
+            // Build a map from relationship ID to image file path
+            var coverRelMap = {};
+            var coverRelEls = docRelsDocForCover.getElementsByTagName("Relationship");
+            for (var cri = 0; cri < coverRelEls.length; cri++) {
+              var crId = coverRelEls[cri].getAttribute("Id");
+              var crType = coverRelEls[cri].getAttribute("Type") || "";
+              var crTarget = coverRelEls[cri].getAttribute("Target") || "";
+              if (crId && crType.indexOf("/image") !== -1) {
+                coverRelMap[crId] = crTarget;
+              }
+            }
+            // Helper to extract a cover image from a drawing element
+            async function tryExtractCoverFromDrawing(cDrawing) {
+              var cExtents = cDrawing.getElementsByTagName("wp:extent");
+              if (cExtents.length === 0) return null;
+              var cCx = parseInt(cExtents[0].getAttribute("cx") || "0", 10);
+              var cCy = parseInt(cExtents[0].getAttribute("cy") || "0", 10);
+              // 5,000,000 EMU ≈ 138mm (~5.5 inches): images larger than this in either dimension are treated as cover images
+              if (cCx < 5000000 && cCy < 5000000) return null;
+              var cBlips = cDrawing.getElementsByTagName("a:blip");
+              var cEmbedId = null;
+              for (var cbi = 0; cbi < cBlips.length; cbi++) {
+                cEmbedId = cBlips[cbi].getAttribute("r:embed");
+                if (!cEmbedId) cEmbedId = cBlips[cbi].getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed");
+                if (cEmbedId) break;
+              }
+              if (!cEmbedId || !coverRelMap[cEmbedId]) return null;
+              var cImgTarget = coverRelMap[cEmbedId];
+              var cImgPath = cImgTarget.indexOf("media/") === 0 ? "word/" + cImgTarget : cImgTarget;
+              var cImgFile = zip.file(cImgPath);
+              if (!cImgFile) return null;
+              var cExtMatch = cImgPath.match(/\.(png|jpe?g|gif|bmp|webp)$/i);
+              var cExt = cExtMatch ? (cExtMatch[1].toLowerCase() === "jpg" ? "jpeg" : cExtMatch[1].toLowerCase()) : "png";
+              var cBase64 = await cImgFile.async("base64");
+              var cSizeKB = Math.round(cBase64.length * 0.75 / 1024);
+              // 9144 EMU per pixel at 96 DPI (914400 EMU/inch / 100 pixels/inch = 9144)
+              var cWidthPx = Math.round(cCx / 9144);
+              var cHeightPx = Math.round(cCy / 9144);
+              debugLog('[TEMPLATE] Cover image extracted: ' + cWidthPx + 'x' + cHeightPx + ', ' + cSizeKB + 'KB', 'info');
+              return { dataUrl: "data:image/" + cExt + ";base64," + cBase64, ext: cExt };
+            }
+            // Search <w:drawing> elements directly in the document
+            var allDrawings = docDocForCover.getElementsByTagName("w:drawing");
+            for (var cdi = 0; cdi < allDrawings.length && !coverImageDataUrl; cdi++) {
+              var coverResult = await tryExtractCoverFromDrawing(allDrawings[cdi]);
+              if (coverResult) { coverImageDataUrl = coverResult.dataUrl; coverImageExt = coverResult.ext; }
+            }
+            // Also check mc:AlternateContent wrappers if no large drawing found yet
+            if (!coverImageDataUrl) {
+              var cAltContents = docDocForCover.getElementsByTagName("mc:AlternateContent");
+              for (var cai = 0; cai < cAltContents.length && !coverImageDataUrl; cai++) {
+                var cInnerDrawings = cAltContents[cai].getElementsByTagName("w:drawing");
+                for (var cidd = 0; cidd < cInnerDrawings.length && !coverImageDataUrl; cidd++) {
+                  var coverAltResult = await tryExtractCoverFromDrawing(cInnerDrawings[cidd]);
+                  if (coverAltResult) { coverImageDataUrl = coverAltResult.dataUrl; coverImageExt = coverAltResult.ext; }
+                }
+              }
+            }
+          }
+        } catch (covErr) {
+          debugLog('[TEMPLATE] Could not extract cover image: ' + covErr.message, 'warn');
+        }
+
         // Check if an API token is available for AI analysis
         var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
 
@@ -6283,6 +6399,12 @@
                 (aiLogoMeta ? ' (AI-specified)' : ' (default fallback)'), 'info');
             } else if (db.customPdfTheme && db.customPdfTheme.logo) {
               pdfTheme.logo = db.customPdfTheme.logo;
+            }
+
+            // Attach cover image if extracted from the template
+            if (coverImageDataUrl) {
+              pdfTheme.coverImage = { data: coverImageDataUrl, ext: coverImageExt };
+              debugLog('[TEMPLATE] Cover image attached to AI theme', 'info');
             }
 
             db.pdfTheme = "custom";
@@ -6382,6 +6504,12 @@
         // Attach extracted logo if found
         if (logoDataUrl) {
           theme.logo = { data: logoDataUrl, width: null, height: null, placement: "both" };
+        }
+
+        // Attach cover image if extracted from the template
+        if (coverImageDataUrl) {
+          theme.coverImage = { data: coverImageDataUrl, ext: coverImageExt };
+          debugLog('[TEMPLATE] Cover image attached to programmatic theme', 'info');
         }
 
         db.pdfTheme = "custom";
