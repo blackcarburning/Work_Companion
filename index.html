@@ -2707,7 +2707,7 @@
         var imageRelationships = [];
         var imageFiles = [];
 
-        // Logo at start of document
+        // Logo at start of document (honours AI placement/sizing instructions if available)
         if (theme.logo && theme.logo.data) {
           try {
             var logoParts = theme.logo.data.split(",");
@@ -2716,16 +2716,20 @@
             var logoBase64 = logoParts[1];
             imageFiles.push({ filename: "word/media/logo." + logoExt, base64: logoBase64 });
             imageRelationships.push({ id: "rIdLogo", target: "media/logo." + logoExt, type: logoExt });
-            body += '<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:after="120"/></w:pPr><w:r>' +
+            // Convert mm → EMU (1 mm = 36000 EMU); defaults: 55mm wide, 22mm tall
+            var logoWidthEmu = theme.logo.widthMm ? Math.round(theme.logo.widthMm * 36000) : 2000000;
+            var logoHeightEmu = theme.logo.heightMm ? Math.round(theme.logo.heightMm * 36000) : 800000;
+            var logoJcVal = (theme.logo.alignment === 'center') ? 'center' : (theme.logo.alignment === 'left' ? 'left' : 'right');
+            body += '<w:p><w:pPr><w:jc w:val="' + logoJcVal + '"/><w:spacing w:after="120"/></w:pPr><w:r>' +
               '<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">' +
-              '<wp:extent cx="2000000" cy="800000"/>' +
+              '<wp:extent cx="' + logoWidthEmu + '" cy="' + logoHeightEmu + '"/>' +
               '<wp:docPr id="9999" name="Logo"/>' +
               '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
               '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
               '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
               '<pic:nvPicPr><pic:cNvPr id="9999" name="Logo"/><pic:cNvPicPr/></pic:nvPicPr>' +
               '<pic:blipFill><a:blip r:embed="rIdLogo"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
-              '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2000000" cy="800000"/></a:xfrm>' +
+              '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + logoWidthEmu + '" cy="' + logoHeightEmu + '"/></a:xfrm>' +
               '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
               '</pic:pic></a:graphicData></a:graphic>' +
               '</wp:inline></w:drawing>' +
@@ -3358,12 +3362,14 @@
         pdf.text(dateStr, marginL, y);
         y += lh(theme.sizes.small) + 5;
 
-        // Logo at top-right of first page
+        // Logo at top-right of first page (honours AI placement instructions if available)
         if (theme.logo && theme.logo.data) {
           try {
-            var logoMaxW = 40;
-            var logoMaxH = 20;
-            pdf.addImage(theme.logo.data, pageW - theme.spacing.marginRight - logoMaxW, marginT, logoMaxW, logoMaxH);
+            var logoMaxW = (theme.logo.widthMm && theme.logo.widthMm > 0) ? Math.min(theme.logo.widthMm, 60) : 40;
+            var logoMaxH = (theme.logo.heightMm && theme.logo.heightMm > 0) ? Math.min(theme.logo.heightMm, 30) : 20;
+            var logoAlign = theme.logo.alignment || 'right';
+            var logoX = calcLogoX(logoAlign, pageW, logoMaxW, marginL, theme.spacing.marginRight);
+            pdf.addImage(theme.logo.data, logoX, marginT, logoMaxW, logoMaxH);
           } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to exchange PDF: " + e.message, "warn"); }
         }
 
@@ -3384,6 +3390,21 @@
         alert("PDF export failed: " + err.message);
         debugLog('[PDF] ❌ Exchange PDF export error: ' + err.message, 'error');
       }
+    }
+
+    /**
+     * Calculates the X position (in mm) for a logo on a PDF page.
+     * @param {string} alignment - 'left', 'center', or 'right'
+     * @param {number} pageW      - Page width in mm
+     * @param {number} logoW      - Logo width in mm
+     * @param {number} marginL    - Left margin in mm
+     * @param {number} marginR    - Right margin in mm
+     * @returns {number} X coordinate in mm
+     */
+    function calcLogoX(alignment, pageW, logoW, marginL, marginR) {
+      if (alignment === 'center') return (pageW - logoW) / 2;
+      if (alignment === 'left')   return marginL;
+      return pageW - marginR - logoW;
     }
 
     async function exportToPDF(btn) {
@@ -4029,7 +4050,13 @@
           pdf.text("Job Sections: " + totalJobs, marginL + 8, ty); ty += lh(theme.sizes.small) + 2;
           pdf.text("Total Exchanges: " + totalExchanges, marginL + 8, ty);
           if (theme.logo && theme.logo.data && (theme.logo.placement === "cover" || theme.logo.placement === "both")) {
-            try { pdf.addImage(theme.logo.data, marginL + 8, marginT, 50, 25); } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to cover: " + e.message, "warn"); }
+            try {
+              var covLogoW = (theme.logo.widthMm && theme.logo.widthMm > 0) ? theme.logo.widthMm : 50;
+              var covLogoH = (theme.logo.heightMm && theme.logo.heightMm > 0) ? theme.logo.heightMm : 25;
+              var covLogoAlign = theme.logo.alignment || 'right';
+              var covLogoX = calcLogoX(covLogoAlign, pageW, covLogoW, marginL + 8, theme.spacing.marginRight);
+              pdf.addImage(theme.logo.data, covLogoX, marginT, covLogoW, covLogoH);
+            } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to cover: " + e.message, "warn"); }
           }
         } else if (coverStyle === "minimal") {
           pdf.setFillColor(...theme.colors.coverBg);
@@ -4051,7 +4078,13 @@
             pdf.text(dateStr, pageW / 2, ty, { align: "center" });
           }
           if (theme.logo && theme.logo.data && (theme.logo.placement === "cover" || theme.logo.placement === "both")) {
-            try { pdf.addImage(theme.logo.data, marginL, marginT, 50, 25); } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to cover: " + e.message, "warn"); }
+            try {
+              var covLogoW = (theme.logo.widthMm && theme.logo.widthMm > 0) ? theme.logo.widthMm : 50;
+              var covLogoH = (theme.logo.heightMm && theme.logo.heightMm > 0) ? theme.logo.heightMm : 25;
+              var covLogoAlign = theme.logo.alignment || 'right';
+              var covLogoX = calcLogoX(covLogoAlign, pageW, covLogoW, marginL, theme.spacing.marginRight);
+              pdf.addImage(theme.logo.data, covLogoX, marginT, covLogoW, covLogoH);
+            } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to cover: " + e.message, "warn"); }
           }
         } else {
           // centered (default)
@@ -4091,7 +4124,13 @@
           y += 8;
           pdf.text("Total Exchanges: " + totalExchanges, pageW / 2, y, { align: "center" });
           if (theme.logo && theme.logo.data && (theme.logo.placement === "cover" || theme.logo.placement === "both")) {
-            try { pdf.addImage(theme.logo.data, marginL, marginT, 50, 25); } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to cover: " + e.message, "warn"); }
+            try {
+              var covLogoW = (theme.logo.widthMm && theme.logo.widthMm > 0) ? theme.logo.widthMm : 50;
+              var covLogoH = (theme.logo.heightMm && theme.logo.heightMm > 0) ? theme.logo.heightMm : 25;
+              var covLogoAlign = theme.logo.alignment || 'right';
+              var covLogoX = calcLogoX(covLogoAlign, pageW, covLogoW, marginL, theme.spacing.marginRight);
+              pdf.addImage(theme.logo.data, covLogoX, marginT, covLogoW, covLogoH);
+            } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to cover: " + e.message, "warn"); }
           }
         }
 
@@ -4191,9 +4230,11 @@
           }
           if (p > 1 && theme.logo && theme.logo.data && (theme.logo.placement === "header" || theme.logo.placement === "both")) {
             try {
-              var hLogoW = 20;
-              var hLogoH = 8;
-              pdf.addImage(theme.logo.data, pageW - theme.spacing.marginRight - hLogoW, 2, hLogoW, hLogoH);
+              var hLogoW = (theme.logo.widthMm && theme.logo.widthMm > 0) ? Math.min(theme.logo.widthMm, 40) : 20;
+              var hLogoH = (theme.logo.heightMm && theme.logo.heightMm > 0) ? Math.min(theme.logo.heightMm, 14) : 8;
+              var hLogoAlign = theme.logo.alignment || 'right';
+              var hLogoX = calcLogoX(hLogoAlign, pageW, hLogoW, marginL, theme.spacing.marginRight);
+              pdf.addImage(theme.logo.data, hLogoX, 2, hLogoW, hLogoH);
             } catch(e) { debugLog("[PDF] \u26a0\ufe0f Could not add logo to header: " + e.message, "warn"); }
           }
           pdf.setTextColor(...theme.colors.body);
@@ -4722,7 +4763,7 @@
         var imageRelationships = [];
         var imageFiles = [];
 
-        // Logo at start of document
+        // Logo at start of document (honours AI placement/sizing instructions if available)
         if (theme.logo && theme.logo.data) {
           try {
             var logoParts = theme.logo.data.split(",");
@@ -4731,16 +4772,20 @@
             var logoBase64 = logoParts[1];
             imageFiles.push({ filename: "word/media/logo." + logoExt, base64: logoBase64 });
             imageRelationships.push({ id: "rIdLogo", target: "media/logo." + logoExt, type: logoExt });
-            body += '<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:after="200"/></w:pPr><w:r>' +
+            // Convert mm → EMU (1 mm = 36000 EMU); defaults: 55mm wide, 22mm tall
+            var logoWidthEmu = theme.logo.widthMm ? Math.round(theme.logo.widthMm * 36000) : 2000000;
+            var logoHeightEmu = theme.logo.heightMm ? Math.round(theme.logo.heightMm * 36000) : 800000;
+            var logoJcVal = (theme.logo.alignment === 'center') ? 'center' : (theme.logo.alignment === 'left' ? 'left' : 'right');
+            body += '<w:p><w:pPr><w:jc w:val="' + logoJcVal + '"/><w:spacing w:after="200"/></w:pPr><w:r>' +
               '<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">' +
-              '<wp:extent cx="2000000" cy="800000"/>' +
+              '<wp:extent cx="' + logoWidthEmu + '" cy="' + logoHeightEmu + '"/>' +
               '<wp:docPr id="9999" name="Logo"/>' +
               '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
               '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
               '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
               '<pic:nvPicPr><pic:cNvPr id="9999" name="Logo"/><pic:cNvPicPr/></pic:nvPicPr>' +
               '<pic:blipFill><a:blip r:embed="rIdLogo"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
-              '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2000000" cy="800000"/></a:xfrm>' +
+              '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + logoWidthEmu + '" cy="' + logoHeightEmu + '"/></a:xfrm>' +
               '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
               '</pic:pic></a:graphicData></a:graphic>' +
               '</wp:inline></w:drawing>' +
@@ -5476,6 +5521,23 @@
       var userMsgBg = rgb(c.userMsgBg, [239, 246, 255]);
       var assistantMsgBg = rgb(c.assistantMsgBg, [255, 255, 255]);
 
+      // Preserve AI logo placement metadata in the theme (actual image data attached later)
+      // profile.logo may be null (no logo found) or an object with placement/sizing from the AI
+      var logoMeta = null;
+      if (profile.logo && typeof profile.logo === 'object') {
+        var validPlacements = ['header', 'cover', 'both'];
+        var logoPlacement = (profile.logo.placement && validPlacements.indexOf(profile.logo.placement) !== -1)
+          ? profile.logo.placement : 'both';
+        logoMeta = {
+          placement: logoPlacement,
+          alignment: profile.logo.alignment || 'right',
+          widthMm: profile.logo.widthMm || null,
+          heightMm: profile.logo.heightMm || null
+        };
+        debugLog('[Logo] AI specified logo placement: ' + logoPlacement + ', alignment: ' + logoMeta.alignment +
+          ', size: ' + (logoMeta.widthMm ? logoMeta.widthMm + 'mm' : 'auto') + 'x' + (logoMeta.heightMm ? logoMeta.heightMm + 'mm' : 'auto'), 'info');
+      }
+
       return {
         name: profile.templateName || "AI Template",
         fonts: {
@@ -5534,12 +5596,21 @@
           showTimestamp: false,
           coverAccentBar: true,
           accentBarColor: accent
-        }
+        },
+        // logoMeta holds AI-provided placement guidance; actual image data is attached separately
+        logoMeta: logoMeta
       };
     }
 
-    async function analyzeWordTemplateWithAI(zip) {
+    // Analyze a Word template ZIP with AI. Optionally pass logoDataUrl (base64 data URL) to
+    // include the extracted logo in the AI request so the AI can specify placement/sizing.
+    async function analyzeWordTemplateWithAI(zip, logoDataUrl) {
       debugLog('[TEMPLATE] Starting AI-driven template analysis...', 'info');
+      if (logoDataUrl) {
+        debugLog('[Logo] Logo will be supplied to AI for placement analysis', 'info');
+      } else {
+        debugLog('[Logo] No logo extracted — AI will analyse layout only', 'info');
+      }
 
       var xmlFiles = {};
       var filesToExtract = [
@@ -5583,7 +5654,15 @@
         xmlContent += '\n=== ' + key + ' ===\n' + xmlFiles[key] + '\n';
       }
 
-      var analysisPrompt = 'Analyze this Microsoft Word template and extract ALL styling properties into a structured JSON object. I need a complete style profile that captures the document\'s visual design.\n\nHere are the template\'s XML files:\n' + xmlContent + '\n\nReturn ONLY a valid JSON object (no markdown, no code fences, no explanation) with this exact structure:\n{\n  "templateName": "descriptive name based on the template design",\n  "fonts": {\n    "heading": "font name",\n    "body": "font name",\n    "code": "monospace font name or Courier New"\n  },\n  "fontSizes": {\n    "h1": 24,\n    "h2": 18,\n    "h3": 14,\n    "body": 11,\n    "small": 9\n  },\n  "colors": {\n    "heading": [r, g, b],\n    "body": [r, g, b],\n    "background": [255, 255, 255],\n    "userMsgBg": [r, g, b],\n    "assistantMsgBg": [r, g, b],\n    "codeBg": [r, g, b],\n    "codeText": [r, g, b],\n    "tableBorder": [r, g, b],\n    "tableHeaderBg": [r, g, b],\n    "tableHeaderText": [r, g, b],\n    "accent": [r, g, b],\n    "linkColor": [r, g, b],\n    "headerText": [r, g, b],\n    "footerText": [r, g, b],\n    "divider": [r, g, b]\n  },\n  "spacing": {\n    "marginLeftMm": 25,\n    "marginRightMm": 25,\n    "marginTopMm": 25,\n    "marginBottomMm": 20,\n    "lineHeight": 1.15,\n    "paragraphSpacingPt": 8,\n    "headingSpacingPt": 12\n  },\n  "pageLayout": {\n    "orientation": "portrait",\n    "paperSize": "A4"\n  },\n  "headerFooter": {\n    "hasHeader": true,\n    "hasFooter": true,\n    "headerContent": "description of header content",\n    "footerContent": "description of footer content"\n  },\n  "styleNames": {\n    "heading1": "style name from styles.xml",\n    "heading2": "style name from styles.xml",\n    "heading3": "style name from styles.xml",\n    "normal": "style name from styles.xml",\n    "code": "style name if exists or null"\n  },\n  "designNotes": "brief description of the overall design aesthetic"\n}';
+      // Build logo section for the prompt depending on whether a logo was extracted
+      var logoPromptSection = logoDataUrl
+        ? 'A logo image has been automatically extracted from this template (it is the first image found in the template\'s header/cover area). The image is attached to this message. Based on where it was found in the template XML and its visual appearance, please specify precise logo placement and sizing instructions in the "logo" field of the JSON response.'
+        : 'No logo image was found in this template. Set "logo" to null in the JSON response.';
+
+      var analysisPrompt = 'Analyze this Microsoft Word template and extract ALL styling properties into a structured JSON object. I need a complete style profile that captures the document\'s visual design.\n\n' + logoPromptSection + '\n\nHere are the template\'s XML files:\n' + xmlContent + '\n\nReturn ONLY a valid JSON object (no markdown, no code fences, no explanation) with this exact structure:\n{\n  "templateName": "descriptive name based on the template design",\n  "fonts": {\n    "heading": "font name",\n    "body": "font name",\n    "code": "monospace font name or Courier New"\n  },\n  "fontSizes": {\n    "h1": 24,\n    "h2": 18,\n    "h3": 14,\n    "body": 11,\n    "small": 9\n  },\n  "colors": {\n    "heading": [r, g, b],\n    "body": [r, g, b],\n    "background": [255, 255, 255],\n    "userMsgBg": [r, g, b],\n    "assistantMsgBg": [r, g, b],\n    "codeBg": [r, g, b],\n    "codeText": [r, g, b],\n    "tableBorder": [r, g, b],\n    "tableHeaderBg": [r, g, b],\n    "tableHeaderText": [r, g, b],\n    "accent": [r, g, b],\n    "linkColor": [r, g, b],\n    "headerText": [r, g, b],\n    "footerText": [r, g, b],\n    "divider": [r, g, b]\n  },\n  "spacing": {\n    "marginLeftMm": 25,\n    "marginRightMm": 25,\n    "marginTopMm": 25,\n    "marginBottomMm": 20,\n    "lineHeight": 1.15,\n    "paragraphSpacingPt": 8,\n    "headingSpacingPt": 12\n  },\n  "pageLayout": {\n    "orientation": "portrait",\n    "paperSize": "A4"\n  },\n  "headerFooter": {\n    "hasHeader": true,\n    "hasFooter": true,\n    "headerContent": "description of header content",\n    "footerContent": "description of footer content"\n  },\n  "styleNames": {\n    "heading1": "style name from styles.xml",\n    "heading2": "style name from styles.xml",\n    "heading3": "style name from styles.xml",\n    "normal": "style name from styles.xml",\n    "code": "style name if exists or null"\n  },\n  "logo": {\n    "placement": "header",\n    "alignment": "right",\n    "widthMm": 40,\n    "heightMm": 15\n  },\n  "designNotes": "brief description of the overall design aesthetic"\n}';
+      // NOTE: "logo" values above are examples — AI should fill in accurate values or set "logo" to null
+      // "placement" must be one of: "header" (page headers only), "cover" (cover page only), "both" (cover + headers)
+      // "alignment" must be one of: "left", "right", "center"
 
       var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
 
@@ -5591,11 +5670,27 @@
         throw new Error('No API token configured for ' + activeProvider + '. Save your token first.');
       }
 
-      debugLog('[TEMPLATE] Sending template XML to AI for analysis (provider: ' + activeProvider + ', model: ' + selectedModel + ')...', 'info');
+      debugLog('[TEMPLATE] Sending template XML to AI for analysis (provider: ' + activeProvider + ', model: ' + selectedModel + (logoDataUrl ? ', with logo image' : ', no logo') + ')...', 'info');
+
+      // Determine whether the active provider supports vision (image input)
+      var supportsVision = (activeProvider === "openai" || activeProvider === "github" || activeProvider === "anthropic");
 
       var responseText = '';
 
       if (activeProvider === "anthropic") {
+        // Build Anthropic message content — include logo image if available and vision is supported
+        var anthropicContent;
+        if (logoDataUrl && supportsVision) {
+          var logoBase64 = logoDataUrl.indexOf(',') !== -1 ? logoDataUrl.split(',')[1] : logoDataUrl;
+          var logoMime = logoDataUrl.startsWith('data:') ? logoDataUrl.split(';')[0].slice(5) : 'image/png';
+          anthropicContent = [
+            { type: "text", text: analysisPrompt },
+            { type: "image", source: { type: "base64", media_type: logoMime, data: logoBase64 } }
+          ];
+          debugLog('[Logo] Attaching logo image to Anthropic request', 'info');
+        } else {
+          anthropicContent = analysisPrompt;
+        }
         var r = await fetch(ANTHROPIC_DIRECT_URL, {
           method: "POST",
           headers: {
@@ -5607,8 +5702,8 @@
           body: JSON.stringify({
             model: selectedModel,
             max_tokens: 4096,
-            system: [{ type: "text", text: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. Return ONLY valid JSON, no markdown fences, no explanation.", cache_control: { type: "ephemeral" } }],
-            messages: [{ role: "user", content: analysisPrompt }]
+            system: [{ type: "text", text: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. When a logo image is provided, specify its placement and sizing. Return ONLY valid JSON, no markdown fences, no explanation.", cache_control: { type: "ephemeral" } }],
+            messages: [{ role: "user", content: anthropicContent }]
           })
         });
         if (!r.ok) {
@@ -5618,6 +5713,17 @@
         var d = await r.json();
         responseText = (d.content && d.content[0] && d.content[0].text) || '';
       } else if (activeProvider === "openai") {
+        // Build OpenAI user content — include logo image if available
+        var openaiUserContent;
+        if (logoDataUrl && supportsVision) {
+          openaiUserContent = [
+            { type: "text", text: analysisPrompt },
+            { type: "image_url", image_url: { url: logoDataUrl, detail: "low" } }
+          ];
+          debugLog('[Logo] Attaching logo image to OpenAI request', 'info');
+        } else {
+          openaiUserContent = analysisPrompt;
+        }
         var r = await fetch(OPENAI_DIRECT_URL, {
           method: "POST",
           headers: {
@@ -5627,8 +5733,8 @@
           body: JSON.stringify({
             model: selectedModel,
             messages: [
-              { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. Return ONLY valid JSON, no markdown fences, no explanation." },
-              { role: "user", content: analysisPrompt }
+              { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. When a logo image is provided, specify its placement and sizing. Return ONLY valid JSON, no markdown fences, no explanation." },
+              { role: "user", content: openaiUserContent }
             ],
             max_tokens: 4096
           })
@@ -5652,7 +5758,7 @@
             model_id: selectedModel,
             project_id: watsonxProjectId,
             messages: [
-              { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. Return ONLY valid JSON, no markdown fences, no explanation." },
+              { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. When a logo image is provided, specify its placement and sizing. Return ONLY valid JSON, no markdown fences, no explanation." },
               { role: "user", content: analysisPrompt }
             ],
             max_tokens: 4096
@@ -5665,7 +5771,17 @@
         var d = await r.json();
         responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
       } else {
-        // GitHub Models (default)
+        // GitHub Models (default) — include logo image if available
+        var githubUserContent;
+        if (logoDataUrl && supportsVision) {
+          githubUserContent = [
+            { type: "text", text: analysisPrompt },
+            { type: "image_url", image_url: { url: logoDataUrl, detail: "low" } }
+          ];
+          debugLog('[Logo] Attaching logo image to GitHub Models request', 'info');
+        } else {
+          githubUserContent = analysisPrompt;
+        }
         var r = await fetch(API_URL, {
           method: "POST",
           headers: {
@@ -5675,8 +5791,8 @@
           body: JSON.stringify({
             model: selectedModel,
             messages: [
-              { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. Return ONLY valid JSON, no markdown fences, no explanation." },
-              { role: "user", content: analysisPrompt }
+              { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. When a logo image is provided, specify its placement and sizing. Return ONLY valid JSON, no markdown fences, no explanation." },
+              { role: "user", content: githubUserContent }
             ],
             max_tokens: 4096
           })
@@ -5868,17 +5984,35 @@
           document.body.appendChild(notification);
 
           try {
-            var aiProfile = await analyzeWordTemplateWithAI(zip);
+            // Pass the extracted logo (if any) to the AI so it can provide placement instructions
+            var aiProfile = await analyzeWordTemplateWithAI(zip, logoDataUrl || null);
 
             // Store the AI profile
             db.aiTemplateProfile = aiProfile;
 
-            // Convert to PDF theme
+            // Convert to PDF theme (aiProfileToPdfTheme now reads aiProfile.logo for placement)
             var pdfTheme = aiProfileToPdfTheme(aiProfile);
 
-            // Attach extracted logo if found
+            // Attach the extracted logo image data; placement/size come from AI via aiProfileToPdfTheme
             if (logoDataUrl) {
-              pdfTheme.logo = { data: logoDataUrl, width: null, height: null, placement: "both" };
+              // If AI provided logo placement instructions, merge them; otherwise use sensible defaults
+              var aiLogoMeta = aiProfile.logo || null;
+              var logoPlacement = (aiLogoMeta && aiLogoMeta.placement) ? aiLogoMeta.placement : "both";
+              var logoWidthMm = (aiLogoMeta && aiLogoMeta.widthMm) ? aiLogoMeta.widthMm : null;
+              var logoHeightMm = (aiLogoMeta && aiLogoMeta.heightMm) ? aiLogoMeta.heightMm : null;
+              var logoAlignment = (aiLogoMeta && aiLogoMeta.alignment) ? aiLogoMeta.alignment : "right";
+              pdfTheme.logo = {
+                data: logoDataUrl,
+                placement: logoPlacement,
+                widthMm: logoWidthMm,
+                heightMm: logoHeightMm,
+                alignment: logoAlignment,
+                width: null,
+                height: null
+              };
+              debugLog('[Logo] Logo attached to theme — placement: ' + logoPlacement + ', alignment: ' + logoAlignment +
+                ', size: ' + (logoWidthMm ? logoWidthMm + 'mm' : 'auto') + 'x' + (logoHeightMm ? logoHeightMm + 'mm' : 'auto') +
+                (aiLogoMeta ? ' (AI-specified)' : ' (default fallback)'), 'info');
             } else if (db.customPdfTheme && db.customPdfTheme.logo) {
               pdfTheme.logo = db.customPdfTheme.logo;
             }
@@ -5898,7 +6032,7 @@
               if (notification.parentNode) notification.parentNode.removeChild(notification);
             }, 4000);
 
-            alert('\u2705 Template imported and analyzed by AI!\n\n\u2022 Template: ' + (aiProfile.templateName || file.name) + '\n\u2022 Heading font: ' + (aiProfile.fonts && aiProfile.fonts.heading || 'default') + '\n\u2022 Body font: ' + (aiProfile.fonts && aiProfile.fonts.body || 'default') + '\n\u2022 Design: ' + (aiProfile.designNotes || 'N/A') + '\n\u2022 Logo/graphic extracted: ' + (logoFound ? 'Yes (from ' + logoSource + ')' : 'None found') + '\n\nThe AI-extracted styling will be used for all exports.');
+            alert('\u2705 Template imported and analyzed by AI!\n\n\u2022 Template: ' + (aiProfile.templateName || file.name) + '\n\u2022 Heading font: ' + (aiProfile.fonts && aiProfile.fonts.heading || 'default') + '\n\u2022 Body font: ' + (aiProfile.fonts && aiProfile.fonts.body || 'default') + '\n\u2022 Design: ' + (aiProfile.designNotes || 'N/A') + '\n\u2022 Logo/graphic extracted: ' + (logoFound ? 'Yes (from ' + logoSource + ')' : 'None found') + (pdfTheme.logo ? '\n\u2022 Logo placement (AI): ' + pdfTheme.logo.placement + ', ' + pdfTheme.logo.alignment + ', ' + (pdfTheme.logo.widthMm || 'auto') + 'x' + (pdfTheme.logo.heightMm || 'auto') + 'mm' : '') + '\n\nThe AI-extracted styling will be used for all exports.');
 
             var existingModal = document.querySelector(".pdf-theme-modal");
             if (existingModal) {
