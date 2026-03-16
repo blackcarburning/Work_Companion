@@ -5440,24 +5440,21 @@
             reader.readAsDataURL(file);
           });
         } else if (ext === 'docx' || ext === 'dotx') {
+          if (window.JSZip) {
+            // Delegate to the full OOXML extraction handler for Word documents
+            removeNotification();
+            await handleWordTemplateImport(file);
+            return;
+          }
+          // Fallback: plain text extraction when JSZip is not available
           var buffer = await file.arrayBuffer();
           try {
             var result = await mammoth.extractRawText({ arrayBuffer: buffer });
             fileContent = result.value;
             debugLog('[TEMPLATE] Extracted DOCX text: ' + fileContent.length + ' chars', 'info');
           } catch(e) {
-            debugLog('[TEMPLATE] mammoth failed, trying JSZip: ' + e.message, 'warn');
-            if (window.JSZip) {
-              var zip = await JSZip.loadAsync(buffer);
-              var stylesFile = zip.file('word/styles.xml');
-              var docFile = zip.file('word/document.xml');
-              var parts = [];
-              if (stylesFile) parts.push('=== styles.xml ===\n' + (await stylesFile.async('string')).substring(0, MAX_STYLES_XML_LENGTH));
-              if (docFile) parts.push('=== document.xml ===\n' + (await docFile.async('string')).substring(0, MAX_DOCUMENT_XML_LENGTH));
-              fileContent = parts.join('\n');
-            } else {
-              throw e;
-            }
+            debugLog('[TEMPLATE] mammoth extraction failed: ' + e.message, 'warn');
+            throw e;
           }
         } else if (ext === 'pdf') {
           if (!window.pdfjsLib) throw new Error('PDF.js library is not loaded. Please refresh and try again.');
@@ -5525,11 +5522,18 @@
     }
 
     function clearWorkTemplate() {
-      if (!db.templateStyle) return;
+      if (!db.templateStyle && !db.aiTemplateProfile) return;
       db.templateStyle = null;
+      if (db.aiTemplateProfile) {
+        db.aiTemplateProfile = null;
+        db.customPdfTheme = null;
+        db.pdfTheme = "professional";
+        debugLog('[TEMPLATE] Word template cleared — reverting to professional theme', 'info');
+      } else {
+        debugLog('[TEMPLATE] Template style cleared — reverting to pdfTheme', 'info');
+      }
       saveDB();
       renderSidebar();
-      debugLog('[TEMPLATE] Template style cleared — reverting to pdfTheme', 'info');
     }
 
     function rgbArrayToHex(rgb) {
@@ -6138,9 +6142,14 @@
       return profile;
     }
 
-    async function handleWordTemplateImport(event) {
-      var file = event.target.files[0];
-      event.target.value = "";
+    async function handleWordTemplateImport(eventOrFile) {
+      var file, isEvent = eventOrFile && eventOrFile.target;
+      if (isEvent) {
+        file = eventOrFile.target.files[0];
+        eventOrFile.target.value = "";
+      } else {
+        file = eventOrFile;
+      }
       if (!file) return;
       if (!window.JSZip) {
         alert("JSZip library is not loaded. Please refresh and try again.");
@@ -6409,9 +6418,9 @@
 
             db.pdfTheme = "custom";
             db.customPdfTheme = pdfTheme;
+            db.templateStyle = null;
             saveDB();
-
-            // Update notification to success
+            renderSidebar();
             notification.style.background = '#16a34a';
             notification.innerHTML = '\u2705 Template analyzed: "' + (aiProfile.templateName || file.name) + '"';
             debugLog('[TEMPLATE] AI profile stored and converted to PDF theme', 'info');
@@ -6514,7 +6523,9 @@
 
         db.pdfTheme = "custom";
         db.customPdfTheme = theme;
+        db.templateStyle = null;
         saveDB();
+        renderSidebar();
         alert(
           "\u2705 Word template styles imported successfully!\n\n" +
           "Extracted:\n" +
@@ -6930,6 +6941,10 @@
           statusRow.style.display = "";
           var name = (db.templateStyle.branding && db.templateStyle.branding.companyName) || "Active";
           statusLabel.textContent = "📋 Template: " + name;
+        } else if (db.aiTemplateProfile) {
+          statusRow.style.display = "";
+          var aiTemplateName = db.aiTemplateProfile.templateName || "Word Template";
+          statusLabel.textContent = "📋 Template: " + aiTemplateName;
         } else {
           statusRow.style.display = "none";
         }
