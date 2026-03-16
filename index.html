@@ -1333,15 +1333,18 @@
     ];
 
     var ANTHROPIC_MODELS = [
-      { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
-      { id: "claude-opus-4-5-20250918", name: "Claude Opus 4.5" },
-      { id: "claude-opus-4-1-20250630", name: "Claude Opus 4.1" },
+      { id: "claude-opus-4-6-20260301", name: "Claude Opus 4.6" },
+      { id: "claude-opus-4-5-20250520", name: "Claude Opus 4.5" },
+      { id: "claude-opus-4-1-20250618", name: "Claude Opus 4.1" },
       { id: "claude-opus-4-20250514", name: "Claude Opus 4" },
-      { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-      { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5" },
+      { id: "claude-sonnet-4-6-20260301", name: "Claude Sonnet 4.6" },
+      { id: "claude-sonnet-4-5-20250514", name: "Claude Sonnet 4.5" },
       { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
       { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-      { id: "claude-3-haiku-20240307", name: "Claude Haiku 3" }
+      { id: "claude-3-haiku-20240307", name: "Claude Haiku 3" },
+      { id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet" },
+      { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
+      { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" }
     ];
 
     var WATSONX_MODELS = [
@@ -1745,6 +1748,7 @@
           if (!db.summaryStyle) db.summaryStyle = { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" };
           if (!db.pdfTheme) db.pdfTheme = "professional";
           if (db.customPdfTheme === undefined) db.customPdfTheme = null;
+          if (db.aiTemplateProfile === undefined) db.aiTemplateProfile = null;
           if (db.activeProvider) activeProvider = db.activeProvider;
           if (!db.maxDocChars) db.maxDocChars = DEFAULT_MAX_DOC_CHARS;
           if (db.extractDocImages === undefined) db.extractDocImages = false;
@@ -2301,6 +2305,18 @@
       try {
         var theme = getActivePdfTheme();
 
+        // Get active theme colors for Word export
+        var aiProfile = db.aiTemplateProfile;
+        var wordColors = {
+          codeBg: aiProfile && aiProfile.colors && aiProfile.colors.codeBg ? rgbArrayToHex(aiProfile.colors.codeBg) : (theme.colors.codeBg ? rgbArrayToHex(theme.colors.codeBg) : "161B22"),
+          codeText: aiProfile && aiProfile.colors && aiProfile.colors.codeText ? rgbArrayToHex(aiProfile.colors.codeText) : (theme.colors.codeText ? rgbArrayToHex(theme.colors.codeText) : "E6EDF3"),
+          tableBorder: aiProfile && aiProfile.colors && aiProfile.colors.tableBorder ? rgbArrayToHex(aiProfile.colors.tableBorder) : (theme.colors.tableBorder ? rgbArrayToHex(theme.colors.tableBorder) : "D0D7DE"),
+          tableHeaderBg: aiProfile && aiProfile.colors && aiProfile.colors.tableHeaderBg ? rgbArrayToHex(aiProfile.colors.tableHeaderBg) : (theme.colors.tableHeaderBg ? rgbArrayToHex(theme.colors.tableHeaderBg) : "F6F8FA"),
+          tableHeaderText: aiProfile && aiProfile.colors && aiProfile.colors.tableHeaderText ? rgbArrayToHex(aiProfile.colors.tableHeaderText) : (theme.colors.tableHeaderText ? rgbArrayToHex(theme.colors.tableHeaderText) : "1F2328"),
+          divider: aiProfile && aiProfile.colors && aiProfile.colors.divider ? rgbArrayToHex(aiProfile.colors.divider) : "D0D7DE"
+        };
+        debugLog('[WORD-EXPORT] Using colors \u2014 codeBg: #' + wordColors.codeBg + ', tableBorder: #' + wordColors.tableBorder, 'info');
+
         function escapeXml(str) {
           if (!str) return "";
           return ("" + str)
@@ -2331,9 +2347,6 @@
         var now = new Date();
         var dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
         var dateFileStr = now.toISOString().slice(0, 10);
-
-        function makeRun(text, opts) {
-          opts = opts || {};
           var rPr = "";
           if (opts.font) rPr += '<w:rFonts w:ascii="' + escapeXml(opts.font) + '" w:hAnsi="' + escapeXml(opts.font) + '"/>';
           if (opts.bold) rPr += "<w:b/>";
@@ -2392,7 +2405,7 @@
                     '<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>' +
                     '<w:color w:val="' + bodyHex + '"/>' +
                     '<w:sz w:val="' + codeSz + '"/><w:szCs w:val="' + codeSz + '"/>' +
-                    '<w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/>' +
+                    '<w:shd w:val="clear" w:color="auto" w:fill="' + wordColors.tableHeaderBg + '"/>' +
                     '</w:rPr><w:t' + spAttr + '>' + escapeXml(codeVal) + '</w:t></w:r>';
                   i = end + 1;
                   continue;
@@ -2447,13 +2460,13 @@
               var t = cl || " ";
               var spAttr = (t.charAt(0) === ' ' || t.charAt(t.length - 1) === ' ') ? ' xml:space="preserve"' : '';
               xml += '<w:p>' +
-                '<w:pPr><w:shd w:val="clear" w:color="auto" w:fill="161B22"/><w:spacing w:after="0"/></w:pPr>' +
+                '<w:pPr><w:shd w:val="clear" w:color="auto" w:fill="' + wordColors.codeBg + '"/><w:spacing w:after="0"/></w:pPr>' +
                 '<w:r>' +
                 '<w:rPr>' +
                 '<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>' +
-                '<w:color w:val="E6EDF3"/>' +
+                '<w:color w:val="' + wordColors.codeText + '"/>' +
                 '<w:sz w:val="' + codeSz + '"/><w:szCs w:val="' + codeSz + '"/>' +
-                '<w:shd w:val="clear" w:color="auto" w:fill="161B22"/>' +
+                '<w:shd w:val="clear" w:color="auto" w:fill="' + wordColors.codeBg + '"/>' +
                 '</w:rPr>' +
                 '<w:t' + spAttr + '>' + escapeXml(t) + '</w:t>' +
                 '</w:r>' +
@@ -2477,12 +2490,12 @@
               '<w:tblPr>' +
               '<w:tblW w:w="0" w:type="auto"/>' +
               '<w:tblBorders>' +
-              '<w:top w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:left w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:bottom w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:right w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
+              '<w:top w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:left w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:bottom w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:right w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
               '</w:tblBorders>' +
               '</w:tblPr>';
             parsedRows.forEach(function(row, ri) {
@@ -2490,7 +2503,7 @@
               row.forEach(function(cell) {
                 xml += '<w:tc>';
                 if (ri === 0) {
-                  xml += '<w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/></w:tcPr>';
+                  xml += '<w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="' + wordColors.tableHeaderBg + '"/></w:tcPr>';
                 }
                 xml += '<w:p><w:pPr><w:spacing w:after="40"/></w:pPr>';
                 xml += makeRun(cell, { bold: ri === 0, font: bodyFont, sz: tblSz, color: bodyHex });
@@ -2562,7 +2575,7 @@
                 '<w:pPr>' +
                 '<w:ind w:left="360"/>' +
                 '<w:spacing w:after="80"/>' +
-                '<w:pBdr><w:left w:val="single" w:sz="12" w:space="4" w:color="D0D7DE"/></w:pBdr>' +
+                '<w:pBdr><w:left w:val="single" w:sz="12" w:space="4" w:color="' + wordColors.divider + '"/></w:pBdr>' +
                 '</w:pPr>' +
                 makeRun(line.slice(2), { italic: true, font: bodyFont, sz: bodySz, color: "57606A" }) +
                 '</w:p>';
@@ -2571,7 +2584,7 @@
 
             if (line.match(/^---+$/)) {
               result += '<w:p>' +
-                '<w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="D0D7DE"/></w:pBdr>' +
+                '<w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="' + wordColors.divider + '"/></w:pBdr>' +
                 '<w:spacing w:after="80"/></w:pPr>' +
                 '</w:p>';
               continue;
@@ -2624,7 +2637,7 @@
         // Title and date header
         body += makePara(makeRun(title, { bold: true, font: headingFont, sz: titleSz, color: headingHex }), { spaceAfter: 120 });
         body += makePara(makeRun(dateStr, { font: bodyFont, sz: bodySz, color: bodyHex }), { spaceAfter: 80 });
-        body += '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="D0D7DE"/></w:pBdr><w:spacing w:after="160"/></w:pPr></w:p>';
+        body += '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="' + wordColors.divider + '"/></w:pBdr><w:spacing w:after="160"/></w:pPr></w:p>';
 
         var userMsg = job.messages[actualIndex];
         var assistantMsg = job.messages[actualIndex + 1];
@@ -4177,6 +4190,18 @@
 
         var theme = getActivePdfTheme();
 
+        // Get active theme colors for Word export
+        var aiProfile = db.aiTemplateProfile;
+        var wordColors = {
+          codeBg: aiProfile && aiProfile.colors && aiProfile.colors.codeBg ? rgbArrayToHex(aiProfile.colors.codeBg) : (theme.colors.codeBg ? rgbArrayToHex(theme.colors.codeBg) : "161B22"),
+          codeText: aiProfile && aiProfile.colors && aiProfile.colors.codeText ? rgbArrayToHex(aiProfile.colors.codeText) : (theme.colors.codeText ? rgbArrayToHex(theme.colors.codeText) : "E6EDF3"),
+          tableBorder: aiProfile && aiProfile.colors && aiProfile.colors.tableBorder ? rgbArrayToHex(aiProfile.colors.tableBorder) : (theme.colors.tableBorder ? rgbArrayToHex(theme.colors.tableBorder) : "D0D7DE"),
+          tableHeaderBg: aiProfile && aiProfile.colors && aiProfile.colors.tableHeaderBg ? rgbArrayToHex(aiProfile.colors.tableHeaderBg) : (theme.colors.tableHeaderBg ? rgbArrayToHex(theme.colors.tableHeaderBg) : "F6F8FA"),
+          tableHeaderText: aiProfile && aiProfile.colors && aiProfile.colors.tableHeaderText ? rgbArrayToHex(aiProfile.colors.tableHeaderText) : (theme.colors.tableHeaderText ? rgbArrayToHex(theme.colors.tableHeaderText) : "1F2328"),
+          divider: aiProfile && aiProfile.colors && aiProfile.colors.divider ? rgbArrayToHex(aiProfile.colors.divider) : "D0D7DE"
+        };
+        debugLog('[WORD-EXPORT] Using colors \u2014 codeBg: #' + wordColors.codeBg + ', tableBorder: #' + wordColors.tableBorder, 'info');
+
         function escapeXml(str) {
           if (!str) return "";
           return ("" + str)
@@ -4283,7 +4308,7 @@
                     '<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>' +
                     '<w:color w:val="' + bodyHex + '"/>' +
                     '<w:sz w:val="' + codeSz + '"/><w:szCs w:val="' + codeSz + '"/>' +
-                    '<w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/>' +
+                    '<w:shd w:val="clear" w:color="auto" w:fill="' + wordColors.tableHeaderBg + '"/>' +
                     '</w:rPr><w:t' + spAttr + '>' + escapeXml(codeVal) + '</w:t></w:r>';
                   i = end + 1;
                   continue;
@@ -4339,13 +4364,13 @@
               var t = cl || " ";
               var spAttr = (t.charAt(0) === ' ' || t.charAt(t.length - 1) === ' ') ? ' xml:space="preserve"' : '';
               xml += '<w:p>' +
-                '<w:pPr><w:shd w:val="clear" w:color="auto" w:fill="161B22"/><w:spacing w:after="0"/></w:pPr>' +
+                '<w:pPr><w:shd w:val="clear" w:color="auto" w:fill="' + wordColors.codeBg + '"/><w:spacing w:after="0"/></w:pPr>' +
                 '<w:r>' +
                 '<w:rPr>' +
                 '<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>' +
-                '<w:color w:val="E6EDF3"/>' +
+                '<w:color w:val="' + wordColors.codeText + '"/>' +
                 '<w:sz w:val="' + codeSz + '"/><w:szCs w:val="' + codeSz + '"/>' +
-                '<w:shd w:val="clear" w:color="auto" w:fill="161B22"/>' +
+                '<w:shd w:val="clear" w:color="auto" w:fill="' + wordColors.codeBg + '"/>' +
                 '</w:rPr>' +
                 '<w:t' + spAttr + '>' + escapeXml(t) + '</w:t>' +
                 '</w:r>' +
@@ -4369,12 +4394,12 @@
               '<w:tblPr>' +
               '<w:tblW w:w="0" w:type="auto"/>' +
               '<w:tblBorders>' +
-              '<w:top w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:left w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:bottom w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:right w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
-              '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>' +
+              '<w:top w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:left w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:bottom w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:right w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
+              '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="' + wordColors.tableBorder + '"/>' +
               '</w:tblBorders>' +
               '</w:tblPr>';
             parsedRows.forEach(function(row, ri) {
@@ -4382,7 +4407,7 @@
               row.forEach(function(cell) {
                 xml += '<w:tc>';
                 if (ri === 0) {
-                  xml += '<w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/></w:tcPr>';
+                  xml += '<w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="' + wordColors.tableHeaderBg + '"/></w:tcPr>';
                 }
                 xml += '<w:p><w:pPr><w:spacing w:after="40"/></w:pPr>';
                 xml += makeRun(cell, { bold: ri === 0, font: bodyFont, sz: tblSz, color: bodyHex });
@@ -4454,7 +4479,7 @@
                 '<w:pPr>' +
                 '<w:ind w:left="360"/>' +
                 '<w:spacing w:after="80"/>' +
-                '<w:pBdr><w:left w:val="single" w:sz="12" w:space="4" w:color="D0D7DE"/></w:pBdr>' +
+                '<w:pBdr><w:left w:val="single" w:sz="12" w:space="4" w:color="' + wordColors.divider + '"/></w:pBdr>' +
                 '</w:pPr>' +
                 makeRun(line.slice(2), { italic: true, font: bodyFont, sz: bodySz, color: "57606A" }) +
                 '</w:p>';
@@ -4463,7 +4488,7 @@
 
             if (line.match(/^---+$/)) {
               result += '<w:p>' +
-                '<w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="D0D7DE"/></w:pBdr>' +
+                '<w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="' + wordColors.divider + '"/></w:pBdr>' +
                 '<w:spacing w:after="80"/></w:pPr>' +
                 '</w:p>';
               continue;
@@ -4538,7 +4563,7 @@
             }
             var tag = (node.nodeName || "").toLowerCase();
             if (tag === 'hr') {
-              result += '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="D0D7DE"/></w:pBdr><w:spacing w:after="80"/></w:pPr></w:p>';
+              result += '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="' + wordColors.divider + '"/></w:pBdr><w:spacing w:after="80"/></w:pPr></w:p>';
               return;
             }
             if (tag === 'br') { result += makePara("", { spaceAfter: 40 }); return; }
@@ -5119,6 +5144,275 @@
       updateLogoPreview();
     }
 
+    var storedWordTemplateBase64 = null;
+
+    function rgbArrayToHex(rgb) {
+      if (!Array.isArray(rgb) || rgb.length !== 3) return "1F2328";
+      return rgb.map(function(c) { return Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, '0'); }).join('').toUpperCase();
+    }
+
+    function aiProfileToPdfTheme(profile) {
+      var c = profile.colors || {};
+      var f = profile.fonts || {};
+      var s = profile.fontSizes || {};
+      var sp = profile.spacing || {};
+
+      function rgb(arr, fallback) {
+        if (Array.isArray(arr) && arr.length === 3) return arr;
+        return fallback;
+      }
+
+      var heading = rgb(c.heading, [31, 35, 40]);
+      var body = rgb(c.body, [31, 35, 40]);
+      var accent = rgb(c.accent, [99, 102, 241]);
+      var bg = rgb(c.background, [255, 255, 255]);
+      var codeBg = rgb(c.codeBg, [246, 248, 250]);
+      var codeText = rgb(c.codeText, [31, 35, 40]);
+      var tableBorder = rgb(c.tableBorder, [208, 215, 222]);
+      var tableHeaderBg = rgb(c.tableHeaderBg, [246, 248, 250]);
+      var tableHeaderText = rgb(c.tableHeaderText, [31, 35, 40]);
+      var divider = rgb(c.divider, [208, 215, 222]);
+      var linkColor = rgb(c.linkColor, [9, 105, 218]);
+      var userMsgBg = rgb(c.userMsgBg, [239, 246, 255]);
+      var assistantMsgBg = rgb(c.assistantMsgBg, [255, 255, 255]);
+
+      return {
+        name: profile.templateName || "AI Template",
+        fonts: {
+          heading: f.heading || "Helvetica",
+          body: f.body || "Helvetica",
+          code: f.code || "Courier"
+        },
+        sizes: {
+          h1: s.h1 || 22,
+          h2: s.h2 || 16,
+          h3: s.h3 || 13,
+          body: s.body || 10.5,
+          small: s.small || 8.5
+        },
+        colors: {
+          primary: accent,
+          secondary: body,
+          heading: heading,
+          body: body,
+          muted: [Math.min(body[0]+80,200), Math.min(body[1]+80,200), Math.min(body[2]+80,200)],
+          userBg: userMsgBg,
+          assistantBg: assistantMsgBg,
+          userLabel: accent,
+          assistantLabel: [Math.max(accent[0]-30,0), Math.max(accent[1]-30,0), Math.max(accent[2]-30,0)],
+          codeBg: codeBg,
+          codeText: codeText,
+          tableBorder: tableBorder,
+          tableHeaderBg: tableHeaderBg,
+          tableHeaderText: tableHeaderText,
+          headerLine: divider,
+          coverBg: bg,
+          pageBg: bg,
+          tocDots: divider,
+          sectionDivider: divider,
+          notesBg: [Math.min(bg[0]+5,255), Math.min(bg[1]+5,255), Math.min(bg[2]+5,255)]
+        },
+        spacing: {
+          marginLeft: sp.marginLeftMm ? Math.round(sp.marginLeftMm * 2.835) : 20,
+          marginRight: sp.marginRightMm ? Math.round(sp.marginRightMm * 2.835) : 20,
+          marginTop: sp.marginTopMm ? Math.round(sp.marginTopMm * 2.835) : 20,
+          marginBottom: sp.marginBottomMm ? Math.round(sp.marginBottomMm * 2.835) : 15,
+          lineHeight: sp.lineHeight || 1.35,
+          paragraphGap: sp.paragraphSpacingPt || 3,
+          sectionGap: 8,
+          headerHeight: 10
+        },
+        decorations: {
+          coverStyle: "modern",
+          showHeaderLine: true,
+          showFooterLine: true,
+          showSectionDividers: true,
+          tocStyle: "dotted",
+          userMsgPrefix: "Q:",
+          assistantMsgPrefix: "A:",
+          showExchangeNumbers: true,
+          showTimestamp: false,
+          coverAccentBar: true,
+          accentBarColor: accent
+        }
+      };
+    }
+
+    async function analyzeWordTemplateWithAI(zip) {
+      debugLog('[TEMPLATE] Starting AI-driven template analysis...', 'info');
+
+      var xmlFiles = {};
+      var filesToExtract = [
+        'word/styles.xml',
+        'word/theme/theme1.xml',
+        'word/document.xml',
+        'word/header1.xml',
+        'word/header2.xml',
+        'word/footer1.xml',
+        'word/footer2.xml',
+        'word/numbering.xml',
+        'word/settings.xml'
+      ];
+
+      for (var i = 0; i < filesToExtract.length; i++) {
+        var fileName = filesToExtract[i];
+        var file = zip.file(fileName);
+        if (file) {
+          try {
+            var content = await file.async('string');
+            if (fileName === 'word/document.xml' && content.length > 4000) {
+              content = content.substring(0, 4000) + '\n... [truncated]';
+            }
+            if (content.length > 8000) {
+              content = content.substring(0, 8000) + '\n... [truncated]';
+            }
+            xmlFiles[fileName] = content;
+            debugLog('[TEMPLATE] Extracted ' + fileName + ' (' + content.length + ' chars)', 'log');
+          } catch(e) {
+            debugLog('[TEMPLATE] Could not read ' + fileName + ': ' + e.message, 'warn');
+          }
+        }
+      }
+
+      if (Object.keys(xmlFiles).length === 0) {
+        throw new Error('No XML files found in template');
+      }
+
+      var xmlContent = '';
+      for (var key in xmlFiles) {
+        xmlContent += '\n=== ' + key + ' ===\n' + xmlFiles[key] + '\n';
+      }
+
+      var analysisPrompt = 'Analyze this Microsoft Word template and extract ALL styling properties into a structured JSON object. I need a complete style profile that captures the document\'s visual design.\n\nHere are the template\'s XML files:\n' + xmlContent + '\n\nReturn ONLY a valid JSON object (no markdown, no code fences, no explanation) with this exact structure:\n{\n  "templateName": "descriptive name based on the template design",\n  "fonts": {\n    "heading": "font name",\n    "body": "font name",\n    "code": "monospace font name or Courier New"\n  },\n  "fontSizes": {\n    "h1": 24,\n    "h2": 18,\n    "h3": 14,\n    "body": 11,\n    "small": 9\n  },\n  "colors": {\n    "heading": [r, g, b],\n    "body": [r, g, b],\n    "background": [255, 255, 255],\n    "userMsgBg": [r, g, b],\n    "assistantMsgBg": [r, g, b],\n    "codeBg": [r, g, b],\n    "codeText": [r, g, b],\n    "tableBorder": [r, g, b],\n    "tableHeaderBg": [r, g, b],\n    "tableHeaderText": [r, g, b],\n    "accent": [r, g, b],\n    "linkColor": [r, g, b],\n    "headerText": [r, g, b],\n    "footerText": [r, g, b],\n    "divider": [r, g, b]\n  },\n  "spacing": {\n    "marginLeftMm": 25,\n    "marginRightMm": 25,\n    "marginTopMm": 25,\n    "marginBottomMm": 20,\n    "lineHeight": 1.15,\n    "paragraphSpacingPt": 8,\n    "headingSpacingPt": 12\n  },\n  "pageLayout": {\n    "orientation": "portrait",\n    "paperSize": "A4"\n  },\n  "headerFooter": {\n    "hasHeader": true,\n    "hasFooter": true,\n    "headerContent": "description of header content",\n    "footerContent": "description of footer content"\n  },\n  "styleNames": {\n    "heading1": "style name from styles.xml",\n    "heading2": "style name from styles.xml",\n    "heading3": "style name from styles.xml",\n    "normal": "style name from styles.xml",\n    "code": "style name if exists or null"\n  },\n  "designNotes": "brief description of the overall design aesthetic"\n}';
+
+      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
+
+      if (!activeToken) {
+        throw new Error('No API token configured for ' + activeProvider + '. Save your token first.');
+      }
+
+      debugLog('[TEMPLATE] Sending template XML to AI for analysis (provider: ' + activeProvider + ', model: ' + selectedModel + ')...', 'info');
+
+      var responseText = '';
+
+      if (activeProvider === "anthropic") {
+        var r = await fetch(ANTHROPIC_DIRECT_URL, {
+          method: "POST",
+          headers: {
+            "x-api-key": anthropicToken,
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true"
+          },
+          body: JSON.stringify({
+            model: selectedModel,
+            max_tokens: 4096,
+            system: [{ type: "text", text: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. Return ONLY valid JSON, no markdown fences, no explanation.", cache_control: { type: "ephemeral" } }],
+            messages: [{ role: "user", content: analysisPrompt }]
+          })
+        });
+        if (!r.ok) {
+          var errText = await r.text();
+          throw new Error('Anthropic API error ' + r.status + ': ' + errText);
+        }
+        var d = await r.json();
+        responseText = (d.content && d.content[0] && d.content[0].text) || '';
+      } else if (activeProvider === "openai") {
+        var r = await fetch(OPENAI_DIRECT_URL, {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + openaiToken,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: selectedModel,
+            messages: [
+              { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. Return ONLY valid JSON, no markdown fences, no explanation." },
+              { role: "user", content: analysisPrompt }
+            ],
+            max_tokens: 4096
+          })
+        });
+        if (!r.ok) {
+          var errText = await r.text();
+          throw new Error('OpenAI API error ' + r.status + ': ' + errText);
+        }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+      } else if (activeProvider === "watsonx") {
+        var bearerToken = await getWatsonxBearerToken();
+        var r = await fetch(WATSONX_CHAT_URL, {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + bearerToken,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          body: JSON.stringify({
+            model_id: selectedModel,
+            project_id: watsonxProjectId,
+            messages: [
+              { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. Return ONLY valid JSON, no markdown fences, no explanation." },
+              { role: "user", content: analysisPrompt }
+            ],
+            max_tokens: 4096
+          })
+        });
+        if (!r.ok) {
+          var errText = await r.text();
+          throw new Error('watsonx API error ' + r.status + ': ' + errText);
+        }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+      } else {
+        // GitHub Models (default)
+        var r = await fetch(API_URL, {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: selectedModel,
+            messages: [
+              { role: "system", content: "You are a document analysis expert. You analyze Microsoft Word template XML and extract precise styling information into structured JSON. Return ONLY valid JSON, no markdown fences, no explanation." },
+              { role: "user", content: analysisPrompt }
+            ],
+            max_tokens: 4096
+          })
+        });
+        if (!r.ok) {
+          var errText = await r.text();
+          throw new Error('GitHub Models API error ' + r.status + ': ' + errText);
+        }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+      }
+
+      if (!responseText) {
+        throw new Error('AI returned empty response');
+      }
+
+      responseText = responseText.trim();
+      if (responseText.startsWith('```')) {
+        responseText = responseText.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      }
+
+      debugLog('[TEMPLATE] AI response received (' + responseText.length + ' chars), parsing JSON...', 'info');
+
+      var profile;
+      try {
+        profile = JSON.parse(responseText);
+      } catch(e) {
+        debugLog('[TEMPLATE] Failed to parse AI response as JSON: ' + e.message, 'error');
+        debugLog('[TEMPLATE] Raw response: ' + responseText.substring(0, 500), 'error');
+        throw new Error('AI response was not valid JSON. Try again or use a different model.');
+      }
+
+      debugLog('[TEMPLATE] \u2705 AI analysis complete \u2014 template: "' + (profile.templateName || 'Unknown') + '"', 'info');
+      return profile;
+    }
+
     async function handleWordTemplateImport(event) {
       var file = event.target.files[0];
       event.target.value = "";
@@ -5127,81 +5421,28 @@
         alert("JSZip library is not loaded. Please refresh and try again.");
         return;
       }
+
+      debugLog('[TEMPLATE] Starting Word template import: ' + file.name, 'info');
+
       try {
-        var zip = await JSZip.loadAsync(file);
-        var stylesFile = zip.file("word/styles.xml");
-        if (!stylesFile) { alert("Could not find styles in this Word document."); return; }
-        var stylesXml = await stylesFile.async("string");
-        var parser = new DOMParser();
-        var stylesDoc = parser.parseFromString(stylesXml, "application/xml");
-        var theme = extractThemeFromWordStyles(stylesDoc);
+        var arrayBuffer = await file.arrayBuffer();
+        var zip = await JSZip.loadAsync(arrayBuffer);
 
-        // Also try to parse word/theme/theme1.xml
-        var themeFile = zip.file("word/theme/theme1.xml");
-        if (themeFile) {
-          var themeXml = await themeFile.async("string");
-          var themeDoc = parser.parseFromString(themeXml, "application/xml");
-          theme = applyWordThemeColors(themeDoc, theme);
+        // Store the template ZIP as base64 for later use in exports
+        try {
+          storedWordTemplateBase64 = await zip.generateAsync({ type: 'base64' });
+          debugLog('[TEMPLATE] Stored template ZIP (' + Math.round(storedWordTemplateBase64.length / 1024) + ' KB base64)', 'info');
+        } catch(e) {
+          debugLog('[TEMPLATE] Could not store template ZIP: ' + e.message, 'warn');
         }
 
-        // Also try to parse word/document.xml for page layout and background
-        var docFile = zip.file("word/document.xml");
-        if (docFile) {
-          try {
-            var docXml = await docFile.async("string");
-            var docDoc = parser.parseFromString(docXml, "application/xml");
-
-            // Extract page background color from <w:background w:color="XXXXXX">
-            var bgEls = docDoc.getElementsByTagName("w:background");
-            if (bgEls.length > 0) {
-              var bgColor = bgEls[0].getAttribute("w:color");
-              if (bgColor && bgColor !== "auto" && bgColor.length >= 6) {
-                bgColor = bgColor.replace("#", "");
-                if (bgColor.length === 6) {
-                  var bgRgb = [parseInt(bgColor.substring(0,2),16), parseInt(bgColor.substring(2,4),16), parseInt(bgColor.substring(4,6),16)];
-                  theme.colors.pageBg = bgRgb;
-                  theme.colors.coverBg = bgRgb;
-                  theme._pageBgFromDocument = true;
-                  debugLog("[WordImport] Page background color: #" + bgColor, "info");
-                }
-              }
-            }
-
-            // Extract page margins from <w:sectPr><w:pgMar ...>
-            var sectPrs = docDoc.getElementsByTagName("w:sectPr");
-            if (sectPrs.length > 0) {
-              var pgMars = sectPrs[sectPrs.length - 1].getElementsByTagName("w:pgMar");
-              if (pgMars.length > 0) {
-                var pgMar = pgMars[0];
-                // Twips to points: divide by 1440 for inches, multiply by 72 for points (= /20)
-                // twips → points: divide by 1440 for inches, multiply by 72 for points (= /20)
-                function twipsToPoints(val) { return val ? Math.round(parseInt(val, 10) / 20) : null; }
-                var mLeft = twipsToPoints(pgMar.getAttribute("w:left"));
-                var mRight = twipsToPoints(pgMar.getAttribute("w:right"));
-                var mTop = twipsToPoints(pgMar.getAttribute("w:top"));
-                var mBottom = twipsToPoints(pgMar.getAttribute("w:bottom"));
-                if (!theme.spacing) theme.spacing = {};
-                if (mLeft !== null && mLeft > 0) theme.spacing.marginLeft = Math.min(Math.max(mLeft, 18), 108);
-                if (mRight !== null && mRight > 0) theme.spacing.marginRight = Math.min(Math.max(mRight, 18), 108);
-                if (mTop !== null && mTop > 0) theme.spacing.marginTop = Math.min(Math.max(mTop, 18), 108);
-                if (mBottom !== null && mBottom > 0) theme.spacing.marginBottom = Math.min(Math.max(mBottom, 18), 108);
-                debugLog("[WordImport] Page margins (pt): left=" + mLeft + " right=" + mRight + " top=" + mTop + " bottom=" + mBottom, "info");
-              }
-            }
-          } catch (docErr) {
-            debugLog("[WordImport] Could not parse document.xml: " + docErr.message, "warn");
-          }
-        }
-
-        db.pdfTheme = "custom";
-
-        // ===== LOGO EXTRACTION =====
+        // ===== LOGO EXTRACTION (done regardless of AI/programmatic path) =====
         var logoFound = false;
         var logoSource = "none";
+        var logoDataUrl = null;
+        var logoImgExt = "png";
+        var parser = new DOMParser();
         try {
-          var logoDataUrl = null;
-          var logoImgExt = "png";
-
           // Step 1: Look for images referenced in header files
           var headerNums = [1, 2, 3];
           for (var hi = 0; hi < headerNums.length && !logoDataUrl; hi++) {
@@ -5265,7 +5506,6 @@
               }
             });
             if (mediaFiles.length > 0) {
-              // Take smallest file (most likely to be a logo)
               var smallest = null;
               for (var mi = 0; mi < mediaFiles.length; mi++) {
                 var mData = await mediaFiles[mi].entry.async("uint8array");
@@ -5284,7 +5524,6 @@
           }
 
           if (logoDataUrl) {
-            // Resize if > 500KB (base64 ≈ 4/3 × raw bytes, so 666000 ≈ 500KB)
             var base64Part = logoDataUrl.split(",")[1] || "";
             var logoWidth = null;
             var logoHeight = null;
@@ -5308,13 +5547,142 @@
               logoHeight = resizeResult.h;
               debugLog("[Logo] Resized to " + logoWidth + "\u00d7" + logoHeight, "info");
             }
-            theme.logo = { data: logoDataUrl, width: logoWidth, height: logoHeight, placement: "both" };
             logoFound = true;
           }
         } catch (logoErr) {
           debugLog("[Logo] Could not extract logo: " + logoErr.message, "warn");
         }
 
+        // Check if an API token is available for AI analysis
+        var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
+
+        if (activeToken) {
+          // Show progress notification
+          var notification = document.createElement('div');
+          notification.id = 'template-analysis-notification';
+          notification.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#4f46e5;color:white;padding:12px 24px;border-radius:8px;z-index:9999;font-size:14px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,0.3);display:flex;align-items:center;gap:8px;';
+          notification.innerHTML = '<span style="animation:spin 1s linear infinite;display:inline-block">\uD83D\uDD0D</span> Analyzing template with AI (' + selectedModel + ')...';
+          var styleTag = document.createElement('style');
+          styleTag.textContent = '@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
+          notification.appendChild(styleTag);
+          document.body.appendChild(notification);
+
+          try {
+            var aiProfile = await analyzeWordTemplateWithAI(zip);
+
+            // Store the AI profile
+            db.aiTemplateProfile = aiProfile;
+
+            // Convert to PDF theme
+            var pdfTheme = aiProfileToPdfTheme(aiProfile);
+
+            // Attach extracted logo if found
+            if (logoDataUrl) {
+              pdfTheme.logo = { data: logoDataUrl, width: null, height: null, placement: "both" };
+            } else if (db.customPdfTheme && db.customPdfTheme.logo) {
+              pdfTheme.logo = db.customPdfTheme.logo;
+            }
+
+            db.pdfTheme = "custom";
+            db.customPdfTheme = pdfTheme;
+            saveDB();
+
+            // Update notification to success
+            notification.style.background = '#16a34a';
+            notification.innerHTML = '\u2705 Template analyzed: "' + (aiProfile.templateName || file.name) + '"';
+            debugLog('[TEMPLATE] AI profile stored and converted to PDF theme', 'info');
+            debugLog('[TEMPLATE] Template name: ' + (aiProfile.templateName || 'Unknown'), 'info');
+            debugLog('[TEMPLATE] Fonts: heading=' + (aiProfile.fonts && aiProfile.fonts.heading) + ', body=' + (aiProfile.fonts && aiProfile.fonts.body), 'info');
+
+            setTimeout(function() {
+              if (notification.parentNode) notification.parentNode.removeChild(notification);
+            }, 4000);
+
+            alert('\u2705 Template imported and analyzed by AI!\n\n\u2022 Template: ' + (aiProfile.templateName || file.name) + '\n\u2022 Heading font: ' + (aiProfile.fonts && aiProfile.fonts.heading || 'default') + '\n\u2022 Body font: ' + (aiProfile.fonts && aiProfile.fonts.body || 'default') + '\n\u2022 Design: ' + (aiProfile.designNotes || 'N/A') + '\n\u2022 Logo/graphic extracted: ' + (logoFound ? 'Yes (from ' + logoSource + ')' : 'None found') + '\n\nThe AI-extracted styling will be used for all exports.');
+
+            var existingModal = document.querySelector(".pdf-theme-modal");
+            if (existingModal) {
+              document.body.removeChild(existingModal);
+              openPdfThemeEditor();
+            }
+            return;
+
+          } catch(aiError) {
+            debugLog('[TEMPLATE] \u274C AI analysis failed: ' + aiError.message + ' \u2014 falling back to programmatic parsing', 'error');
+            notification.style.background = '#dc2626';
+            notification.innerHTML = '\u274C AI analysis failed \u2014 using programmatic fallback';
+            setTimeout(function() {
+              if (notification.parentNode) notification.parentNode.removeChild(notification);
+            }, 3000);
+            // Fall through to programmatic parsing below
+          }
+        } else {
+          debugLog('[TEMPLATE] No API token available \u2014 using programmatic parsing', 'info');
+        }
+
+        // FALLBACK: Use the existing programmatic parsing (extractThemeFromWordStyles + applyWordThemeColors)
+        var stylesFile = zip.file("word/styles.xml");
+        if (!stylesFile) { alert("Could not find styles in this Word document."); return; }
+        var stylesXml = await stylesFile.async("string");
+        var stylesDoc = parser.parseFromString(stylesXml, "application/xml");
+        var theme = extractThemeFromWordStyles(stylesDoc);
+
+        var themeFile = zip.file("word/theme/theme1.xml");
+        if (themeFile) {
+          var themeXml = await themeFile.async("string");
+          var themeDoc = parser.parseFromString(themeXml, "application/xml");
+          theme = applyWordThemeColors(themeDoc, theme);
+          debugLog('[TEMPLATE] Applied theme colors from theme1.xml (programmatic fallback)', 'info');
+        }
+
+        var docFile = zip.file("word/document.xml");
+        if (docFile) {
+          try {
+            var docXml = await docFile.async("string");
+            var docDoc = parser.parseFromString(docXml, "application/xml");
+            var bgEls = docDoc.getElementsByTagName("w:background");
+            if (bgEls.length > 0) {
+              var bgColor = bgEls[0].getAttribute("w:color");
+              if (bgColor && bgColor !== "auto" && bgColor.length >= 6) {
+                bgColor = bgColor.replace("#", "");
+                if (bgColor.length === 6) {
+                  var bgRgb = [parseInt(bgColor.substring(0,2),16), parseInt(bgColor.substring(2,4),16), parseInt(bgColor.substring(4,6),16)];
+                  theme.colors.pageBg = bgRgb;
+                  theme.colors.coverBg = bgRgb;
+                  theme._pageBgFromDocument = true;
+                  debugLog("[WordImport] Page background color: #" + bgColor, "info");
+                }
+              }
+            }
+            var sectPrs = docDoc.getElementsByTagName("w:sectPr");
+            if (sectPrs.length > 0) {
+              var pgMars = sectPrs[sectPrs.length - 1].getElementsByTagName("w:pgMar");
+              if (pgMars.length > 0) {
+                var pgMar = pgMars[0];
+                function twipsToPoints(val) { return val ? Math.round(parseInt(val, 10) / 20) : null; }
+                var mLeft = twipsToPoints(pgMar.getAttribute("w:left"));
+                var mRight = twipsToPoints(pgMar.getAttribute("w:right"));
+                var mTop = twipsToPoints(pgMar.getAttribute("w:top"));
+                var mBottom = twipsToPoints(pgMar.getAttribute("w:bottom"));
+                if (!theme.spacing) theme.spacing = {};
+                if (mLeft !== null && mLeft > 0) theme.spacing.marginLeft = Math.min(Math.max(mLeft, 18), 108);
+                if (mRight !== null && mRight > 0) theme.spacing.marginRight = Math.min(Math.max(mRight, 18), 108);
+                if (mTop !== null && mTop > 0) theme.spacing.marginTop = Math.min(Math.max(mTop, 18), 108);
+                if (mBottom !== null && mBottom > 0) theme.spacing.marginBottom = Math.min(Math.max(mBottom, 18), 108);
+                debugLog("[WordImport] Page margins (pt): left=" + mLeft + " right=" + mRight + " top=" + mTop + " bottom=" + mBottom, "info");
+              }
+            }
+          } catch (docErr) {
+            debugLog("[WordImport] Could not parse document.xml: " + docErr.message, "warn");
+          }
+        }
+
+        // Attach extracted logo if found
+        if (logoDataUrl) {
+          theme.logo = { data: logoDataUrl, width: null, height: null, placement: "both" };
+        }
+
+        db.pdfTheme = "custom";
         db.customPdfTheme = theme;
         saveDB();
         alert(
@@ -5324,7 +5692,8 @@
           "\u2022 Body font: " + theme.extractedInfo.bodyFont + "\n" +
           "\u2022 Primary color: " + theme.extractedInfo.primaryColor + "\n" +
           "\u2022 " + theme.extractedInfo.stylesFound + " styles found\n" +
-          "\u2022 Logo/graphic extracted: " + (logoFound ? "Yes (from " + logoSource + ")" : "None found")
+          "\u2022 Logo/graphic extracted: " + (logoFound ? "Yes (from " + logoSource + ")" : "None found") + "\n\n" +
+          "Note: For better results, ensure an API token is configured and try again \u2014 AI analysis provides much more accurate styling extraction."
         );
         var existingModal = document.querySelector(".pdf-theme-modal");
         if (existingModal) {
@@ -5332,6 +5701,7 @@
           openPdfThemeEditor();
         }
       } catch (err) {
+        debugLog('[TEMPLATE] \u274C Template import failed: ' + err.message, 'error');
         alert("\u274C Failed to parse Word template: " + err.message);
       }
     }
