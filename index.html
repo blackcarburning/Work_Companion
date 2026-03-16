@@ -5602,9 +5602,261 @@
       };
     }
 
+    // Deep-parse a docx ZIP and extract design metadata that mammoth.js misses:
+    // fonts/sizes/colors from styles.xml, theme color scheme from theme1.xml,
+    // header/footer text + image presence, and cover page background fills.
+    async function extractDocxDesignMetadata(zip) {
+      var parser = new DOMParser();
+      var meta = { fonts: [], themeColors: {}, headers: [], footers: [], coverPage: {} };
+
+      // --- 1. Parse styles.xml (default font + heading styles) ---
+      var stylesFile = zip.file('word/styles.xml');
+      if (stylesFile) {
+        try {
+          var stylesXml = await stylesFile.async('string');
+          var stylesDoc = parser.parseFromString(stylesXml, 'application/xml');
+          // Default font from w:docDefaults
+          var docDefs = stylesDoc.getElementsByTagName('w:docDefaults');
+          if (docDefs.length > 0) {
+            var defRFonts = docDefs[0].getElementsByTagName('w:rFonts');
+            if (defRFonts.length > 0) {
+              var defFont = defRFonts[0].getAttribute('w:ascii') || defRFonts[0].getAttribute('w:asciiTheme') || defRFonts[0].getAttribute('w:hAnsi');
+              if (defFont) {
+                var defSzEl = docDefs[0].getElementsByTagName('w:sz');
+                var defSzParsed = defSzEl.length > 0 ? parseInt(defSzEl[0].getAttribute('w:val'), 10) : NaN;
+                var defSz = !isNaN(defSzParsed) ? Math.round(defSzParsed / 2) : 11;
+                meta.fonts.push({ label: 'Default body font', font: defFont, size: defSz + 'pt' });
+              }
+            }
+          }
+          // Heading and Normal paragraph styles
+          var styleEls = stylesDoc.getElementsByTagName('w:style');
+          for (var si = 0; si < styleEls.length; si++) {
+            var sType = styleEls[si].getAttribute('w:type');
+            var sId   = styleEls[si].getAttribute('w:styleId') || '';
+            if (sType !== 'paragraph') continue;
+            if (!sId.match(/^heading\d+$/i) && !sId.match(/^Normal$/i)) continue;
+            var sName = sId;
+            var sNameEl = styleEls[si].getElementsByTagName('w:name');
+            if (sNameEl.length > 0) sName = sNameEl[0].getAttribute('w:val') || sId;
+            var rPr = styleEls[si].getElementsByTagName('w:rPr');
+            var parts = [];
+            if (rPr.length > 0) {
+              var rfEl = rPr[0].getElementsByTagName('w:rFonts');
+              if (rfEl.length > 0) {
+                var f = rfEl[0].getAttribute('w:ascii') || rfEl[0].getAttribute('w:asciiTheme') || rfEl[0].getAttribute('w:hAnsi');
+                if (f) parts.push(f);
+              }
+              var szEl = rPr[0].getElementsByTagName('w:sz');
+              if (szEl.length > 0) {
+                var szVal = parseInt(szEl[0].getAttribute('w:val'), 10);
+                if (!isNaN(szVal)) parts.push(Math.round(szVal / 2) + 'pt');
+              }
+              var bEl = rPr[0].getElementsByTagName('w:b');
+              if (bEl.length > 0 && bEl[0].getAttribute('w:val') !== 'false' && bEl[0].getAttribute('w:val') !== '0') parts.push('Bold');
+              var iEl = rPr[0].getElementsByTagName('w:i');
+              if (iEl.length > 0 && iEl[0].getAttribute('w:val') !== 'false' && iEl[0].getAttribute('w:val') !== '0') parts.push('Italic');
+              var colEl = rPr[0].getElementsByTagName('w:color');
+              if (colEl.length > 0) {
+                var cVal = colEl[0].getAttribute('w:val');
+                if (cVal && cVal !== 'auto') parts.push('Color: #' + cVal);
+              }
+            }
+            meta.fonts.push({ label: sName.charAt(0).toUpperCase() + sName.slice(1), details: parts.join(', ') || '(inherited)' });
+          }
+        } catch(e) {
+          debugLog('[TEMPLATE META] styles.xml parse error: ' + e.message, 'warn');
+        }
+      }
+
+      // --- 2. Parse word/theme/theme1.xml for color scheme ---
+      var themeFile = zip.file('word/theme/theme1.xml');
+      if (themeFile) {
+        try {
+          var themeXml = await themeFile.async('string');
+          var themeDoc = parser.parseFromString(themeXml, 'application/xml');
+          var clrScheme = themeDoc.getElementsByTagName('a:clrScheme');
+          if (clrScheme.length > 0) {
+            var colorKeys   = ['dk1','lt1','dk2','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+            var colorLabels = { dk1:'Dark 1 (primary text)', lt1:'Light 1 (background)', dk2:'Dark 2', lt2:'Light 2',
+              accent1:'Accent 1', accent2:'Accent 2', accent3:'Accent 3', accent4:'Accent 4',
+              accent5:'Accent 5', accent6:'Accent 6', hlink:'Hyperlink', folHlink:'Followed Hyperlink' };
+            for (var ci = 0; ci < colorKeys.length; ci++) {
+              var ck = colorKeys[ci];
+              var ckEls = clrScheme[0].getElementsByTagName('a:' + ck);
+              if (ckEls.length > 0) {
+                var srgb = ckEls[0].getElementsByTagName('a:srgbClr');
+                var sysC = ckEls[0].getElementsByTagName('a:sysClr');
+                if (srgb.length > 0) meta.themeColors[colorLabels[ck]] = '#' + srgb[0].getAttribute('val');
+                else if (sysC.length > 0) meta.themeColors[colorLabels[ck]] = '#' + (sysC[0].getAttribute('lastClr') || '000000');
+              }
+            }
+          }
+        } catch(e) {
+          debugLog('[TEMPLATE META] theme1.xml parse error: ' + e.message, 'warn');
+        }
+      }
+
+      // --- 3. Extract text content and image presence from headers and footers ---
+      var hfParts = [
+        { path: 'word/header1.xml', kind: 'header' },
+        { path: 'word/header2.xml', kind: 'header' },
+        { path: 'word/header3.xml', kind: 'header' },
+        { path: 'word/footer1.xml', kind: 'footer' },
+        { path: 'word/footer2.xml', kind: 'footer' },
+        { path: 'word/footer3.xml', kind: 'footer' }
+      ];
+      for (var hfi = 0; hfi < hfParts.length; hfi++) {
+        var hfInfo = hfParts[hfi];
+        var hfFile = zip.file(hfInfo.path);
+        if (!hfFile) continue;
+        try {
+          var hfXml = await hfFile.async('string');
+          var hfDoc = parser.parseFromString(hfXml, 'application/xml');
+          var tNodes = hfDoc.getElementsByTagName('w:t');
+          var texts = [];
+          for (var ti = 0; ti < tNodes.length; ti++) {
+            var t = tNodes[ti].textContent.trim();
+            if (t) texts.push(t);
+          }
+          var hasImg = hfDoc.getElementsByTagName('a:blip').length > 0 ||
+                       hfDoc.getElementsByTagName('v:imagedata').length > 0 ||
+                       hfDoc.getElementsByTagName('pic:pic').length > 0;
+          var fldCodes = hfDoc.getElementsByTagName('w:instrText');
+          var fields = [];
+          for (var fci = 0; fci < fldCodes.length; fci++) {
+            var fld = fldCodes[fci].textContent.trim();
+            if (fld) fields.push(fld);
+          }
+          var hfEntry = { file: hfInfo.path, text: texts.join(' | '), hasImages: hasImg, fields: fields.join('; ') };
+          if (hfInfo.kind === 'header') meta.headers.push(hfEntry);
+          else meta.footers.push(hfEntry);
+        } catch(e) {
+          debugLog('[TEMPLATE META] ' + hfInfo.path + ' parse error: ' + e.message, 'warn');
+        }
+      }
+
+      // --- 4. Parse document.xml for background colors and shape fills ---
+      var docFile = zip.file('word/document.xml');
+      if (docFile) {
+        try {
+          var docXml = await docFile.async('string');
+          var docDoc = parser.parseFromString(docXml, 'application/xml');
+          var bgEls = docDoc.getElementsByTagName('w:background');
+          if (bgEls.length > 0) {
+            var bgC = bgEls[0].getAttribute('w:color');
+            if (bgC && bgC !== 'auto' && /^[0-9A-Fa-f]{6}$/.test(bgC)) {
+              meta.coverPage.backgroundColor = '#' + bgC;
+            }
+          }
+          var vBgEls = docDoc.getElementsByTagName('v:background');
+          if (vBgEls.length > 0) {
+            var vFill = vBgEls[0].getElementsByTagName('v:fill');
+            if (vFill.length > 0) {
+              var vColor = vFill[0].getAttribute('color') || vFill[0].getAttribute('color2');
+              if (vColor) meta.coverPage.vmlBackground = vColor;
+            }
+          }
+          // Cap at 20 fills to avoid bloating the prompt with repetitive shape styling data
+          var solidFills = docDoc.getElementsByTagName('a:solidFill');
+          var shapeFills = [];
+          for (var sfi = 0; sfi < Math.min(solidFills.length, 20); sfi++) {
+            var srgbEl = solidFills[sfi].getElementsByTagName('a:srgbClr');
+            var schClr = solidFills[sfi].getElementsByTagName('a:schemeClr');
+            if (srgbEl.length > 0) {
+              var sfc = '#' + srgbEl[0].getAttribute('val');
+              if (shapeFills.indexOf(sfc) === -1) shapeFills.push(sfc);
+            } else if (schClr.length > 0) {
+              var schName = 'theme:' + schClr[0].getAttribute('val');
+              if (shapeFills.indexOf(schName) === -1) shapeFills.push(schName);
+            }
+          }
+          if (shapeFills.length > 0) meta.coverPage.shapeFills = shapeFills;
+        } catch(e) {
+          debugLog('[TEMPLATE META] document.xml parse error: ' + e.message, 'warn');
+        }
+      }
+
+      return meta;
+    }
+
+    // Format extracted design metadata as a structured, human-readable block for the AI prompt.
+    function buildDesignMetadataBlock(meta, logoDataUrl, logoSource) {
+      var lines = ['=== TEMPLATE DESIGN METADATA ===', ''];
+
+      if (meta.fonts.length > 0) {
+        lines.push('FONTS:');
+        for (var fi = 0; fi < meta.fonts.length; fi++) {
+          var fe = meta.fonts[fi];
+          if (fe.font) lines.push('- ' + fe.label + ': ' + fe.font + (fe.size ? ', ' + fe.size : ''));
+          else if (fe.details) lines.push('- ' + fe.label + ': ' + fe.details);
+        }
+        lines.push('');
+      }
+
+      var tcKeys = Object.keys(meta.themeColors);
+      if (tcKeys.length > 0) {
+        lines.push('THEME COLORS:');
+        for (var ti = 0; ti < tcKeys.length; ti++) lines.push('- ' + tcKeys[ti] + ': ' + meta.themeColors[tcKeys[ti]]);
+        lines.push('');
+      }
+
+      if (meta.headers.length > 0) {
+        lines.push('HEADERS:');
+        for (var hi = 0; hi < meta.headers.length; hi++) {
+          var h = meta.headers[hi];
+          var hdesc = '- ' + h.file + ':';
+          if (h.hasImages) hdesc += ' [contains image/logo]';
+          if (h.text) hdesc += ' text: "' + h.text + '"';
+          if (h.fields) hdesc += ' fields: ' + h.fields;
+          if (!h.text && !h.fields && !h.hasImages) hdesc += ' (empty)';
+          lines.push(hdesc);
+        }
+        lines.push('');
+      }
+
+      if (meta.footers.length > 0) {
+        lines.push('FOOTERS:');
+        for (var ffi = 0; ffi < meta.footers.length; ffi++) {
+          var ff = meta.footers[ffi];
+          var fdesc = '- ' + ff.file + ':';
+          if (ff.hasImages) fdesc += ' [contains image]';
+          if (ff.text) fdesc += ' text: "' + ff.text + '"';
+          if (ff.fields) fdesc += ' fields: ' + ff.fields;
+          if (!ff.text && !ff.fields && !ff.hasImages) fdesc += ' (empty)';
+          lines.push(fdesc);
+        }
+        lines.push('');
+      }
+
+      var cpKeys = Object.keys(meta.coverPage);
+      if (cpKeys.length > 0) {
+        lines.push('COVER PAGE / BACKGROUND:');
+        if (meta.coverPage.backgroundColor) lines.push('- Document background color: ' + meta.coverPage.backgroundColor);
+        if (meta.coverPage.vmlBackground) lines.push('- VML background fill: ' + meta.coverPage.vmlBackground);
+        if (meta.coverPage.shapeFills && meta.coverPage.shapeFills.length > 0) {
+          lines.push('- Shape/section fill colors: ' + meta.coverPage.shapeFills.join(', '));
+        }
+        lines.push('');
+      }
+
+      lines.push('LOGO / IMAGES:');
+      if (logoDataUrl) {
+        lines.push('- Logo image extracted from: ' + (logoSource || 'template'));
+        lines.push('- Logo provided as inline image in this message for visual analysis');
+      } else {
+        lines.push('- No logo or image found in this template');
+      }
+      lines.push('');
+      lines.push('=== END TEMPLATE DESIGN METADATA ===');
+      return lines.join('\n');
+    }
+
     // Analyze a Word template ZIP with AI. Optionally pass logoDataUrl (base64 data URL) to
     // include the extracted logo in the AI request so the AI can specify placement/sizing.
-    async function analyzeWordTemplateWithAI(zip, logoDataUrl) {
+    // logoSource is a string describing where the logo was found (e.g. "header", "document",
+    // "media folder") and is included in the structured metadata block sent to the AI.
+    async function analyzeWordTemplateWithAI(zip, logoDataUrl, logoSource) {
       debugLog('[TEMPLATE] Starting AI-driven template analysis...', 'info');
       if (logoDataUrl) {
         debugLog('[Logo] Logo will be supplied to AI for placement analysis', 'info');
@@ -5619,8 +5871,10 @@
         'word/document.xml',
         'word/header1.xml',
         'word/header2.xml',
+        'word/header3.xml',
         'word/footer1.xml',
         'word/footer2.xml',
+        'word/footer3.xml',
         'word/numbering.xml',
         'word/settings.xml'
       ];
@@ -5659,7 +5913,21 @@
         ? 'A logo image has been automatically extracted from this template (it is the first image found in the template\'s header/cover area). The image is attached to this message. Based on where it was found in the template XML and its visual appearance, please specify precise logo placement and sizing instructions in the "logo" field of the JSON response.'
         : 'No logo image was found in this template. Set "logo" to null in the JSON response.';
 
-      var analysisPrompt = 'Analyze this Microsoft Word template and extract ALL styling properties into a structured JSON object. I need a complete style profile that captures the document\'s visual design.\n\n' + logoPromptSection + '\n\nHere are the template\'s XML files:\n' + xmlContent + '\n\nReturn ONLY a valid JSON object (no markdown, no code fences, no explanation) with this exact structure:\n{\n  "templateName": "descriptive name based on the template design",\n  "fonts": {\n    "heading": "font name",\n    "body": "font name",\n    "code": "monospace font name or Courier New"\n  },\n  "fontSizes": {\n    "h1": 24,\n    "h2": 18,\n    "h3": 14,\n    "body": 11,\n    "small": 9\n  },\n  "colors": {\n    "heading": [r, g, b],\n    "body": [r, g, b],\n    "background": [255, 255, 255],\n    "userMsgBg": [r, g, b],\n    "assistantMsgBg": [r, g, b],\n    "codeBg": [r, g, b],\n    "codeText": [r, g, b],\n    "tableBorder": [r, g, b],\n    "tableHeaderBg": [r, g, b],\n    "tableHeaderText": [r, g, b],\n    "accent": [r, g, b],\n    "linkColor": [r, g, b],\n    "headerText": [r, g, b],\n    "footerText": [r, g, b],\n    "divider": [r, g, b]\n  },\n  "spacing": {\n    "marginLeftMm": 25,\n    "marginRightMm": 25,\n    "marginTopMm": 25,\n    "marginBottomMm": 20,\n    "lineHeight": 1.15,\n    "paragraphSpacingPt": 8,\n    "headingSpacingPt": 12\n  },\n  "pageLayout": {\n    "orientation": "portrait",\n    "paperSize": "A4"\n  },\n  "headerFooter": {\n    "hasHeader": true,\n    "hasFooter": true,\n    "headerContent": "description of header content",\n    "footerContent": "description of footer content"\n  },\n  "styleNames": {\n    "heading1": "style name from styles.xml",\n    "heading2": "style name from styles.xml",\n    "heading3": "style name from styles.xml",\n    "normal": "style name from styles.xml",\n    "code": "style name if exists or null"\n  },\n  "logo": {\n    "placement": "header",\n    "alignment": "right",\n    "widthMm": 40,\n    "heightMm": 15\n  },\n  "designNotes": "brief description of the overall design aesthetic"\n}';
+      // Extract structured design metadata (fonts, theme colors, header/footer content, backgrounds)
+      // and prepend it to the prompt so the AI gets clear, pre-parsed style information in addition
+      // to the raw XML.
+      var designMeta = {};
+      try {
+        designMeta = await extractDocxDesignMetadata(zip);
+        debugLog('[TEMPLATE] Design metadata extracted: ' + designMeta.fonts.length + ' font entries, ' +
+          Object.keys(designMeta.themeColors).length + ' theme colors, ' +
+          designMeta.headers.length + ' headers, ' + designMeta.footers.length + ' footers', 'info');
+      } catch(metaErr) {
+        debugLog('[TEMPLATE] Could not extract design metadata: ' + metaErr.message, 'warn');
+      }
+      var metadataBlock = buildDesignMetadataBlock(designMeta, logoDataUrl, logoSource || 'template');
+
+      var analysisPrompt = 'Analyze this Microsoft Word template and extract ALL styling properties into a structured JSON object. I need a complete style profile that captures the document\'s visual design.\n\n' + logoPromptSection + '\n\nThe following structured metadata has been pre-extracted from the template\'s XML parts to help you produce accurate values — use this as your primary source of truth for fonts, colors, headers, footers, and backgrounds:\n\n' + metadataBlock + '\n\nHere are the raw template XML files for additional context:\n' + xmlContent + '\n\nReturn ONLY a valid JSON object (no markdown, no code fences, no explanation) with this exact structure:\n{\n  "templateName": "descriptive name based on the template design",\n  "fonts": {\n    "heading": "font name",\n    "body": "font name",\n    "code": "monospace font name or Courier New"\n  },\n  "fontSizes": {\n    "h1": 24,\n    "h2": 18,\n    "h3": 14,\n    "body": 11,\n    "small": 9\n  },\n  "colors": {\n    "heading": [r, g, b],\n    "body": [r, g, b],\n    "background": [255, 255, 255],\n    "userMsgBg": [r, g, b],\n    "assistantMsgBg": [r, g, b],\n    "codeBg": [r, g, b],\n    "codeText": [r, g, b],\n    "tableBorder": [r, g, b],\n    "tableHeaderBg": [r, g, b],\n    "tableHeaderText": [r, g, b],\n    "accent": [r, g, b],\n    "linkColor": [r, g, b],\n    "headerText": [r, g, b],\n    "footerText": [r, g, b],\n    "divider": [r, g, b]\n  },\n  "spacing": {\n    "marginLeftMm": 25,\n    "marginRightMm": 25,\n    "marginTopMm": 25,\n    "marginBottomMm": 20,\n    "lineHeight": 1.15,\n    "paragraphSpacingPt": 8,\n    "headingSpacingPt": 12\n  },\n  "pageLayout": {\n    "orientation": "portrait",\n    "paperSize": "A4"\n  },\n  "headerFooter": {\n    "hasHeader": true,\n    "hasFooter": true,\n    "headerContent": "description of header content",\n    "footerContent": "description of footer content"\n  },\n  "styleNames": {\n    "heading1": "style name from styles.xml",\n    "heading2": "style name from styles.xml",\n    "heading3": "style name from styles.xml",\n    "normal": "style name from styles.xml",\n    "code": "style name if exists or null"\n  },\n  "logo": {\n    "placement": "header",\n    "alignment": "right",\n    "widthMm": 40,\n    "heightMm": 15\n  },\n  "designNotes": "brief description of the overall design aesthetic"\n}';
       // NOTE: "logo" values above are examples — AI should fill in accurate values or set "logo" to null
       // "placement" must be one of: "header" (page headers only), "cover" (cover page only), "both" (cover + headers)
       // "alignment" must be one of: "left", "right", "center"
@@ -5985,7 +6253,7 @@
 
           try {
             // Pass the extracted logo (if any) to the AI so it can provide placement instructions
-            var aiProfile = await analyzeWordTemplateWithAI(zip, logoDataUrl || null);
+            var aiProfile = await analyzeWordTemplateWithAI(zip, logoDataUrl || null, logoSource);
 
             // Store the AI profile
             db.aiTemplateProfile = aiProfile;
