@@ -922,6 +922,13 @@
       </div>
       <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="openPdfThemeEditor()">🎨 PDF Theme</button>
+        <button class="sidebar-btn" onclick="document.getElementById('work-template-file').click()">📋 Import Template</button>
+      </div>
+      <div id="template-status-row" class="sidebar-actions" style="display:none">
+        <span id="template-status-label" role="status" aria-live="polite" style="font-size:0.75rem;color:#16a34a;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📋 Template: Active</span>
+        <button class="sidebar-btn" style="padding:2px 6px;font-size:0.72rem" onclick="clearWorkTemplate()" aria-label="Clear active work template">✕ Clear</button>
+      </div>
+      <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="toggleDebugConsole()">🐛 Debug</button>
       </div>
       <div class="sidebar-actions">
@@ -1087,6 +1094,7 @@
   <input type="file" id="image-upload-file" accept="image/*" style="display:none" onchange="handleImageUpload(event)" />
   <input type="file" id="theme-import-file" accept=".json" style="display:none" onchange="handleThemeImport(event)" />
   <input type="file" id="word-template-file" accept=".docx,.dotx" style="display:none" onchange="handleWordTemplateImport(event)" />
+  <input type="file" id="work-template-file" accept=".docx,.pdf,.xlsx,.png,.jpg,.jpeg" style="display:none" onchange="handleWorkTemplateImport(event)" />
   <input type="file" id="ui-theme-import-file" accept=".json" style="display:none" onchange="handleUIThemeImport(event)" />
   <input type="file" id="logo-upload-file" accept="image/*" style="display:none" onchange="handleLogoUpload(event)" aria-label="Upload logo image" />
 
@@ -1189,6 +1197,7 @@
       summary: "", summaryTitle: "Document Summary",
       summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" },
       pdfTheme: "professional", customPdfTheme: null,
+      templateStyle: null,
       maxDocChars: DEFAULT_MAX_DOC_CHARS,
       extractDocImages: false,
       autosaveEnabled: true,
@@ -1749,6 +1758,7 @@
           if (!db.pdfTheme) db.pdfTheme = "professional";
           if (db.customPdfTheme === undefined) db.customPdfTheme = null;
           if (db.aiTemplateProfile === undefined) db.aiTemplateProfile = null;
+          if (db.templateStyle === undefined) db.templateStyle = null;
           if (db.activeProvider) activeProvider = db.activeProvider;
           if (!db.maxDocChars) db.maxDocChars = DEFAULT_MAX_DOC_CHARS;
           if (db.extractDocImages === undefined) db.extractDocImages = false;
@@ -2281,7 +2291,93 @@
         .replace(/<[^>]+>/g, "");
     }
 
+    function templateStyleToPdfTheme(ts) {
+      function h2r(hex, fallback) {
+        if (!hex) return fallback;
+        hex = hex.replace('#', '');
+        if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+        if (hex.length !== 6) return fallback;
+        return [parseInt(hex.slice(0,2),16), parseInt(hex.slice(2,4),16), parseInt(hex.slice(4,6),16)];
+      }
+      var fonts = ts.fonts || {};
+      var colors = ts.colors || {};
+      var margins = ts.margins || {};
+      var spacing = ts.spacing || {};
+      var h1 = fonts.heading1 || {}, h2f = fonts.heading2 || {}, h3f = fonts.heading3 || {};
+      var bodyF = fonts.body || {}, captionF = fonts.caption || {};
+      var headingFamily = h1.family || bodyF.family || "helvetica";
+      var bodyFamily = bodyF.family || "helvetica";
+      var primaryColor = h2r(colors.primary, [9, 105, 218]);
+      var headingColor = h2r(h1.color, h2r(colors.primary, [31, 35, 40]));
+      var bodyColor = h2r(bodyF.color, [31, 35, 40]);
+      var accentColor = h2r(colors.accent, [45, 164, 78]);
+      var bgColor = h2r(colors.background, [255, 255, 255]);
+      var tableBorderColor = h2r(colors.tableBorder, [208, 215, 222]);
+      var tableHeaderBgColor = h2r(colors.tableHeaderBg, [246, 248, 250]);
+      return {
+        name: (ts.branding && ts.branding.companyName) || "AI Template",
+        fonts: { heading: headingFamily, body: bodyFamily, code: "courier", mono: "courier" },
+        sizes: {
+          title: (h1.size || 18) + 6,
+          h1: h1.size || 18,
+          h2: h2f.size || 14,
+          h3: h3f.size || 12,
+          body: bodyF.size || 10,
+          small: captionF.size || 8,
+          footer: captionF.size || 8
+        },
+        colors: {
+          primary: primaryColor,
+          secondary: h2r(colors.secondary, [87, 96, 106]),
+          accent: accentColor,
+          title: headingColor,
+          heading: headingColor,
+          body: bodyColor,
+          muted: [139, 148, 158],
+          userLabel: primaryColor,
+          assistantLabel: accentColor,
+          userBg: [239, 246, 255],
+          assistantBg: bgColor,
+          codeBg: [246, 248, 250],
+          codeText: [31, 35, 40],
+          tableBorder: tableBorderColor,
+          tableHeaderBg: tableHeaderBgColor,
+          tableHeaderText: bodyColor,
+          headerLine: primaryColor,
+          coverBg: bgColor,
+          pageBg: bgColor,
+          tocDots: tableBorderColor,
+          sectionDivider: tableBorderColor,
+          notesBg: [250, 250, 250]
+        },
+        spacing: {
+          marginLeft: margins.left || 20,
+          marginRight: margins.right || 20,
+          marginTop: margins.top || 25,
+          marginBottom: margins.bottom || 20,
+          lineHeight: bodyF.lineHeight || 1.35,
+          paragraphGap: spacing.paragraphSpacing || 3,
+          sectionGap: spacing.sectionSpacing || 8,
+          headerHeight: (ts.header && ts.header.height) || 10
+        },
+        decorations: {
+          coverStyle: "modern",
+          showHeaderLine: true,
+          showFooterLine: true,
+          showSectionDividers: true,
+          tocStyle: "dotted",
+          userMsgPrefix: "Q:",
+          assistantMsgPrefix: "A:",
+          showExchangeNumbers: true,
+          showTimestamp: false,
+          coverAccentBar: true,
+          accentBarColor: primaryColor
+        }
+      };
+    }
+
     function getActivePdfTheme() {
+      if (db.templateStyle) return templateStyleToPdfTheme(db.templateStyle);
       if ((db.pdfTheme === "custom" || db.pdfTheme === "word-import") && db.customPdfTheme) return db.customPdfTheme;
       return PDF_THEMES[db.pdfTheme] || PDF_THEMES["professional"];
     }
@@ -5149,6 +5245,207 @@
 
     var storedWordTemplateBase64 = null;
 
+    async function analyzeWorkTemplate(fileContent, fileType) {
+      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
+      if (!activeToken) {
+        throw new Error('No API token configured for ' + activeProvider + '. Save your token first.');
+      }
+      var imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+      var isImage = imageExts.indexOf((fileType || '').toLowerCase()) !== -1;
+      var systemMsg = "You are a document template analysis expert. Extract all formatting and styling properties from the provided document template. Return ONLY a valid JSON object with no markdown fences and no explanation.";
+      var analysisPrompt = 'Analyze this document template and extract ALL formatting/styling properties. Return ONLY a JSON object with this structure:\n{\n  "fonts": {\n    "heading1": { "family": "...", "size": 18, "weight": "bold", "color": "#..." },\n    "heading2": { "family": "...", "size": 15, "weight": "bold", "color": "#..." },\n    "heading3": { "family": "...", "size": 13, "weight": "bold", "color": "#..." },\n    "body": { "family": "...", "size": 11, "weight": "normal", "color": "#...", "lineHeight": 1.6 },\n    "caption": { "family": "...", "size": 9, "weight": "normal", "color": "#..." }\n  },\n  "colors": {\n    "primary": "#...",\n    "secondary": "#...",\n    "accent": "#...",\n    "background": "#...",\n    "headerBg": "#...",\n    "footerBg": "#...",\n    "tableBorder": "#...",\n    "tableHeaderBg": "#...",\n    "tableAltRowBg": "#..."\n  },\n  "margins": { "top": 25, "bottom": 20, "left": 20, "right": 20 },\n  "header": {\n    "enabled": true,\n    "text": "...",\n    "fontSize": 9,\n    "color": "#...",\n    "backgroundColor": "#...",\n    "logoPosition": "left",\n    "height": 15,\n    "borderBottom": true\n  },\n  "footer": {\n    "enabled": true,\n    "text": "...",\n    "fontSize": 8,\n    "color": "#...",\n    "backgroundColor": "#...",\n    "pageNumbers": true,\n    "borderTop": true\n  },\n  "layout": {\n    "pageSize": "a4",\n    "orientation": "portrait",\n    "columns": 1\n  },\n  "spacing": {\n    "paragraphSpacing": 6,\n    "sectionSpacing": 12,\n    "listIndent": 10\n  },\n  "branding": {\n    "companyName": "...",\n    "tagline": "...",\n    "logoDescription": "..."\n  }\n}';
+
+      var responseText = '';
+      var visionProviders = ['openai', 'github'];
+
+      if (activeProvider === "anthropic") {
+        var anthropicContent;
+        if (isImage) {
+          var base64Data = fileContent.indexOf(',') !== -1 ? fileContent.split(',')[1] : fileContent;
+          var mimeType = fileContent.startsWith('data:') ? fileContent.split(';')[0].slice(5) : 'image/png';
+          anthropicContent = [
+            { type: "image", source: { type: "base64", media_type: mimeType, data: base64Data } },
+            { type: "text", text: analysisPrompt }
+          ];
+        } else {
+          anthropicContent = analysisPrompt + "\n\nDocument content:\n" + fileContent;
+        }
+        var r = await fetch(ANTHROPIC_DIRECT_URL, {
+          method: "POST",
+          headers: { "x-api-key": anthropicToken, "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+          body: JSON.stringify({ model: selectedModel, max_tokens: 4096, system: systemMsg, messages: [{ role: "user", content: anthropicContent }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error('Anthropic API error ' + r.status + ': ' + et); }
+        var d = await r.json();
+        responseText = (d.content && d.content[0] && d.content[0].text) || '';
+      } else if (activeProvider === "watsonx") {
+        var bearerToken = await getWatsonxBearerToken();
+        var r = await fetch(WATSONX_CHAT_URL, {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ model_id: selectedModel, project_id: watsonxProjectId, max_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: analysisPrompt + "\n\nDocument content:\n" + fileContent }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error('watsonx API error ' + r.status + ': ' + et); }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+      } else {
+        var userContent;
+        if (isImage && visionProviders.indexOf(activeProvider) !== -1) {
+          userContent = [{ type: "text", text: analysisPrompt }, { type: "image_url", image_url: { url: fileContent } }];
+        } else {
+          userContent = analysisPrompt + "\n\nDocument content:\n" + fileContent;
+        }
+        var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
+        var authToken = activeProvider === "openai" ? openaiToken : token;
+        var r = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: selectedModel, max_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userContent }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error('API error ' + r.status + ': ' + et); }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+      }
+
+      if (!responseText) throw new Error('AI returned empty response');
+      responseText = responseText.trim();
+      if (responseText.startsWith('```')) {
+        responseText = responseText.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      }
+      debugLog('[TEMPLATE] AI response received (' + responseText.length + ' chars), parsing JSON...', 'info');
+      return JSON.parse(responseText);
+    }
+
+    async function handleWorkTemplateImport(event) {
+      var file = event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+
+      var MAX_STYLES_XML_LENGTH = 6000;
+      var MAX_DOCUMENT_XML_LENGTH = 4000;
+      var MAX_SHEET_CONTENT_LENGTH = 3000;
+      var MAX_TEMPLATE_CONTENT_LENGTH = 20000;
+
+      var filename = file.name;
+      var ext = filename.split('.').pop().toLowerCase();
+      var imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+      var isImage = imageExts.indexOf(ext) !== -1;
+      debugLog('[TEMPLATE] Work template import started: ' + filename + ' (' + ext + ')', 'info');
+
+      var notification = document.createElement('div');
+      notification.id = 'work-template-notification';
+      notification.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#4f46e5;color:white;padding:12px 24px;border-radius:8px;z-index:9999;font-size:14px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,0.3);display:flex;align-items:center;gap:8px;max-width:90vw;';
+      var spinStyle = document.createElement('style');
+      spinStyle.textContent = '@keyframes wtSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
+      notification.appendChild(spinStyle);
+      notification.innerHTML += '<span style="animation:wtSpin 1s linear infinite;display:inline-block">🔍</span> Analyzing template with AI (' + selectedModel + ')...';
+      document.body.appendChild(notification);
+
+      function removeNotification() { if (notification.parentNode) notification.parentNode.removeChild(notification); }
+
+      try {
+        var fileContent = '';
+
+        if (isImage) {
+          fileContent = await new Promise(function(resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function(e) { resolve(e.target.result); };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+        } else if (ext === 'docx' || ext === 'dotx') {
+          var buffer = await file.arrayBuffer();
+          try {
+            var result = await mammoth.extractRawText({ arrayBuffer: buffer });
+            fileContent = result.value;
+            debugLog('[TEMPLATE] Extracted DOCX text: ' + fileContent.length + ' chars', 'info');
+          } catch(e) {
+            debugLog('[TEMPLATE] mammoth failed, trying JSZip: ' + e.message, 'warn');
+            if (window.JSZip) {
+              var zip = await JSZip.loadAsync(buffer);
+              var stylesFile = zip.file('word/styles.xml');
+              var docFile = zip.file('word/document.xml');
+              var parts = [];
+              if (stylesFile) parts.push('=== styles.xml ===\n' + (await stylesFile.async('string')).substring(0, MAX_STYLES_XML_LENGTH));
+              if (docFile) parts.push('=== document.xml ===\n' + (await docFile.async('string')).substring(0, MAX_DOCUMENT_XML_LENGTH));
+              fileContent = parts.join('\n');
+            } else {
+              throw e;
+            }
+          }
+        } else if (ext === 'pdf') {
+          if (!window.pdfjsLib) throw new Error('PDF.js library is not loaded. Please refresh and try again.');
+          var buffer = await file.arrayBuffer();
+          var pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+          var pageTexts = [];
+          var maxPages = Math.min(pdfDoc.numPages, 5);
+          for (var p = 1; p <= maxPages; p++) {
+            var page = await pdfDoc.getPage(p);
+            var textContent = await page.getTextContent();
+            pageTexts.push(textContent.items.map(function(item) { return item.str; }).join(' '));
+          }
+          fileContent = pageTexts.join('\n');
+          debugLog('[TEMPLATE] Extracted PDF text: ' + fileContent.length + ' chars from ' + maxPages + ' page(s)', 'info');
+        } else if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') {
+          var buffer = await file.arrayBuffer();
+          var workbook = XLSX.read(buffer, { type: 'array' });
+          var parts = [];
+          workbook.SheetNames.forEach(function(name) {
+            var csv = XLSX.utils.sheet_to_csv(workbook.Sheets[name]);
+            parts.push('Sheet: ' + name + '\n' + csv.substring(0, MAX_SHEET_CONTENT_LENGTH));
+          });
+          fileContent = parts.join('\n');
+          debugLog('[TEMPLATE] Extracted XLSX content: ' + fileContent.length + ' chars', 'info');
+        } else {
+          throw new Error('Unsupported file type: ' + ext);
+        }
+
+        if (!fileContent || (!isImage && fileContent.trim().length === 0)) {
+          throw new Error('Could not extract any content from this file.');
+        }
+
+        if (!isImage && fileContent.length > MAX_TEMPLATE_CONTENT_LENGTH) {
+          fileContent = fileContent.substring(0, MAX_TEMPLATE_CONTENT_LENGTH) + '\n... [truncated]';
+        }
+
+        debugLog('[TEMPLATE] Sending content to AI for analysis (provider: ' + activeProvider + ', model: ' + selectedModel + ')...', 'info');
+        var templateStyle = await analyzeWorkTemplate(fileContent, ext);
+
+        db.templateStyle = templateStyle;
+        saveDB();
+        renderSidebar();
+
+        notification.style.background = '#16a34a';
+        notification.innerHTML = '✅ Template analyzed: "' + ((templateStyle.branding && templateStyle.branding.companyName) || filename) + '"';
+        debugLog('[TEMPLATE] ✅ templateStyle stored. Company: ' + (templateStyle.branding && templateStyle.branding.companyName), 'info');
+
+        setTimeout(removeNotification, 4000);
+
+        var summary = '✅ Work template analyzed and applied!\n\n';
+        summary += '• File: ' + filename + '\n';
+        if (templateStyle.branding && templateStyle.branding.companyName) summary += '• Company: ' + templateStyle.branding.companyName + '\n';
+        if (templateStyle.fonts && templateStyle.fonts.body) summary += '• Body font: ' + (templateStyle.fonts.body.family || 'default') + ' ' + (templateStyle.fonts.body.size || '') + 'pt\n';
+        if (templateStyle.colors && templateStyle.colors.primary) summary += '• Primary color: ' + templateStyle.colors.primary + '\n';
+        summary += '\nThis styling will be used for all PDF and Word exports.';
+        alert(summary);
+
+      } catch(err) {
+        debugLog('[TEMPLATE] ❌ Work template import failed: ' + err.message, 'error');
+        notification.style.background = '#dc2626';
+        notification.innerHTML = '❌ Template analysis failed: ' + err.message;
+        setTimeout(removeNotification, 5000);
+        alert('❌ Failed to analyze template: ' + err.message);
+      }
+    }
+
+    function clearWorkTemplate() {
+      if (!db.templateStyle) return;
+      db.templateStyle = null;
+      saveDB();
+      renderSidebar();
+      debugLog('[TEMPLATE] Template style cleared — reverting to pdfTheme', 'info');
+    }
+
     function rgbArrayToHex(rgb) {
       if (!Array.isArray(rgb) || rgb.length !== 3) return "1F2328";
       return rgb.map(function(c) { return Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, '0'); }).join('').toUpperCase();
@@ -6095,6 +6392,18 @@
       document.getElementById("summary-tab").className = (db.activeView === "summary" || !db.activeJobId) ? "active" : "";
       document.getElementById("summary-tab-name").textContent = db.summaryTitle;
       var list = document.getElementById("job-list"); list.innerHTML = "";
+      // Update template status indicator
+      var statusRow = document.getElementById("template-status-row");
+      var statusLabel = document.getElementById("template-status-label");
+      if (statusRow && statusLabel) {
+        if (db.templateStyle) {
+          statusRow.style.display = "";
+          var name = (db.templateStyle.branding && db.templateStyle.branding.companyName) || "Active";
+          statusLabel.textContent = "📋 Template: " + name;
+        } else {
+          statusRow.style.display = "none";
+        }
+      }
       db.jobs.forEach(function(job) {
         var mc = Math.floor((job.messages.length - 1) / 2);
         var tab = document.createElement("div");
