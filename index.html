@@ -2347,6 +2347,9 @@
         var now = new Date();
         var dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
         var dateFileStr = now.toISOString().slice(0, 10);
+
+        function makeRun(text, opts) {
+          opts = opts || {};
           var rPr = "";
           if (opts.font) rPr += '<w:rFonts w:ascii="' + escapeXml(opts.font) + '" w:hAnsi="' + escapeXml(opts.font) + '"/>';
           if (opts.bold) rPr += "<w:b/>";
