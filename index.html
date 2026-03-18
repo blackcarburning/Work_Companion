@@ -7088,6 +7088,70 @@
       };
     }
 
+    function enterManualContentEditMode(jobId, convIdx, editBtnEl, mcContentDiv) {
+      var job = getJob(jobId); if (!job) return;
+      var actualIndex = convIdx + 1;
+      var msg = job.messages[actualIndex]; if (!msg) return;
+
+      // Extract header prefix and raw content
+      var originalFull = msg.content;
+      var headerPrefix = "";
+      var headerEnd = originalFull.indexOf(":\n\n");
+      var rawContent = originalFull;
+      if (headerEnd !== -1) {
+        headerPrefix = originalFull.substring(0, headerEnd + 3);
+        rawContent = originalFull.substring(headerEnd + 3);
+      }
+
+      // Replace content display with a textarea
+      var ta = document.createElement("textarea");
+      ta.value = rawContent;
+      ta.style.width = "100%";
+      ta.style.minHeight = "120px";
+      ta.style.fontFamily = "inherit";
+      ta.style.fontSize = "inherit";
+      ta.style.border = "2px solid #0969da";
+      ta.style.borderRadius = "6px";
+      ta.style.padding = "0.5rem";
+      ta.style.boxSizing = "border-box";
+      ta.style.resize = "vertical";
+      mcContentDiv.parentNode.insertBefore(ta, mcContentDiv);
+      mcContentDiv.style.display = "none";
+
+      editBtnEl.disabled = true;
+
+      var saveBtn = document.createElement("button");
+      saveBtn.className = "msg-save-btn"; saveBtn.textContent = "💾 Save";
+
+      var cancelBtn = document.createElement("button");
+      cancelBtn.className = "msg-cancel-btn"; cancelBtn.textContent = "❌ Cancel";
+
+      var btnRow = document.createElement("div"); btnRow.className = "msg-edit-btns";
+      btnRow.appendChild(saveBtn); btnRow.appendChild(cancelBtn);
+      ta.parentNode.insertBefore(btnRow, ta.nextSibling);
+
+      ta.focus();
+
+      function exitEditMode() {
+        if (ta.parentNode) ta.parentNode.removeChild(ta);
+        if (btnRow.parentNode) btnRow.parentNode.removeChild(btnRow);
+        mcContentDiv.style.display = "";
+        editBtnEl.disabled = false;
+      }
+
+      saveBtn.onclick = function() {
+        var newText = ta.value;
+        msg.content = headerPrefix + newText;
+        saveDB();
+        exitEditMode();
+        mcContentDiv.textContent = newText;
+      };
+
+      cancelBtn.onclick = function() {
+        exitEditMode();
+      };
+    }
+
     function toggleLock(jobId, convIdx) {
       var job = getJob(jobId); if (!job) return;
       var actualIndex = convIdx + 1;
@@ -7302,7 +7366,11 @@
             sb.onclick = function() { openSummariseModal(jId, mIdx, sb); };
           })(db.activeJobId, actualIndex, mcSumBtn);
           body.appendChild(mcSumBtn);
-          if (editBtnRef) { editBtnRef.disabled = true; editBtnRef.title = "Manual content messages cannot be edited"; }
+          if (editBtnRef) {
+            (function(i, eb, mcd) {
+              eb.onclick = function() { enterManualContentEditMode(db.activeJobId, i, eb, mcd); };
+            })(idx, editBtnRef, mcContentDiv);
+          }
         } else if (msg && msg.isImage) {
           msgDiv.classList.add("message-image");
           var imgIndicator = document.createElement("div");
