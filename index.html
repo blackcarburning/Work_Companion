@@ -1064,7 +1064,7 @@
         <button onclick="saveToken()">Save</button>
         <span id="token-status"></span>
       </div>
-      <div id="watsonx-token-hint">ℹ️ Generate token via CLI: curl -X POST "https://iam.cloud.ibm.com/identity/token" -H "Content-Type: application/x-www-form-urlencoded" -d "grant_type=urn:ibm:params:oauth:grant-type:apikey&amp;apikey=YOUR_IBM_CLOUD_API_KEY" &mdash; copy the <code>access_token</code> value (~1 hr validity)</div>
+      <div id="watsonx-token-hint">ℹ️ Calls are routed through the local proxy at <code>http://localhost:3001</code>. Make sure the proxy is running before sending messages.<br>Generate token via CLI: curl -X POST "https://iam.cloud.ibm.com/identity/token" -H "Content-Type: application/x-www-form-urlencoded" -d "grant_type=urn:ibm:params:oauth:grant-type:apikey&amp;apikey=YOUR_IBM_CLOUD_API_KEY" &mdash; copy the <code>access_token</code> value (~1 hr validity)</div>
       <div id="watsonx-project-section" style="display:none">
         <label for="watsonxProjectInput">Project ID:</label>
         <input type="text" id="watsonxProjectInput" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="width:230px" />
@@ -1161,6 +1161,7 @@
     var OPENAI_DIRECT_URL = "https://api.openai.com/v1/chat/completions";
     var ANTHROPIC_DIRECT_URL = "https://api.anthropic.com/v1/messages";
     var WATSONX_CHAT_URL = "https://us-south.ml.cloud.ibm.com/ml/v1/text/chat?version=2024-10-08";
+    var WATSONX_PROXY_URL = "http://localhost:3001";
     var selectedModel = "openai/gpt-4.1";
     var token = "";
     var openaiToken = "";
@@ -5366,9 +5367,9 @@
         responseText = (d.content && d.content[0] && d.content[0].text) || '';
       } else if (activeProvider === "watsonx") {
         var bearerToken = await getWatsonxBearerToken();
-        var r = await fetch(WATSONX_CHAT_URL, {
+        var r = await fetch(WATSONX_PROXY_URL, {
           method: "POST",
-          headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json" },
+          headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json", "X-Target-URL": WATSONX_CHAT_URL },
           body: JSON.stringify({ model_id: selectedModel, project_id: watsonxProjectId, max_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: analysisPrompt + "\n\nDocument content:\n" + fileContent }] })
         });
         if (!r.ok) { var et = await r.text(); throw new Error('watsonx API error ' + r.status + ': ' + et); }
@@ -6060,12 +6061,13 @@
         responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
       } else if (activeProvider === "watsonx") {
         var bearerToken = await getWatsonxBearerToken();
-        var r = await fetch(WATSONX_CHAT_URL, {
+        var r = await fetch(WATSONX_PROXY_URL, {
           method: "POST",
           headers: {
             "Authorization": "Bearer " + bearerToken,
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "X-Target-URL": WATSONX_CHAT_URL
           },
           body: JSON.stringify({
             model_id: selectedModel,
@@ -7644,9 +7646,9 @@
             debugLog('[API] Still waiting for watsonx response... ' + elapsed + 's', 'warn');
           }, 10000);
           try {
-            r = await fetchWithRetry(WATSONX_CHAT_URL, {
+            r = await fetchWithRetry(WATSONX_PROXY_URL, {
               method: "POST",
-              headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json" },
+              headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json", "X-Target-URL": WATSONX_CHAT_URL },
               body: watsonxBody
             }, "IBM watsonx.ai");
           } finally { clearInterval(waitingLogInterval); }
@@ -7805,9 +7807,9 @@
             ],
             max_tokens: 4096
           });
-          r = await fetchWithRetry(WATSONX_CHAT_URL, {
+          r = await fetchWithRetry(WATSONX_PROXY_URL, {
             method: "POST",
-            headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json" },
+            headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json", "X-Target-URL": WATSONX_CHAT_URL },
             body: watsonxBody
           }, "IBM watsonx.ai");
           if (!r.ok) { var et = await r.text(); throw new Error("API error " + r.status + ": " + et); }
