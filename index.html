@@ -8359,6 +8359,15 @@
     }
 
     // ===== MANUAL CONTENT =====
+    function _stopActiveMic() {
+      if (_micRecognition && _micActiveBtn) {
+        _micRecognition.stop();
+        _micActiveBtn.classList.remove('recording');
+        _micActiveBtn.textContent = '🎤';
+        _micRecognition = null;
+        _micActiveBtn = null;
+      }
+    }
     function openManualContentModal() {
       if (!db.activeJobId) { alert("Please select or create a job first."); return; }
       _mcQACount = 0;
@@ -8386,6 +8395,8 @@
       titleInput.focus();
       document.getElementById("mc-type").onchange = function() {
         var type = this.value;
+        // Stop any active mic recording before swapping the content area
+        _stopActiveMic();
         var area = document.getElementById("mc-content-area");
         if (type === "Voice Dictation") {
           area.innerHTML =
@@ -8407,7 +8418,11 @@
             '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem" placeholder="Paste your content here..."></textarea>';
         }
       };
-      document.getElementById("mc-cancel").onclick = function() { document.body.removeChild(ov); };
+      document.getElementById("mc-cancel").onclick = function() {
+        // Stop any active mic recording before closing the modal
+        _stopActiveMic();
+        document.body.removeChild(ov);
+      };
       document.getElementById("mc-ok").onclick = function() {
         var title = titleInput.value.trim() || "Untitled";
         var type = document.getElementById("mc-type").value;
