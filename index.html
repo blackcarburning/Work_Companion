@@ -8280,6 +8280,7 @@
     // ===== MANUAL CONTENT =====
     function openManualContentModal() {
       if (!db.activeJobId) { alert("Please select or create a job first."); return; }
+      _mcQACount = 0;
       var ov = document.createElement("div");
       ov.className = "modal-overlay manual-content-modal";
       ov.innerHTML =
@@ -8291,23 +8292,101 @@
         '<select id="mc-type" style="width:100%;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.95rem;margin-bottom:0.75rem;font-family:inherit;box-sizing:border-box">' +
         '<option>Command Output</option><option>Log Output</option><option>Code</option>' +
         '<option>Error Message</option><option>Plain Text</option><option>Other</option>' +
+        '<option>Voice Dictation</option><option>Add Conversation</option>' +
         '</select>' +
+        '<div id="mc-content-area">' +
         '<label for="mc-content">Content</label>' +
         '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem" placeholder="Paste your content here..."></textarea>' +
+        '</div>' +
         '<div class="modal-btns"><button class="cancel" id="mc-cancel">Cancel</button><button class="confirm" id="mc-ok">Add Content</button></div>' +
         '</div>';
       document.body.appendChild(ov);
       var titleInput = document.getElementById("mc-title");
       titleInput.focus();
+      document.getElementById("mc-type").onchange = function() {
+        var type = this.value;
+        var area = document.getElementById("mc-content-area");
+        if (type === "Voice Dictation") {
+          area.innerHTML =
+            '<label>Dictated Content</label>' +
+            '<div style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:1rem">' +
+            '<textarea id="mc-content" style="flex:1;height:200px;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="Dictated text will appear here, or type directly..."></textarea>' +
+            '<button class="mic-btn" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:0.4rem 0.6rem;font-size:1.1rem;align-self:flex-start;margin-top:0" onclick="toggleMic(this,\'mc-content\')">🎤</button>' +
+            '</div>';
+        } else if (type === "Add Conversation") {
+          if (!titleInput.value.trim()) titleInput.value = "Interview";
+          _mcQACount = 0;
+          area.innerHTML =
+            '<div id="mc-qa-container" style="max-height:360px;overflow-y:auto;margin-bottom:0.5rem"></div>' +
+            '<button type="button" onclick="mcAddQAPair()" style="margin-bottom:1rem;background:#f1f5f9;border:1px solid #d0d7de;border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit">+ Add Question</button>';
+          mcAddQAPair();
+        } else {
+          area.innerHTML =
+            '<label for="mc-content">Content</label>' +
+            '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem" placeholder="Paste your content here..."></textarea>';
+        }
+      };
       document.getElementById("mc-cancel").onclick = function() { document.body.removeChild(ov); };
       document.getElementById("mc-ok").onclick = function() {
         var title = titleInput.value.trim() || "Untitled";
         var type = document.getElementById("mc-type").value;
-        var content = document.getElementById("mc-content").value;
-        if (!content.trim()) { alert("Please paste some content."); return; }
+        var content;
+        if (type === "Add Conversation") {
+          content = mcCollectConversation();
+          if (!content.trim()) { alert("Please enter at least one question or answer."); return; }
+        } else {
+          var el = document.getElementById("mc-content");
+          content = el ? el.value : "";
+          if (!content.trim()) { alert("Please enter some content."); return; }
+        }
         document.body.removeChild(ov);
         handleManualContent(title, type, content);
       };
+    }
+
+    function mcAddQAPair() {
+      _mcQACount++;
+      var n = _mcQACount;
+      var container = document.getElementById("mc-qa-container");
+      if (!container) return;
+      var pair = document.createElement("div");
+      pair.id = "mc-qa-pair-" + n;
+      pair.style.cssText = "margin-bottom:0.75rem;border:1px solid #e5e7eb;border-radius:8px;padding:0.75rem;background:#f9fafb";
+      pair.innerHTML =
+        '<div style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:0.5rem">' +
+        '<div style="flex:1">' +
+        '<label style="font-weight:600;font-size:0.85rem;margin-bottom:0.25rem;display:block">Q' + n + ' — Question</label>' +
+        '<textarea id="mc-q-' + n + '" style="width:100%;height:72px;padding:0.4rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="Enter question..."></textarea>' +
+        '</div>' +
+        '<button class="mic-btn" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;align-self:flex-end;margin-bottom:0" onclick="toggleMic(this,\'mc-q-' + n + '\')">🎤</button>' +
+        '</div>' +
+        '<div style="display:flex;align-items:flex-start;gap:0.5rem">' +
+        '<div style="flex:1">' +
+        '<label style="font-weight:600;font-size:0.85rem;margin-bottom:0.25rem;display:block">A' + n + ' — Answer</label>' +
+        '<textarea id="mc-a-' + n + '" style="width:100%;height:72px;padding:0.4rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="Enter answer..."></textarea>' +
+        '</div>' +
+        '<button class="mic-btn" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;align-self:flex-end;margin-bottom:0" onclick="toggleMic(this,\'mc-a-' + n + '\')">🎤</button>' +
+        '</div>';
+      container.appendChild(pair);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function mcCollectConversation() {
+      var lines = [];
+      var n = 1;
+      while (document.getElementById("mc-q-" + n)) {
+        var qEl = document.getElementById("mc-q-" + n);
+        var aEl = document.getElementById("mc-a-" + n);
+        var q = qEl ? qEl.value.trim() : "";
+        var a = aEl ? aEl.value.trim() : "";
+        if (q || a) {
+          if (lines.length > 0) lines.push("");
+          lines.push("Q" + n + ": " + (q || "(no question)"));
+          lines.push("A" + n + ": " + (a || "(no answer)"));
+        }
+        n++;
+      }
+      return lines.join("\n");
     }
 
     function handleManualContent(title, type, content) {
@@ -9060,6 +9139,7 @@
   // ===== VOICE TRANSCRIPTION =====
   var _micRecognition = null;
   var _micActiveBtn = null;
+  var _mcQACount = 0;
 
   function toggleMic(btn, target) {
     // If this button is already recording, stop it
@@ -9162,6 +9242,15 @@
       }
       // Fallback: append to end
       el.textContent += text;
+    } else {
+      // Generic: treat target as an element ID (e.g. modal textareas)
+      var el = document.getElementById(target);
+      if (!el) return;
+      var start = el.selectionStart || 0;
+      var end = el.selectionEnd || 0;
+      el.value = el.value.slice(0, start) + text + el.value.slice(end);
+      el.selectionStart = el.selectionEnd = start + text.length;
+      el.focus();
     }
   }
   </script>
