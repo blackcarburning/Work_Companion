@@ -897,6 +897,73 @@
       0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
       50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
     }
+
+    /* ===== ADHOC SESSION ===== */
+    #adhoc-panel { background: var(--bg-card); }
+    #adhoc-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 1rem;
+      background: var(--bg-app);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #adhoc-title {
+      font-weight: 700;
+      font-size: 1rem;
+      color: var(--text-primary);
+      flex: 1;
+    }
+    .adhoc-tool-btn {
+      padding: 0.3rem 0.75rem;
+      font-size: 0.82rem;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .adhoc-tool-btn:hover { background: var(--sidebar-btn-hover); }
+    .adhoc-close-btn { border-color: #fca5a5; color: #c0202a; background: #fef2f2; }
+    .adhoc-close-btn:hover { background: #fee2e2; }
+    #adhoc-chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem 1.25rem;
+    }
+    #adhoc-input-section {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.65rem 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--bg-app);
+      flex-shrink: 0;
+    }
+    #adhoc-input {
+      flex: 1;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.93rem;
+      background: var(--bg-card);
+      color: var(--text-primary);
+    }
+    #adhoc-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+    #adhoc-send-btn {
+      padding: 0.5rem 1.1rem;
+      border-radius: 8px;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.93rem;
+    }
+    #adhoc-send-btn:hover { opacity: 0.88; }
+    #adhoc-send-btn:disabled, #adhoc-input:disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -927,6 +994,7 @@
     <div id="sidebar-header">
       <h2>💬 Chat Jobs</h2>
       <button class="sidebar-btn" id="new-job-btn" onclick="createNewJob()">+ New Job Section</button>
+      <button class="sidebar-btn" id="adhoc-btn" onclick="openAdhocSession()">💬 Adhoc Session</button>
       <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="exportData()">📤 Export</button>
         <button class="sidebar-btn" onclick="importData()">📥 Import</button>
@@ -1105,6 +1173,19 @@
       <button onclick="hideStorageWarning()">Dismiss</button>
     </div>
     <div id="content-area"></div>
+    <div id="adhoc-panel" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+      <div id="adhoc-toolbar">
+        <span id="adhoc-title">💬 Adhoc Session</span>
+        <button class="adhoc-tool-btn" onclick="copyAdhocConversation()" id="adhoc-copy-btn" title="Copy full conversation to clipboard">📋 Copy Conversation</button>
+        <button class="adhoc-tool-btn adhoc-close-btn" onclick="closeAdhocSession()" title="Close adhoc session">✕ Close</button>
+      </div>
+      <div id="adhoc-chat"></div>
+      <div id="adhoc-input-section">
+        <button class="input-attach-btn mic-btn" id="adhoc-mic-btn" title="Voice input" onclick="toggleMic(this, 'adhoc')">🎤</button>
+        <input type="text" id="adhoc-input" placeholder="Ask anything..." />
+        <button id="adhoc-send-btn" onclick="sendAdhocMessage()">Send</button>
+      </div>
+    </div>
   </div>
 
   <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImport(event)" />
@@ -9139,6 +9220,177 @@
   // ===== VOICE TRANSCRIPTION =====
   var _micRecognition = null;
   var _micActiveBtn = null;
+
+  // ===== ADHOC SESSION =====
+  var _adhocMessages = []; // ephemeral, never persisted
+
+  function openAdhocSession() {
+    _adhocMessages = [];
+    var adhocPanel = document.getElementById('adhoc-panel');
+    var contentArea = document.getElementById('content-area');
+    contentArea.style.display = 'none';
+    adhocPanel.style.display = 'flex';
+    document.getElementById('adhoc-chat').innerHTML = '';
+    document.getElementById('adhoc-input').value = '';
+    document.getElementById('adhoc-input').onkeydown = function(e) { if (e.key === 'Enter') sendAdhocMessage(); };
+    document.getElementById('adhoc-input').focus();
+  }
+
+  function closeAdhocSession() {
+    // Stop any active mic recording in the adhoc panel by reusing toggleMic
+    var adhocMicBtn = document.getElementById('adhoc-mic-btn');
+    if (_micActiveBtn && _micActiveBtn === adhocMicBtn) {
+      toggleMic(adhocMicBtn, 'adhoc');
+    }
+    _adhocMessages = [];
+    document.getElementById('adhoc-panel').style.display = 'none';
+    document.getElementById('content-area').style.display = '';
+  }
+
+  function _adhocAddMessageToDOM(role, content) {
+    var chatDiv = document.getElementById('adhoc-chat');
+    if (!chatDiv) return;
+    var msgDiv = document.createElement('div');
+    msgDiv.className = 'message message-' + role;
+    var label = document.createElement('div');
+    label.className = 'message-label';
+    var lt = document.createElement('span');
+    lt.textContent = role === 'user' ? 'You' : role === 'assistant' ? 'Assistant' : 'Error';
+    label.appendChild(lt);
+    var body = document.createElement('div');
+    if (role === 'assistant') {
+      body.innerHTML = (typeof marked !== 'undefined' ? marked.parse(content) : content.replace(/\n/g, '<br>'));
+    } else {
+      body.style.whiteSpace = 'pre-wrap';
+      body.textContent = content;
+    }
+    msgDiv.appendChild(label);
+    msgDiv.appendChild(body);
+    chatDiv.appendChild(msgDiv);
+    chatDiv.scrollTop = chatDiv.scrollHeight;
+  }
+
+  function _adhocShowTyping() {
+    var chatDiv = document.getElementById('adhoc-chat');
+    if (!chatDiv) return;
+    var m = document.createElement('div');
+    m.className = 'message message-assistant';
+    m.id = 'adhoc-typing-indicator';
+    m.innerHTML = '<div class="message-label"><span>Assistant</span></div><div><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
+    chatDiv.appendChild(m);
+    chatDiv.scrollTop = chatDiv.scrollHeight;
+  }
+
+  function _adhocRemoveTyping() {
+    var e = document.getElementById('adhoc-typing-indicator');
+    if (e) e.remove();
+  }
+
+  function copyAdhocConversation() {
+    if (!_adhocMessages.length) { alert('No messages to copy. Start a conversation first.'); return; }
+    var text = _adhocMessages.map(function(m) {
+      return (m.role === 'user' ? 'You' : 'Assistant') + ':\n' + m.content;
+    }).join('\n\n---\n\n');
+    navigator.clipboard.writeText(text).then(function() {
+      var btn = document.getElementById('adhoc-copy-btn');
+      if (btn) { btn.textContent = '✅ Copied!'; setTimeout(function() { btn.textContent = '📋 Copy Conversation'; }, 2000); }
+    });
+  }
+
+  async function sendAdhocMessage() {
+    var input = document.getElementById('adhoc-input');
+    var ut = input.value.trim();
+    var activeToken = activeProvider === 'github' ? token : (activeProvider === 'openai' ? openaiToken : (activeProvider === 'watsonx' ? watsonxToken : anthropicToken));
+    if (!ut) return;
+    if (!activeToken) {
+      var label = activeProvider === 'github' ? 'GitHub token' : (activeProvider === 'openai' ? 'OpenAI API key' : (activeProvider === 'watsonx' ? 'IBM IAM Bearer Token' : 'Anthropic API key'));
+      alert('Please save your ' + label + ' first.');
+      return;
+    }
+
+    _adhocMessages.push({ role: 'user', content: ut });
+    _adhocAddMessageToDOM('user', ut);
+    input.value = '';
+    input.disabled = true;
+    document.getElementById('adhoc-send-btn').disabled = true;
+    _adhocShowTyping();
+
+    // Build messages array: simple user/assistant turns (no system prompt, no job context)
+    var ctx = _adhocMessages.map(function(m) { return { role: m.role, content: m.content }; });
+
+    try {
+      var r, d, reply;
+
+      if (activeProvider === 'anthropic') {
+        var convMsgs = ctx.filter(function(m) { return m.role === 'user' || m.role === 'assistant'; });
+        var anthropicBody = JSON.stringify({ model: selectedModel, max_tokens: 4096, messages: convMsgs });
+        r = await fetchWithRetry(ANTHROPIC_DIRECT_URL, {
+          method: 'POST',
+          headers: { 'x-api-key': anthropicToken, 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+          body: anthropicBody
+        }, 'Anthropic');
+        _adhocRemoveTyping();
+        if (!r.ok) {
+          var et = await r.text();
+          _adhocAddMessageToDOM('error', 'Error ' + r.status + ': ' + et.substring(0, 200));
+          _adhocMessages.pop();
+        } else {
+          d = await r.json();
+          reply = (d.content && d.content[0] && d.content[0].text) || 'No response.';
+          _adhocMessages.push({ role: 'assistant', content: reply });
+          _adhocAddMessageToDOM('assistant', reply);
+        }
+      } else if (activeProvider === 'watsonx') {
+        var bearerToken = await getWatsonxBearerToken();
+        var watsonxMsgs = ctx.map(function(m) { return { role: m.role, content: m.content }; });
+        var watsonxBody = JSON.stringify({ model_id: selectedModel, project_id: watsonxProjectId, messages: watsonxMsgs, max_tokens: 4096 });
+        r = await fetchWithRetry(WATSONX_PROXY_URL, {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + bearerToken, 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Target-URL': WATSONX_CHAT_URL },
+          body: watsonxBody
+        }, 'IBM watsonx.ai');
+        _adhocRemoveTyping();
+        if (!r.ok) {
+          var et = await r.text();
+          _adhocAddMessageToDOM('error', 'Error ' + r.status + ': ' + et.substring(0, 200));
+          _adhocMessages.pop();
+        } else {
+          d = await r.json();
+          reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || 'No response.';
+          _adhocMessages.push({ role: 'assistant', content: reply });
+          _adhocAddMessageToDOM('assistant', reply);
+        }
+      } else {
+        var endpoint = activeProvider === 'openai' ? OPENAI_DIRECT_URL : API_URL;
+        var authToken = activeProvider === 'openai' ? openaiToken : token;
+        var openaiBody = JSON.stringify({ model: selectedModel, messages: ctx });
+        r = await fetchWithRetry(endpoint, {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
+          body: openaiBody
+        }, activeProvider === 'openai' ? 'OpenAI' : 'GitHub Models');
+        _adhocRemoveTyping();
+        if (!r.ok) {
+          var et = await r.text();
+          _adhocAddMessageToDOM('error', 'Error ' + r.status + ': ' + et.substring(0, 200));
+          _adhocMessages.pop();
+        } else {
+          d = await r.json();
+          reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || 'No response.';
+          _adhocMessages.push({ role: 'assistant', content: reply });
+          _adhocAddMessageToDOM('assistant', reply);
+        }
+      }
+    } catch (err) {
+      _adhocRemoveTyping();
+      _adhocAddMessageToDOM('error', '🌐 Error: ' + err.message);
+      _adhocMessages.pop();
+    }
+
+    input.disabled = false;
+    document.getElementById('adhoc-send-btn').disabled = false;
+    input.focus();
+  }
   var _mcQACount = 0;
 
   function toggleMic(btn, target) {
@@ -9242,8 +9494,15 @@
       }
       // Fallback: append to end
       el.textContent += text;
+    } else if (target === 'adhoc') {
+      var el = document.getElementById('adhoc-input');
+      if (!el) return;
+      var start = el.selectionStart || 0;
+      var end = el.selectionEnd || 0;
+      el.value = el.value.slice(0, start) + text + el.value.slice(end);
+      el.selectionStart = el.selectionEnd = start + text.length;
+      el.focus();
     } else {
-      // Generic: treat target as an element ID (e.g. modal textareas)
       var el = document.getElementById(target);
       if (!el) return;
       var start = el.selectionStart || 0;
