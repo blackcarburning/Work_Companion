@@ -7460,7 +7460,13 @@
           msgDiv.classList.add("message-manual-content");
           var mcIndicator = document.createElement("div");
           mcIndicator.className = "manual-content-indicator";
-          mcIndicator.textContent = "📋 Manual content: \"" + msg.contentTitle + "\" (" + msg.contentType + (msg.contentInfo ? ", " + msg.contentInfo : "") + ")";
+          var mcLabel = "📋 Manual content: \"" + msg.contentTitle + "\" (" + msg.contentType;
+          if (msg.contentType === "Code") {
+            if (msg.codeProgramName) mcLabel += " · " + msg.codeProgramName;
+            if (msg.codeLanguage) mcLabel += " · " + msg.codeLanguage;
+          }
+          mcLabel += (msg.contentInfo ? ", " + msg.contentInfo : "") + ")";
+          mcIndicator.textContent = mcLabel;
           body.appendChild(mcIndicator);
           var mcToggleBtn = document.createElement("button");
           mcToggleBtn.className = "manual-content-toggle-btn";
@@ -8428,6 +8434,49 @@
             '<div id="mc-qa-container" style="max-height:360px;overflow-y:auto;margin-bottom:0.5rem"></div>' +
             '<button type="button" onclick="mcAddQAPair()" style="margin-bottom:1rem;background:#f1f5f9;border:1px solid #d0d7de;border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit">+ Add Question</button>';
           mcAddQAPair();
+        } else if (type === "Code") {
+          area.innerHTML =
+            '<label for="mc-code-progname">Program / Script Name</label>' +
+            '<input type="text" id="mc-code-progname" style="width:100%;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.93rem;font-family:inherit;box-sizing:border-box;margin-bottom:0.75rem" placeholder="e.g. backup.sh, main.py, index.html" />' +
+            '<label for="mc-code-lang">Programming Language</label>' +
+            '<select id="mc-code-lang" style="width:100%;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.93rem;margin-bottom:0.75rem;font-family:inherit;box-sizing:border-box">' +
+            '<option value="Python">Python</option>' +
+            '<option value="HTML">HTML</option>' +
+            '<option value="C++">C++</option>' +
+            '<option value="Sketch (Arduino)">Sketch (Arduino)</option>' +
+            '<option value="Bash">Bash</option>' +
+            '<option value="AIX Shell">AIX Shell</option>' +
+            '<option value="PowerShell">PowerShell</option>' +
+            '<option value="JavaScript">JavaScript</option>' +
+            '<option value="TypeScript">TypeScript</option>' +
+            '<option value="Java">Java</option>' +
+            '<option value="C">C</option>' +
+            '<option value="C#">C#</option>' +
+            '<option value="Ruby">Ruby</option>' +
+            '<option value="Go">Go</option>' +
+            '<option value="Rust">Rust</option>' +
+            '<option value="PHP">PHP</option>' +
+            '<option value="Swift">Swift</option>' +
+            '<option value="Kotlin">Kotlin</option>' +
+            '<option value="Perl">Perl</option>' +
+            '<option value="R">R</option>' +
+            '<option value="SQL">SQL</option>' +
+            '<option value="MATLAB">MATLAB</option>' +
+            '<option value="Lua">Lua</option>' +
+            '<option value="Scala">Scala</option>' +
+            '<option value="Haskell">Haskell</option>' +
+            '<option value="Shell/Sh">Shell/Sh</option>' +
+            '<option value="YAML">YAML</option>' +
+            '<option value="JSON">JSON</option>' +
+            '<option value="XML">XML</option>' +
+            '<option value="CSS">CSS</option>' +
+            '<option value="Markdown">Markdown</option>' +
+            '<option value="Dockerfile">Dockerfile</option>' +
+            '<option value="Terraform">Terraform</option>' +
+            '<option value="Assembly">Assembly</option>' +
+            '</select>' +
+            '<label for="mc-content">Code</label>' +
+            '<textarea id="mc-content" style="width:100%;height:260px;padding:0.6rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem;tab-size:4" placeholder="Paste or write your code here..."></textarea>';
         } else {
           area.innerHTML =
             '<label for="mc-content">Content</label>' +
@@ -8443,11 +8492,21 @@
         var title = titleInput.value.trim() || "Untitled";
         var type = document.getElementById("mc-type").value;
         var content;
+        var el;
         if (type === "Add Conversation") {
           content = mcCollectConversation();
           if (!content.trim()) { alert("Please enter at least one question or answer."); return; }
+        } else if (type === "Code") {
+          el = document.getElementById("mc-content");
+          content = el ? el.value : "";
+          if (!content.trim()) { alert("Please enter some code."); return; }
+          var progName = document.getElementById("mc-code-progname").value || "";
+          var lang = document.getElementById("mc-code-lang").value || "";
+          document.body.removeChild(ov);
+          handleManualContent(title, type, content, { programName: progName.trim(), language: lang });
+          return;
         } else {
-          var el = document.getElementById("mc-content");
+          el = document.getElementById("mc-content");
           content = el ? el.value : "";
           if (!content.trim()) { alert("Please enter some content."); return; }
         }
@@ -8501,16 +8560,29 @@
       return lines.join("\n");
     }
 
-    function handleManualContent(title, type, content) {
+    function handleManualContent(title, type, content, extra) {
       if (!db.activeJobId) return;
       var job = getJob(db.activeJobId); if (!job) return;
       var lineCount = content.split("\n").length;
       var contentInfo = lineCount + " line" + (lineCount !== 1 ? "s" : "");
-      var fullContent = "Manual content titled '" + title + "' (" + type + "):\n\n" + content;
-      job.messages.push({
+      var fullContent;
+      if (extra && type === "Code") {
+        var codeHeader = "Code";
+        if (extra.programName) codeHeader += " — " + extra.programName;
+        if (extra.language) codeHeader += " [" + extra.language + "]";
+        fullContent = "Manual content titled '" + title + "' (" + codeHeader + "):\n\n" + content;
+      } else {
+        fullContent = "Manual content titled '" + title + "' (" + type + "):\n\n" + content;
+      }
+      var msgObj = {
         role: "user", content: fullContent,
         isManualContent: true, contentTitle: title, contentType: type, contentInfo: contentInfo
-      });
+      };
+      if (extra) {
+        if (extra.programName) msgObj.codeProgramName = extra.programName;
+        if (extra.language) msgObj.codeLanguage = extra.language;
+      }
+      job.messages.push(msgObj);
       saveDB();
       addMessageToDOM("user", fullContent, false, job.messages.length - 2);
       updateContextBar();
