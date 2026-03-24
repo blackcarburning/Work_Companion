@@ -879,6 +879,24 @@
     .debug-entry.info { color: #6399ff; }
     .debug-entry.warn { color: #e8c840; }
     .debug-entry.error { color: #f07070; }
+
+    /* ===== MIC / VOICE TRANSCRIPTION ===== */
+    .mic-btn {
+      font-size: 0.93rem;
+      line-height: 1;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      user-select: none;
+    }
+    .mic-btn.recording {
+      background: #fee2e2 !important;
+      border-color: #ef4444 !important;
+      animation: mic-pulse 1s ease-in-out infinite;
+    }
+    @keyframes mic-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+      50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+    }
   </style>
 </head>
 <body>
@@ -2195,6 +2213,8 @@
             '<div class="toolbar-sep"></div>' +
 
             '<button class="fmt-btn" onclick="exportToPDF(this)" title="Export to PDF">📄 PDF</button>' +
+            '<div class="toolbar-sep"></div>' +
+            '<button class="fmt-btn mic-btn" id="summary-mic-btn" title="Dictate to summary" onclick="toggleMic(this, \'summary\')">🎤</button>' +
           '</div>' +
 
           '<p class="summary-hint">Use this page for project overview, key decisions, links, and status updates. Supports Markdown.</p>' +
@@ -6985,11 +7005,13 @@
         '<button class="input-attach-btn" id="manual-content-btn" onclick="openManualContentModal()" title="Add Content">📋</button>' +
         '<button class="input-attach-btn" id="image-btn" onclick="openImagePicker()" title="Add Screenshot">📷</button>' +
         '<button class="input-attach-btn" id="view-context-btn" onclick="viewApiContext()" title="View API Context">🔍</button>' +
+        '<button class="input-attach-btn mic-btn" id="chat-mic-btn" title="Voice input (click to start, click again to stop)" onclick="toggleMic(this, \'chat\')">🎤</button>' +
 
         '</div>' +
         '<input type="text" id="userInput" placeholder="Ask a question..." />' +
         '<button onclick="sendMessage()" id="sendBtn">Send</button></div></div>' +
         '<div id="notes-panel"><div id="notes-header"><span>📋 Notes / Clipboard</span>' +
+        '<button class="mic-btn" id="notes-mic-btn" title="Dictate to notes" onclick="toggleMic(this, \'notes\')" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:0.28rem 0.5rem;">🎤</button>' +
         '<button onclick="clearNotes()">Clear</button></div>' +
         '<div id="notes-content"><textarea id="notes-editor" placeholder="Paste or type notes here..."></textarea></div></div>';
 
@@ -9034,6 +9056,114 @@
       window.open(href, '_blank', 'noopener,noreferrer');
     }
   });
+
+  // ===== VOICE TRANSCRIPTION =====
+  var _micRecognition = null;
+  var _micActiveBtn = null;
+
+  function toggleMic(btn, target) {
+    // If this button is already recording, stop it
+    if (_micActiveBtn === btn) {
+      _micRecognition.stop();
+      _micRecognition = null;
+      _micActiveBtn = null;
+      btn.classList.remove('recording');
+      btn.textContent = '🎤';
+      debugLog('[MIC] Stopped recording for target: ' + target);
+      return;
+    }
+    // Stop any other active mic first
+    if (_micRecognition) {
+      _micRecognition.stop();
+      _micActiveBtn.classList.remove('recording');
+      _micActiveBtn.textContent = '🎤';
+      _micRecognition = null;
+      _micActiveBtn = null;
+    }
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      alert('Speech recognition is not supported in this browser. Please use Chrome or Edge.');
+      return;
+    }
+    var recognition = new SR();
+    recognition.lang = 'en-GB';
+    recognition.continuous = true;
+    recognition.interimResults = false;
+
+    recognition.onresult = function(event) {
+      var transcript = event.results[event.results.length - 1][0].transcript;
+      debugLog('[MIC] Transcript: ' + transcript);
+      insertAtCursorMic(target, transcript + ' ');
+    };
+    recognition.onerror = function(event) {
+      debugLog('[MIC] Error: ' + event.error);
+      if (event.error !== 'no-speech') {
+        btn.classList.remove('recording');
+        btn.textContent = '🎤';
+        _micRecognition = null;
+        _micActiveBtn = null;
+      }
+    };
+    recognition.onend = function() {
+      // Restart automatically if still in recording state (keeps continuous)
+      if (_micRecognition === recognition) {
+        try { recognition.start(); } catch(e) { debugLog('[MIC] Restart error: ' + e); }
+      }
+    };
+
+    try {
+      recognition.start();
+      _micRecognition = recognition;
+      _micActiveBtn = btn;
+      btn.classList.add('recording');
+      btn.textContent = '🔴';
+      debugLog('[MIC] Started recording for target: ' + target);
+    } catch(e) {
+      debugLog('[MIC] Start error: ' + e);
+      alert('Could not start microphone: ' + e.message);
+    }
+  }
+
+  function insertAtCursorMic(target, text) {
+    if (target === 'chat') {
+      var el = document.getElementById('userInput');
+      if (!el) return;
+      var start = el.selectionStart || 0;
+      var end = el.selectionEnd || 0;
+      el.value = el.value.slice(0, start) + text + el.value.slice(end);
+      el.selectionStart = el.selectionEnd = start + text.length;
+      el.focus();
+    } else if (target === 'notes') {
+      var el = document.getElementById('notes-editor');
+      if (!el) return;
+      var start = el.selectionStart || el.value.length;
+      var end = el.selectionEnd || el.value.length;
+      el.value = el.value.slice(0, start) + text + el.value.slice(end);
+      el.selectionStart = el.selectionEnd = start + text.length;
+      el.focus();
+    } else if (target === 'summary') {
+      var el = document.getElementById('summary-editor');
+      if (!el) return;
+      el.focus();
+      var sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        var range = sel.getRangeAt(0);
+        // Only use the selection if it's inside summary-editor
+        if (el.contains(range.commonAncestorContainer)) {
+          range.deleteContents();
+          var node = document.createTextNode(text);
+          range.insertNode(node);
+          range.setStartAfter(node);
+          range.setEndAfter(node);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          return;
+        }
+      }
+      // Fallback: append to end
+      el.textContent += text;
+    }
+  }
   </script>
 </body>
 </html>
