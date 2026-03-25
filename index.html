@@ -8432,7 +8432,10 @@
           _mcQACount = 0;
           area.innerHTML =
             '<div id="mc-qa-container" style="max-height:360px;overflow-y:auto;margin-bottom:0.5rem"></div>' +
-            '<button type="button" onclick="mcAddQAPair()" style="margin-bottom:1rem;background:#f1f5f9;border:1px solid #d0d7de;border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit">+ Add Question</button>';
+            '<div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap">' +
+            '<button type="button" onclick="mcAddQAPair()" style="background:#f1f5f9;border:1px solid #d0d7de;border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit">+ Add Question</button>' +
+            '<button type="button" onclick="openImportInterviewModal()" style="background:linear-gradient(135deg,var(--accent,#4f46e5),var(--accent-alt,#7c3aed));color:#fff;border:none;border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit;font-weight:600">📥 Import Interview</button>' +
+            '</div>';
           mcAddQAPair();
         } else if (type === "Code") {
           area.innerHTML =
@@ -8558,6 +8561,136 @@
         n++;
       }
       return lines.join("\n");
+    }
+
+    function openImportInterviewModal() {
+      var ov = document.createElement("div");
+      ov.className = "modal-overlay";
+      ov.innerHTML =
+        '<div class="modal" style="width:580px;max-width:96vw">' +
+        '<h3>📥 Import Interview</h3>' +
+        '<p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:0.75rem;line-height:1.5">Paste your interview text below. The AI will parse it into structured questions and answers.</p>' +
+        '<textarea id="import-interview-text" style="width:100%;min-height:300px;padding:0.6rem;border:1px solid var(--border,#d0d7de);border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box;margin-bottom:0.75rem;background:var(--bg-primary,#fff);color:var(--text-primary,#000)" placeholder="Paste raw interview text here..."></textarea>' +
+        '<div id="import-interview-status" style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:0.5rem;min-height:1.2em"></div>' +
+        '<div class="modal-btns">' +
+        '<button class="cancel" id="import-interview-cancel">Cancel</button>' +
+        '<button class="confirm" id="import-interview-ok">📥 Import</button>' +
+        '</div>' +
+        '</div>';
+      document.body.appendChild(ov);
+      document.getElementById("import-interview-text").focus();
+      document.getElementById("import-interview-cancel").onclick = function() {
+        document.body.removeChild(ov);
+      };
+      document.getElementById("import-interview-ok").onclick = async function() {
+        var rawText = document.getElementById("import-interview-text").value.trim();
+        if (!rawText) { alert("Please paste some interview text first."); return; }
+        var okBtn = document.getElementById("import-interview-ok");
+        var statusEl = document.getElementById("import-interview-status");
+        okBtn.disabled = true;
+        okBtn.textContent = "⏳ Processing...";
+        statusEl.textContent = "Sending to AI (" + selectedModel + ")…";
+        try {
+          var parsed = await importInterviewViaLLM(rawText);
+          document.body.removeChild(ov);
+          _applyImportedInterview(parsed);
+        } catch (err) {
+          okBtn.disabled = false;
+          okBtn.textContent = "📥 Import";
+          statusEl.style.color = "#dc2626";
+          statusEl.textContent = "❌ " + (err.message || "AI request failed. Check your API token and try again.");
+        }
+      };
+    }
+
+    async function importInterviewViaLLM(rawText) {
+      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
+      if (!activeToken) {
+        throw new Error("No API token configured for " + activeProvider + ". Save your token first in Settings.");
+      }
+      var systemMsg = "You are an expert at parsing interview transcripts. Extract questions and answers from raw interview text and return structured JSON only — no markdown fences, no explanation.";
+      var userPrompt = 'Parse the following raw interview text into structured JSON.\n\nRules:\n- Identify the interview source/title (usually the first non-blank line, e.g. a publication or band name).\n- Split the text into individual questions. Number them question1, question2, etc.\n- Associate any answer text that follows a question with that question. If the respondent\'s name (e.g. "Rich-") is present at the start of an answer, keep it as part of the answer text.\n- If a question has no answer, set the answer to an empty string "".\n- Do NOT include preamble lines like "Please indicate who is answering..." as a question — skip them.\n\nReturn ONLY a valid JSON object with this structure (no markdown, no extra text):\n{\n  "source": "Interview source or title, empty string if not found",\n  "qaPairs": [\n    {"question": "...", "answer": "..."},\n    {"question": "...", "answer": ""}\n  ]\n}\n\nRaw interview text:\n"""\n' + rawText + '\n"""';
+
+      var responseText = "";
+
+      if (activeProvider === "anthropic") {
+        var r = await fetch(ANTHROPIC_DIRECT_URL, {
+          method: "POST",
+          headers: { "x-api-key": anthropicToken, "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+          body: JSON.stringify({ model: selectedModel, max_tokens: 4096, system: systemMsg, messages: [{ role: "user", content: userPrompt }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error("Anthropic API error " + r.status + ": " + et); }
+        var d = await r.json();
+        responseText = (d.content && d.content[0] && d.content[0].text) || "";
+      } else if (activeProvider === "watsonx") {
+        var bearerToken = await getWatsonxBearerToken();
+        var r = await fetch(WATSONX_PROXY_URL, {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json", "X-Target-URL": WATSONX_CHAT_URL },
+          body: JSON.stringify({ model_id: selectedModel, project_id: watsonxProjectId, max_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userPrompt }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error("watsonx API error " + r.status + ": " + et); }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
+      } else if (activeProvider === "openai") {
+        var r = await fetch(OPENAI_DIRECT_URL, {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + openaiToken, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: selectedModel, max_completion_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userPrompt }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error("OpenAI API error " + r.status + ": " + et); }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
+      } else {
+        var r = await fetch(API_URL, {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: selectedModel, max_completion_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userPrompt }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error("API error " + r.status + ": " + et); }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
+      }
+
+      if (!responseText) throw new Error("AI returned an empty response.");
+      responseText = responseText.trim();
+      if (responseText.startsWith("```")) {
+        responseText = responseText.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+      }
+      var parsed = JSON.parse(responseText);
+      if (!parsed.qaPairs || !Array.isArray(parsed.qaPairs)) throw new Error("AI response did not contain a valid qaPairs array.");
+      return parsed;
+    }
+
+    function _applyImportedInterview(parsed) {
+      // Update the title input with the interview source if present
+      var titleInput = document.getElementById("mc-title");
+      if (titleInput && parsed.source && parsed.source.trim()) {
+        titleInput.value = parsed.source.trim();
+      }
+      // Clear existing Q&A pairs and repopulate
+      var container = document.getElementById("mc-qa-container");
+      if (!container) return;
+      container.innerHTML = "";
+      _mcQACount = 0;
+      var pairs = parsed.qaPairs || [];
+      if (pairs.length === 0) {
+        mcAddQAPair();
+        var statusBanner = document.createElement("div");
+        statusBanner.style.cssText = "margin-bottom:0.5rem;padding:0.4rem 0.7rem;background:#fef9c3;border:1px solid #fde047;border-radius:6px;font-size:0.85rem;color:#854d0e";
+        statusBanner.textContent = "⚠️ The AI could not find any questions in the pasted text. Please check the text and try again, or add questions manually.";
+        var container2 = document.getElementById("mc-qa-container");
+        if (container2) container2.parentNode.insertBefore(statusBanner, container2);
+        return;
+      }
+      pairs.forEach(function(pair) {
+        mcAddQAPair();
+        var n = _mcQACount;
+        var qEl = document.getElementById("mc-q-" + n);
+        var aEl = document.getElementById("mc-a-" + n);
+        if (qEl) qEl.value = (pair.question || "").trim();
+        if (aEl) aEl.value = (pair.answer || "").trim();
+      });
     }
 
     function handleManualContent(title, type, content, extra) {
