@@ -782,14 +782,15 @@
 
     .manual-content-modal .modal { width: 520px; }
     .manual-content-modal .modal textarea { height: 200px; }
-    .manual-content-modal label { display: block; font-size: 0.83rem; font-weight: 600; margin-bottom: 0.25rem; color: #1c1f26; }
+    .manual-content-modal label { display: block; font-size: 0.83rem; font-weight: 600; margin-bottom: 0.25rem; color: var(--text-primary); }
     .manual-content-modal input, .manual-content-modal select {
-      width: 100%; padding: 0.55rem 0.7rem; border: 2px solid #e5e7eb; border-radius: 10px;
+      width: 100%; padding: 0.55rem 0.7rem; border: 2px solid var(--border); border-radius: 10px;
       font-size: 0.93rem; margin-bottom: 0.75rem; font-family: inherit; box-sizing: border-box;
+      color: var(--text-primary); background: var(--bg-input);
       transition: border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .manual-content-modal input:focus, .manual-content-modal select:focus {
-      outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.1);
+      outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light);
     }
 
     .typing-dot {
@@ -813,13 +814,13 @@
     }
     .modal h3 { margin-bottom: 0.55rem; font-size: 1.15rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.01em; }
     .modal p { font-size: 0.83rem; color: var(--text-secondary); margin-bottom: 0.8rem; line-height: 1.55; }
-    .modal input, .modal textarea {
+    .modal input, .modal textarea, .modal select {
       width: 100%; padding: 0.6rem 0.75rem; border: 2px solid var(--border);
       border-radius: var(--radius-md); font-size: 0.93rem; margin-bottom: 1rem; font-family: var(--font-family);
       background: var(--bg-input); color: var(--text-primary);
       transition: border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
-    .modal input:focus, .modal textarea:focus {
+    .modal input:focus, .modal textarea:focus, .modal select:focus {
       outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light);
     }
     .modal textarea { height: 82px; resize: vertical; }
@@ -839,26 +840,26 @@
 
     .pdf-theme-modal .modal { width: 590px; max-height: 85vh; overflow-y: auto; }
     .theme-section { margin-bottom: 1rem; }
-    .theme-section-title { font-size: 0.78rem; font-weight: 700; color: #6b7280; margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.06em; }
+    .theme-section-title { font-size: 0.78rem; font-weight: 700; color: var(--text-secondary); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.06em; }
     .theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
     .theme-field { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; }
-    .theme-field label { min-width: 100px; color: #1c1f26; }
-    .theme-field input[type="color"] { width: 36px; height: 28px; border: 1px solid #dde1ea; border-radius: 5px; cursor: pointer; padding: 0; }
+    .theme-field label { min-width: 100px; color: var(--text-primary); }
+    .theme-field input[type="color"] { width: 36px; height: 28px; border: 1px solid var(--border); border-radius: 5px; cursor: pointer; padding: 0; }
     .theme-field select, .theme-field input[type="text"], .theme-field input[type="number"] {
-      padding: 0.25rem 0.4rem; border: 1px solid #dde1ea; border-radius: 5px; font-size: 0.8rem; flex: 1;
-      font-family: inherit;
+      padding: 0.25rem 0.4rem; border: 1px solid var(--border); border-radius: 5px; font-size: 0.8rem; flex: 1;
+      font-family: inherit; color: var(--text-primary); background: var(--bg-input);
     }
     .theme-preview-bar { display: flex; gap: 0; height: 8px; border-radius: 5px; overflow: hidden; margin: 0.5rem 0; }
     .theme-preview-swatch { flex: 1; }
-    .theme-checkbox { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; }
+    .theme-checkbox { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--text-primary); }
     .theme-checkbox input[type="checkbox"] { width: 16px; height: 16px; }
     .theme-import-export { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
     .theme-import-export button {
-      padding: 0.32rem 0.65rem; font-size: 0.76rem; border: 1px solid #dde1ea;
-      border-radius: 6px; cursor: pointer; background: #f8fafc; font-weight: 600;
+      padding: 0.32rem 0.65rem; font-size: 0.76rem; border: 1px solid var(--border);
+      border-radius: 6px; cursor: pointer; background: var(--bg-input); color: var(--text-primary); font-weight: 600;
       font-family: inherit; transition: background 0.15s;
     }
-    .theme-import-export button:hover { background: #eef0f5; }
+    .theme-import-export button:hover { background: var(--bg-app); }
 
     #debug-console {
       position: fixed; bottom: 0; left: 0; right: 0; height: 225px;
@@ -2215,8 +2216,8 @@
       var modal = document.createElement("div"); modal.className = "modal"; modal.style.cssText = "width:700px;max-width:95vw;";
       modal.innerHTML =
         '<h3>🔍 API Context (' + ctx.length + ' messages, ~' + totalKB + ' KB, ~' + totalTokens.toLocaleString() + ' tokens)</h3>' +
-        '<p style="font-size:0.82rem;color:#57606a;margin-top:0">The exact JSON payload that will be sent to the API. Base64 image data is truncated for display.</p>' +
-        '<textarea id="ctx-viewer-ta" readonly style="width:100%;height:350px;font-family:monospace;font-size:0.75rem;resize:vertical;box-sizing:border-box;border:1px solid #d0d7de;border-radius:6px;padding:0.5rem;background:#f6f8fa;color:#1f2328"></textarea>' +
+        '<p style="font-size:0.82rem;color:var(--text-secondary);margin-top:0">The exact JSON payload that will be sent to the API. Base64 image data is truncated for display.</p>' +
+        '<textarea id="ctx-viewer-ta" readonly style="width:100%;height:350px;font-family:monospace;font-size:0.75rem;resize:vertical;box-sizing:border-box;border:1px solid var(--border);border-radius:6px;padding:0.5rem;background:var(--bg-input);color:var(--text-primary)"></textarea>' +
         '<div class="modal-btns" style="margin-top:0.5rem">' +
         '<button class="cancel" id="ctx-viewer-close">Close</button>' +
         '<button class="confirm" id="ctx-viewer-copy">📋 Copy JSON</button>' +
@@ -8401,14 +8402,14 @@
         '<label for="mc-title">Content Title</label>' +
         '<input type="text" id="mc-title" placeholder="e.g. Server Logs, Error Output, Config File" />' +
         '<label for="mc-type">Content Type</label>' +
-        '<select id="mc-type" style="width:100%;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.95rem;margin-bottom:0.75rem;font-family:inherit;box-sizing:border-box">' +
+        '<select id="mc-type" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.95rem;margin-bottom:0.75rem;font-family:inherit;box-sizing:border-box;color:var(--text-primary);background:var(--bg-input)">' +
         '<option>Command Output</option><option>Log Output</option><option>Code</option>' +
         '<option>Error Message</option><option>Plain Text</option><option>Other</option>' +
         '<option>Voice Dictation</option><option>Add Conversation</option>' +
         '</select>' +
         '<div id="mc-content-area">' +
         '<label for="mc-content">Content</label>' +
-        '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem" placeholder="Paste your content here..."></textarea>' +
+        '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem;color:var(--text-primary);background:var(--bg-input)" placeholder="Paste your content here..."></textarea>' +
         '</div>' +
         '<div class="modal-btns"><button class="cancel" id="mc-cancel">Cancel</button><button class="confirm" id="mc-ok">Add Content</button></div>' +
         '</div>';
@@ -8424,22 +8425,22 @@
           area.innerHTML =
             '<label>Dictated Content</label>' +
             '<div style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:1rem">' +
-            '<textarea id="mc-content" style="flex:1;height:200px;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="Dictated text will appear here, or type directly..."></textarea>' +
-            '<button class="mic-btn" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:0.4rem 0.6rem;font-size:1.1rem;align-self:flex-start;margin-top:0" onclick="toggleMic(this,\'mc-content\')">🎤</button>' +
+            '<textarea id="mc-content" style="flex:1;height:200px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box;color:var(--text-primary);background:var(--bg-input)" placeholder="Dictated text will appear here, or type directly..."></textarea>' +
+            '<button class="mic-btn" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;font-size:1.1rem;align-self:flex-start;margin-top:0" onclick="toggleMic(this,\'mc-content\')">🎤</button>' +
             '</div>';
         } else if (type === "Add Conversation") {
           if (!titleInput.value.trim()) titleInput.value = "Interview";
           _mcQACount = 0;
           area.innerHTML =
             '<div id="mc-qa-container" style="max-height:360px;overflow-y:auto;margin-bottom:0.5rem"></div>' +
-            '<button type="button" onclick="mcAddQAPair()" style="margin-bottom:1rem;background:#f1f5f9;border:1px solid #d0d7de;border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit">+ Add Question</button>';
+            '<button type="button" onclick="mcAddQAPair()" style="margin-bottom:1rem;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit;color:var(--text-primary)">+ Add Question</button>';
           mcAddQAPair();
         } else if (type === "Code") {
           area.innerHTML =
             '<label for="mc-code-progname">Program / Script Name</label>' +
-            '<input type="text" id="mc-code-progname" style="width:100%;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.93rem;font-family:inherit;box-sizing:border-box;margin-bottom:0.75rem" placeholder="e.g. backup.sh, main.py, index.html" />' +
+            '<input type="text" id="mc-code-progname" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.93rem;font-family:inherit;box-sizing:border-box;margin-bottom:0.75rem;color:var(--text-primary);background:var(--bg-input)" placeholder="e.g. backup.sh, main.py, index.html" />' +
             '<label for="mc-code-lang">Programming Language</label>' +
-            '<select id="mc-code-lang" style="width:100%;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.93rem;margin-bottom:0.75rem;font-family:inherit;box-sizing:border-box">' +
+            '<select id="mc-code-lang" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.93rem;margin-bottom:0.75rem;font-family:inherit;box-sizing:border-box;color:var(--text-primary);background:var(--bg-input)">' +
             '<option value="Python">Python</option>' +
             '<option value="HTML">HTML</option>' +
             '<option value="C++">C++</option>' +
@@ -8476,11 +8477,11 @@
             '<option value="Assembly">Assembly</option>' +
             '</select>' +
             '<label for="mc-content">Code</label>' +
-            '<textarea id="mc-content" style="width:100%;height:260px;padding:0.6rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem;tab-size:4" placeholder="Paste or write your code here..."></textarea>';
+            '<textarea id="mc-content" style="width:100%;height:260px;padding:0.6rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem;tab-size:4;color:var(--text-primary);background:var(--bg-input)" placeholder="Paste or write your code here..."></textarea>';
         } else {
           area.innerHTML =
             '<label for="mc-content">Content</label>' +
-            '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem" placeholder="Paste your content here..."></textarea>';
+            '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem;color:var(--text-primary);background:var(--bg-input)" placeholder="Paste your content here..."></textarea>';
         }
       };
       document.getElementById("mc-cancel").onclick = function() {
@@ -8522,21 +8523,21 @@
       if (!container) return;
       var pair = document.createElement("div");
       pair.id = "mc-qa-pair-" + n;
-      pair.style.cssText = "margin-bottom:0.75rem;border:1px solid #e5e7eb;border-radius:8px;padding:0.75rem;background:#f9fafb";
+      pair.style.cssText = "margin-bottom:0.75rem;border:1px solid var(--border);border-radius:8px;padding:0.75rem;background:var(--bg-card)";
       pair.innerHTML =
         '<div style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:0.5rem">' +
         '<div style="flex:1">' +
-        '<label style="font-weight:600;font-size:0.85rem;margin-bottom:0.25rem;display:block">Q' + n + ' — Question</label>' +
-        '<textarea id="mc-q-' + n + '" style="width:100%;height:72px;padding:0.4rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="Enter question..."></textarea>' +
+        '<label style="font-weight:600;font-size:0.85rem;margin-bottom:0.25rem;display:block;color:var(--text-primary)">Q' + n + ' — Question</label>' +
+        '<textarea id="mc-q-' + n + '" style="width:100%;height:72px;padding:0.4rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box;background:var(--bg-input);color:var(--text-primary)" placeholder="Enter question..."></textarea>' +
         '</div>' +
-        '<button class="mic-btn" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;align-self:flex-end;margin-bottom:0" onclick="toggleMic(this,\'mc-q-' + n + '\')">🎤</button>' +
+        '<button class="mic-btn" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;align-self:flex-end;margin-bottom:0" onclick="toggleMic(this,\'mc-q-' + n + '\')">🎤</button>' +
         '</div>' +
         '<div style="display:flex;align-items:flex-start;gap:0.5rem">' +
         '<div style="flex:1">' +
-        '<label style="font-weight:600;font-size:0.85rem;margin-bottom:0.25rem;display:block">A' + n + ' — Answer</label>' +
-        '<textarea id="mc-a-' + n + '" style="width:100%;height:72px;padding:0.4rem;border:1px solid #d0d7de;border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="Enter answer..."></textarea>' +
+        '<label style="font-weight:600;font-size:0.85rem;margin-bottom:0.25rem;display:block;color:var(--text-primary)">A' + n + ' — Answer</label>' +
+        '<textarea id="mc-a-' + n + '" style="width:100%;height:72px;padding:0.4rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box;background:var(--bg-input);color:var(--text-primary)" placeholder="Enter answer..."></textarea>' +
         '</div>' +
-        '<button class="mic-btn" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;align-self:flex-end;margin-bottom:0" onclick="toggleMic(this,\'mc-a-' + n + '\')">🎤</button>' +
+        '<button class="mic-btn" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;align-self:flex-end;margin-bottom:0" onclick="toggleMic(this,\'mc-a-' + n + '\')">🎤</button>' +
         '</div>';
       container.appendChild(pair);
       container.scrollTop = container.scrollHeight;
