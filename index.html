@@ -7136,6 +7136,17 @@
       updateContextBar();
     }
 
+    // Creates a mic button that dictates into a given input/textarea or contenteditable element.
+    function createEditMicButton(targetElement) {
+      var btn = document.createElement("button");
+      btn.className = "mic-btn";
+      btn.title = "Dictate — speech is inserted at cursor position or appended";
+      btn.textContent = "🎤";
+      btn.style.cssText = "background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;flex-shrink:0";
+      btn.onclick = function() { toggleMic(btn, targetElement); };
+      return btn;
+    }
+
     function enterEditMode(jobId, convIdx, msgDiv, bodyEl, editBtnEl) {
       var job = getJob(jobId); if (!job) return;
       var actualIndex = convIdx + 1;
@@ -7168,11 +7179,12 @@
       cancelBtn.className = "msg-cancel-btn"; cancelBtn.textContent = "❌ Cancel";
 
       var btnRow = document.createElement("div"); btnRow.className = "msg-edit-btns";
-      btnRow.appendChild(saveBtn); btnRow.appendChild(undoBtn); btnRow.appendChild(redoBtn); btnRow.appendChild(cancelBtn);
+      btnRow.appendChild(saveBtn); btnRow.appendChild(undoBtn); btnRow.appendChild(redoBtn); btnRow.appendChild(cancelBtn); btnRow.appendChild(createEditMicButton(bodyEl));
 
       bodyEl.parentNode.insertBefore(btnRow, bodyEl.nextSibling);
 
       function exitEditMode() {
+        _stopActiveMic();
         bodyEl.removeAttribute("contenteditable");
         bodyEl.style.border = "";
         bodyEl.style.borderRadius = "";
@@ -7249,12 +7261,13 @@
       cancelBtn.className = "msg-cancel-btn"; cancelBtn.textContent = "❌ Cancel";
 
       var btnRow = document.createElement("div"); btnRow.className = "msg-edit-btns";
-      btnRow.appendChild(saveBtn); btnRow.appendChild(cancelBtn);
+      btnRow.appendChild(saveBtn); btnRow.appendChild(cancelBtn); btnRow.appendChild(createEditMicButton(ta));
       ta.parentNode.insertBefore(btnRow, ta.nextSibling);
 
       ta.focus();
 
       function exitEditMode() {
+        _stopActiveMic();
         if (ta.parentNode) ta.parentNode.removeChild(ta);
         if (btnRow.parentNode) btnRow.parentNode.removeChild(btnRow);
         mcContentDiv.style.display = "";
@@ -10141,13 +10154,35 @@
       el.selectionStart = el.selectionEnd = start + text.length;
       el.focus();
     } else {
-      var el = document.getElementById(target);
+      var el = (typeof target === 'string') ? document.getElementById(target) : target;
       if (!el) return;
-      var start = el.selectionStart || 0;
-      var end = el.selectionEnd || 0;
-      el.value = el.value.slice(0, start) + text + el.value.slice(end);
-      el.selectionStart = el.selectionEnd = start + text.length;
-      el.focus();
+      if (el.isContentEditable) {
+        el.focus();
+        var sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          var range = sel.getRangeAt(0);
+          if (el.contains(range.commonAncestorContainer)) {
+            // Replace any selected text (standard typing behaviour) then insert transcript
+            range.deleteContents();
+            var node = document.createTextNode(text);
+            range.insertNode(node);
+            range.setStartAfter(node);
+            range.setEndAfter(node);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            return;
+          }
+        }
+        // Fallback: append text node to end
+        var fNode = document.createTextNode(text);
+        el.appendChild(fNode);
+      } else {
+        var start = el.selectionStart || 0;
+        var end = el.selectionEnd || 0;
+        el.value = el.value.slice(0, start) + text + el.value.slice(end);
+        el.selectionStart = el.selectionEnd = start + text.length;
+        el.focus();
+      }
     }
   }
   </script>
