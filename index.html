@@ -8400,7 +8400,10 @@
         '<div class="modal" style="width:520px">' +
         '<h3>📋 Add Content</h3>' +
         '<label for="mc-title">Content Title</label>' +
-        '<input type="text" id="mc-title" placeholder="e.g. Server Logs, Error Output, Config File" />' +
+        '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem">' +
+        '<input type="text" id="mc-title" placeholder="e.g. Server Logs, Error Output, Config File" style="flex:1;margin-bottom:0" />' +
+        '<button class="mic-btn" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;flex-shrink:0" onclick="toggleMic(this,\'mc-title\')" title="Dictate title">🎤</button>' +
+        '</div>' +
         '<label for="mc-type">Content Type</label>' +
         '<select id="mc-type" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.95rem;margin-bottom:0.75rem;font-family:inherit;box-sizing:border-box;color:var(--text-primary);background:var(--bg-input)">' +
         '<option>Command Output</option><option>Log Output</option><option>Code</option>' +
@@ -8409,7 +8412,10 @@
         '</select>' +
         '<div id="mc-content-area">' +
         '<label for="mc-content">Content</label>' +
-        '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem;color:var(--text-primary);background:var(--bg-input)" placeholder="Paste your content here..."></textarea>' +
+        '<div style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:1rem">' +
+        '<textarea id="mc-content" style="flex:1;height:200px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:0;color:var(--text-primary);background:var(--bg-input)" placeholder="Paste your content here..."></textarea>' +
+        '<button class="mic-btn" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;align-self:flex-start;flex-shrink:0" onclick="toggleMic(this,\'mc-content\')" title="Dictate content">🎤</button>' +
+        '</div>' +
         '</div>' +
         '<div class="modal-btns"><button class="cancel" id="mc-cancel">Cancel</button><button class="confirm" id="mc-ok">Add Content</button></div>' +
         '</div>';
@@ -8441,7 +8447,10 @@
         } else if (type === "Code") {
           area.innerHTML =
             '<label for="mc-code-progname">Program / Script Name</label>' +
-            '<input type="text" id="mc-code-progname" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.93rem;font-family:inherit;box-sizing:border-box;margin-bottom:0.75rem;color:var(--text-primary);background:var(--bg-input)" placeholder="e.g. backup.sh, main.py, index.html" />' +
+            '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">' +
+            '<input type="text" id="mc-code-progname" style="flex:1;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.93rem;font-family:inherit;box-sizing:border-box;margin-bottom:0;color:var(--text-primary);background:var(--bg-input)" placeholder="e.g. backup.sh, main.py, index.html" />' +
+            '<button class="mic-btn" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;flex-shrink:0" onclick="toggleMic(this,\'mc-code-progname\')" title="Dictate program name">🎤</button>' +
+            '</div>' +
             '<label for="mc-code-lang">Programming Language</label>' +
             '<select id="mc-code-lang" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.93rem;margin-bottom:0.75rem;font-family:inherit;box-sizing:border-box;color:var(--text-primary);background:var(--bg-input)">' +
             '<option value="Python">Python</option>' +
@@ -8480,11 +8489,17 @@
             '<option value="Assembly">Assembly</option>' +
             '</select>' +
             '<label for="mc-content">Code</label>' +
-            '<textarea id="mc-content" style="width:100%;height:260px;padding:0.6rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem;tab-size:4;color:var(--text-primary);background:var(--bg-input)" placeholder="Paste or write your code here..."></textarea>';
+            '<div style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:1rem">' +
+            '<textarea id="mc-content" style="flex:1;height:260px;padding:0.6rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:0;tab-size:4;color:var(--text-primary);background:var(--bg-input)" placeholder="Paste or write your code here..."></textarea>' +
+            '<button class="mic-btn" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;align-self:flex-start;flex-shrink:0" onclick="toggleMic(this,\'mc-content\')" title="Dictate code">🎤</button>' +
+            '</div>';
         } else {
           area.innerHTML =
             '<label for="mc-content">Content</label>' +
-            '<textarea id="mc-content" style="width:100%;height:200px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:1rem;color:var(--text-primary);background:var(--bg-input)" placeholder="Paste your content here..."></textarea>';
+            '<div style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:1rem">' +
+            '<textarea id="mc-content" style="flex:1;height:200px;padding:0.5rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:\'SFMono-Regular\',Consolas,\'Liberation Mono\',Menlo,monospace;resize:vertical;box-sizing:border-box;margin-bottom:0;color:var(--text-primary);background:var(--bg-input)" placeholder="Paste your content here..."></textarea>' +
+            '<button class="mic-btn" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;font-size:1rem;align-self:flex-start;flex-shrink:0" onclick="toggleMic(this,\'mc-content\')" title="Dictate content">🎤</button>' +
+            '</div>';
         }
       };
       document.getElementById("mc-cancel").onclick = function() {
@@ -10041,7 +10056,7 @@
       return;
     }
     var recognition = new SR();
-    recognition.lang = 'en-GB';
+    recognition.lang = 'en-US';
     recognition.continuous = true;
     recognition.interimResults = false;
 
