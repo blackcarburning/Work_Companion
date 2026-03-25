@@ -8433,7 +8433,10 @@
           _mcQACount = 0;
           area.innerHTML =
             '<div id="mc-qa-container" style="max-height:360px;overflow-y:auto;margin-bottom:0.5rem"></div>' +
-            '<button type="button" onclick="mcAddQAPair()" style="margin-bottom:1rem;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit;color:var(--text-primary)">+ Add Question</button>';
+            '<div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap">' +
+            '<button type="button" onclick="mcAddQAPair()" style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit;color:var(--text-primary)">+ Add Question</button>' +
+            '<button type="button" onclick="openImportInterviewModal()" style="background:var(--accent,#2563eb);border:1px solid var(--accent,#2563eb);border-radius:6px;padding:0.4rem 0.9rem;cursor:pointer;font-size:0.9rem;font-family:inherit;color:#fff">📥 Import Interview</button>' +
+            '</div>';
           mcAddQAPair();
         } else if (type === "Code") {
           area.innerHTML =
@@ -8559,6 +8562,134 @@
         n++;
       }
       return lines.join("\n");
+    }
+
+    // ===== IMPORT INTERVIEW =====
+    function openImportInterviewModal() {
+      var ov = document.createElement("div");
+      ov.id = "import-interview-overlay";
+      ov.className = "modal-overlay";
+      ov.innerHTML =
+        '<div class="modal" style="width:600px;max-width:95vw">' +
+        '<h3>📥 Import Interview</h3>' +
+        '<p style="font-size:0.88rem;color:var(--text-secondary);margin-top:0;margin-bottom:0.75rem">Paste your interview text below. The AI will split it into structured questions and answers.</p>' +
+        '<textarea id="import-interview-text" style="width:100%;min-height:300px;padding:0.6rem;border:1px solid var(--border);border-radius:6px;font-size:0.88rem;font-family:inherit;resize:vertical;box-sizing:border-box;background:var(--bg-input);color:var(--text-primary);margin-bottom:0.75rem" placeholder="Paste your raw interview text here..."></textarea>' +
+        '<div id="import-interview-status" style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:0.5rem;min-height:1.2em"></div>' +
+        '<div class="modal-btns">' +
+        '<button class="cancel" id="import-interview-cancel">Cancel</button>' +
+        '<button class="confirm" id="import-interview-ok">Import</button>' +
+        '</div>' +
+        '</div>';
+      document.body.appendChild(ov);
+      document.getElementById("import-interview-text").focus();
+      document.getElementById("import-interview-cancel").onclick = function() {
+        document.body.removeChild(ov);
+      };
+      document.getElementById("import-interview-ok").onclick = async function() {
+        var text = document.getElementById("import-interview-text").value.trim();
+        if (!text) { alert("Please paste some interview text first."); return; }
+        var okBtn = document.getElementById("import-interview-ok");
+        var cancelBtn = document.getElementById("import-interview-cancel");
+        var statusEl = document.getElementById("import-interview-status");
+        okBtn.disabled = true;
+        okBtn.textContent = "Processing…";
+        cancelBtn.disabled = true;
+        statusEl.textContent = "⏳ Sending to AI for parsing…";
+        try {
+          var parsed = await callLLMForInterviewParsing(text);
+          document.body.removeChild(ov);
+          populateInterviewFromParsed(parsed);
+        } catch (err) {
+          statusEl.textContent = "❌ Error: " + err.message;
+          okBtn.disabled = false;
+          okBtn.textContent = "Import";
+          cancelBtn.disabled = false;
+        }
+      };
+    }
+
+    async function callLLMForInterviewParsing(rawText) {
+      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
+      if (!activeToken) {
+        throw new Error('No API token configured for ' + activeProvider + '. Save your token in Settings first.');
+      }
+      var systemMsg = "You are an interview parsing assistant. Parse raw interview text into structured JSON. Return ONLY valid JSON with no markdown fences and no explanation.";
+      var userPrompt = 'Parse the following raw interview text and return a JSON object with this exact structure:\n{\n  "title": "interview source or title if identifiable, otherwise empty string",\n  "questions": [\n    { "question": "full question text", "answer": "full answer text or empty string if no answer present" },\n    ...\n  ]\n}\n\nRules:\n- Identify and include the interview source/title if present (e.g. magazine name, publication).\n- Every sentence or paragraph that is clearly a question belongs in "question".\n- The text immediately following a question (if any) is the answer — include respondent names like "Rich-" at the start of the answer.\n- Instructional lines like "Please indicate who is answering which question" are NOT questions — omit them.\n- If a question has no answer, set "answer" to an empty string.\n- Preserve the full text of questions and answers exactly.\n\nRaw interview text:\n"""\n' + rawText + '\n"""';
+
+      var responseText = '';
+      if (activeProvider === "anthropic") {
+        var r = await fetch(ANTHROPIC_DIRECT_URL, {
+          method: "POST",
+          headers: { "x-api-key": anthropicToken, "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+          body: JSON.stringify({ model: selectedModel, max_tokens: 4096, system: systemMsg, messages: [{ role: "user", content: userPrompt }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error('Anthropic API error ' + r.status + ': ' + et); }
+        var d = await r.json();
+        responseText = (d.content && d.content[0] && d.content[0].text) || '';
+      } else if (activeProvider === "watsonx") {
+        var bearerToken = await getWatsonxBearerToken();
+        var r = await fetch(WATSONX_PROXY_URL, {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json", "X-Target-URL": WATSONX_CHAT_URL },
+          body: JSON.stringify({ model_id: selectedModel, project_id: watsonxProjectId, max_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userPrompt }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error('watsonx API error ' + r.status + ': ' + et); }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+      } else {
+        var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
+        var authToken = activeProvider === "openai" ? openaiToken : token;
+        var r = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: selectedModel, max_completion_tokens: 4096, messages: [{ role: "system", content: systemMsg }, { role: "user", content: userPrompt }] })
+        });
+        if (!r.ok) { var et = await r.text(); throw new Error('API error ' + r.status + ': ' + et); }
+        var d = await r.json();
+        responseText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+      }
+
+      if (!responseText) throw new Error('AI returned an empty response');
+      responseText = responseText.trim();
+      if (responseText.startsWith('```')) {
+        responseText = responseText.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      }
+      var parsed;
+      try { parsed = JSON.parse(responseText); } catch (e) { throw new Error('AI response was not valid JSON. Try again.'); }
+      if (!parsed.questions || !Array.isArray(parsed.questions)) throw new Error('AI response missing "questions" array.');
+      return parsed;
+    }
+
+    function populateInterviewFromParsed(parsed) {
+      // Clear existing Q&A pairs
+      var container = document.getElementById("mc-qa-container");
+      if (!container) return;
+      container.innerHTML = "";
+      _mcQACount = 0;
+
+      // Set title if provided and title field is still default/empty
+      if (parsed.title) {
+        var titleInput = document.getElementById("mc-title");
+        if (titleInput && (!titleInput.value.trim() || titleInput.value.trim() === "Interview")) {
+          titleInput.value = parsed.title;
+        }
+      }
+
+      // Populate Q&A pairs
+      var questions = parsed.questions || [];
+      if (!questions.length) {
+        alert("No questions found in the imported text.");
+        mcAddQAPair();
+        return;
+      }
+      questions.forEach(function(item) {
+        mcAddQAPair();
+        var n = _mcQACount;
+        var qEl = document.getElementById("mc-q-" + n);
+        var aEl = document.getElementById("mc-a-" + n);
+        if (qEl) qEl.value = item.question || "";
+        if (aEl) aEl.value = item.answer || "";
+      });
     }
 
     function handleManualContent(title, type, content, extra) {
