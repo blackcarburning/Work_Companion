@@ -10112,15 +10112,14 @@
 
   // Scans a text string and lowercases any capital letter that is NOT at the start of the
   // string, NOT after a sentence-ending punctuation mark (. ? !), and NOT after a paragraph
-  // break (\n\n).  Capitals that are mid-word (not preceded by whitespace) are left alone
-  // to preserve acronyms / camelCase in dictated text.
+  // break (\n\n).  Every uppercase letter is checked regardless of what precedes it, so
+  // stray browser-injected capitals (e.g. at the start of a new recognition segment after a
+  // pause) are always caught.
   function fixCapitalisationInText(text) {
     var chars = text.split('');
     for (var i = 0; i < chars.length; i++) {
       var ch = chars[i];
       if (ch < 'A' || ch > 'Z') continue;
-      // Only act on capitals that follow whitespace (i.e. start of a word, not mid-word).
-      if (i > 0 && chars[i - 1] !== ' ' && chars[i - 1] !== '\t' && chars[i - 1] !== '\n') continue;
       // Walk back past any spaces/tabs to find the true context character.
       var j = i - 1;
       while (j >= 0 && (chars[j] === ' ' || chars[j] === '\t')) j--;
@@ -10135,7 +10134,9 @@
 
   // After inserting speech text, scan the entire field value and fix any capitals that do not
   // follow a sentence-ending punctuation mark or a paragraph break.  Cursor position is
-  // preserved.  ContentEditable elements are skipped (complex DOM cursor handling).
+  // preserved for plain textarea/input elements.  ContentEditable elements are handled via
+  // their textContent property (simple text replacement — no DOM structure is altered beyond
+  // character case).
   function retroactivelyFixCapitalisationInField(target) {
     var el;
     if (target === 'chat') {
@@ -10145,12 +10146,19 @@
     } else if (target === 'adhoc') {
       el = document.getElementById('adhoc-input');
     } else if (target === 'summary') {
-      return; // contentEditable — skip to avoid destroying DOM structure
+      el = document.getElementById('summary-editor');
     } else {
       el = (typeof target === 'string') ? document.getElementById(target) : target;
-      if (el && el.isContentEditable) return;
     }
     if (!el) return;
+    if (el.isContentEditable) {
+      var val = el.textContent || '';
+      var fixed = fixCapitalisationInText(val);
+      if (fixed !== val) {
+        el.textContent = fixed;
+      }
+      return;
+    }
     var val = el.value || '';
     var fixed = fixCapitalisationInText(val);
     if (fixed !== val) {
@@ -10231,8 +10239,11 @@
       }
     });
 
-    // Step 4: Normalise spacing — collapse runs of spaces/tabs and trim the edges.
-    text = text.replace(/[ \t]{2,}/g, ' ').trim();
+    // Step 4: Normalise spacing — collapse runs of spaces/tabs and trim leading/trailing
+    // spaces/tabs.  Do NOT use .trim() here because it would also strip leading/trailing
+    // newlines produced by "new line" / "new paragraph" voice commands.
+    text = text.replace(/[ \t]{2,}/g, ' ');
+    text = text.replace(/^[ \t]+|[ \t]+$/g, '');
 
     // Step 5: Smart capitalisation within the new transcript.
     // Capitalise the first letter after a sentence-ending punctuation mark or a new paragraph.
