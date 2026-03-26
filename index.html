@@ -10075,8 +10075,43 @@
     { cmd: 'dot',                  token: '\u0001DT\u0001',  out: '.'    }
   ];
 
-  function processMicTranscript(raw) {
+  // Returns the text in the target field up to the current cursor position (or full text
+  // for contentEditable elements).  Used to determine whether to capitalise the first word
+  // of a newly transcribed segment.
+  function getTextBeforeCursor(target) {
+    var el;
+    if (target === 'chat') {
+      el = document.getElementById('userInput');
+      if (!el) return '';
+      return el.value.slice(0, el.selectionStart !== undefined ? el.selectionStart : el.value.length);
+    } else if (target === 'notes') {
+      el = document.getElementById('notes-editor');
+      if (!el) return '';
+      return el.value.slice(0, el.selectionStart !== undefined ? el.selectionStart : el.value.length);
+    } else if (target === 'summary') {
+      el = document.getElementById('summary-editor');
+      return el ? (el.textContent || '') : '';
+    } else if (target === 'adhoc') {
+      el = document.getElementById('adhoc-input');
+      if (!el) return '';
+      return el.value.slice(0, el.selectionStart !== undefined ? el.selectionStart : el.value.length);
+    } else {
+      el = (typeof target === 'string') ? document.getElementById(target) : target;
+      if (!el) return '';
+      if (el.isContentEditable) return el.textContent || '';
+      var val = el.value || '';
+      var pos = (el.selectionStart !== undefined) ? el.selectionStart : val.length;
+      return val.slice(0, pos);
+    }
+  }
+
+  function processMicTranscript(raw, existingText) {
     var text = raw;
+
+    // Step 0: Lowercase everything first.  The browser/Speech API automatically capitalises
+    // the first word of each utterance (including after pauses), which creates unwanted mid-
+    // sentence capitals.  We will restore correct capitalisation ourselves in steps 5–6.
+    text = text.toLowerCase();
 
     // Step 1: Replace voice commands with unique placeholder tokens (case-insensitive).
     // Longer/more-specific phrases are listed first in _voiceCommandMap so they match before
@@ -10112,7 +10147,40 @@
     // Step 4: Normalise spacing — collapse runs of spaces/tabs and trim the edges.
     text = text.replace(/[ \t]{2,}/g, ' ').trim();
 
-    // Step 5: Ensure a single trailing space so the next spoken segment starts cleanly,
+    // Step 5: Smart capitalisation within the new transcript.
+    // Capitalise the first letter after a sentence-ending punctuation mark or a new paragraph.
+    text = text.replace(/((?:[.?!]\s+)|\n\n)([a-z])/g, function(m, sep, ch) {
+      return sep + ch.toUpperCase();
+    });
+
+    // Step 6: Decide whether to capitalise the very first letter of this segment.
+    // Only capitalise if: the existing text is empty, ends with sentence-ending punctuation,
+    // or ends with a new paragraph.  Mid-sentence pauses must NOT trigger capitalisation.
+    if (text.length > 0) {
+      var ctx = (typeof existingText === 'string') ? existingText : '';
+      var shouldCap = false;
+      if (ctx.length === 0) {
+        shouldCap = true;
+      } else {
+        // Check what comes immediately before the insertion point, ignoring trailing spaces.
+        var trimmedCtx = ctx.replace(/[ \t]+$/, '');
+        if (trimmedCtx.length === 0) {
+          shouldCap = true;
+        } else if (trimmedCtx.slice(-2) === '\n\n') {
+          shouldCap = true;
+        } else {
+          var lastChar = trimmedCtx[trimmedCtx.length - 1];
+          if (lastChar === '.' || lastChar === '?' || lastChar === '!') {
+            shouldCap = true;
+          }
+        }
+      }
+      if (shouldCap) {
+        text = text.charAt(0).toUpperCase() + text.slice(1);
+      }
+    }
+
+    // Step 7: Ensure a single trailing space so the next spoken segment starts cleanly,
     // unless the text ends with a newline.
     if (text.length > 0 && text[text.length - 1] !== '\n') {
       text = text + ' ';
@@ -10153,7 +10221,8 @@
     recognition.onresult = function(event) {
       var raw = event.results[event.results.length - 1][0].transcript;
       debugLog('[MIC] Raw transcript: ' + raw);
-      var processed = processMicTranscript(raw);
+      var existing = getTextBeforeCursor(target);
+      var processed = processMicTranscript(raw, existing);
       debugLog('[MIC] Processed transcript: ' + processed);
       insertAtCursorMic(target, processed);
     };
