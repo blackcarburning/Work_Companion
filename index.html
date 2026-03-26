@@ -10057,6 +10057,12 @@
     { cmd: 'close square bracket', token: '\u0001CSB\u0001', out: ']'    },
     { cmd: 'open bracket',         token: '\u0001OB\u0001',  out: '('    },
     { cmd: 'close bracket',        token: '\u0001CB\u0001',  out: ')'    },
+    { cmd: 'open double quote',    token: '\u0001ODQ\u0001', out: '\u201c' /* " */},
+    { cmd: 'close double quote',   token: '\u0001CDQ\u0001', out: '\u201d' /* " */},
+    { cmd: 'open single quote',    token: '\u0001OSQ\u0001', out: '\u2018' /* ' */},
+    { cmd: 'close single quote',   token: '\u0001CSQ\u0001', out: '\u2019' /* ' */},
+    { cmd: 'double quote',         token: '\u0001DQ\u0001',  out: '"'    },
+    { cmd: 'single quote',         token: '\u0001SQ\u0001',  out: "'"    },
     { cmd: 'open quote',           token: '\u0001OQ\u0001',  out: '"'    },
     { cmd: 'close quote',          token: '\u0001CQ\u0001',  out: '"'    },
     { cmd: 'forward slash',        token: '\u0001FWS\u0001', out: '/'    },
@@ -10074,6 +10080,87 @@
     { cmd: 'hash',                 token: '\u0001HS\u0001',  out: '#'    },
     { cmd: 'dot',                  token: '\u0001DT\u0001',  out: '.'    }
   ];
+
+  // Removes the last word (and any trailing whitespace before it) from a text string.
+  function removeLastWord(text) {
+    var trimmed = text.replace(/\s+$/, '');
+    var afterRemove = trimmed.replace(/\S+$/, '');
+    return afterRemove.replace(/\s+$/, '');
+  }
+
+  // Removes the last word from the target field.
+  function deleteLastWordMic(target) {
+    var el;
+    if (target === 'chat') {
+      el = document.getElementById('userInput');
+    } else if (target === 'notes') {
+      el = document.getElementById('notes-editor');
+    } else if (target === 'summary') {
+      el = document.getElementById('summary-editor');
+    } else if (target === 'adhoc') {
+      el = document.getElementById('adhoc-input');
+    } else {
+      el = (typeof target === 'string') ? document.getElementById(target) : target;
+    }
+    if (!el) return;
+    if (el.isContentEditable) {
+      el.textContent = removeLastWord(el.textContent || '');
+    } else {
+      el.value = removeLastWord(el.value || '');
+    }
+  }
+
+  // Scans a text string and lowercases any capital letter that is NOT at the start of the
+  // string, NOT after a sentence-ending punctuation mark (. ? !), and NOT after a paragraph
+  // break (\n\n).  Capitals that are mid-word (not preceded by whitespace) are left alone
+  // to preserve acronyms / camelCase in dictated text.
+  function fixCapitalisationInText(text) {
+    var chars = text.split('');
+    for (var i = 0; i < chars.length; i++) {
+      var ch = chars[i];
+      if (ch < 'A' || ch > 'Z') continue;
+      // Only act on capitals that follow whitespace (i.e. start of a word, not mid-word).
+      if (i > 0 && chars[i - 1] !== ' ' && chars[i - 1] !== '\t' && chars[i - 1] !== '\n') continue;
+      // Walk back past any spaces/tabs to find the true context character.
+      var j = i - 1;
+      while (j >= 0 && (chars[j] === ' ' || chars[j] === '\t')) j--;
+      if (j < 0) continue; // nothing before → start of field → keep capitalised
+      var ctxChar = chars[j];
+      if (ctxChar === '.' || ctxChar === '?' || ctxChar === '!') continue; // after sentence end → keep
+      if (ctxChar === '\n' && j > 0 && chars[j - 1] === '\n') continue;   // after \n\n → keep
+      chars[i] = ch.toLowerCase();
+    }
+    return chars.join('');
+  }
+
+  // After inserting speech text, scan the entire field value and fix any capitals that do not
+  // follow a sentence-ending punctuation mark or a paragraph break.  Cursor position is
+  // preserved.  ContentEditable elements are skipped (complex DOM cursor handling).
+  function retroactivelyFixCapitalisationInField(target) {
+    var el;
+    if (target === 'chat') {
+      el = document.getElementById('userInput');
+    } else if (target === 'notes') {
+      el = document.getElementById('notes-editor');
+    } else if (target === 'adhoc') {
+      el = document.getElementById('adhoc-input');
+    } else if (target === 'summary') {
+      return; // contentEditable — skip to avoid destroying DOM structure
+    } else {
+      el = (typeof target === 'string') ? document.getElementById(target) : target;
+      if (el && el.isContentEditable) return;
+    }
+    if (!el) return;
+    var val = el.value || '';
+    var fixed = fixCapitalisationInText(val);
+    if (fixed !== val) {
+      var ss = el.selectionStart;
+      var se = el.selectionEnd;
+      el.value = fixed;
+      el.selectionStart = ss;
+      el.selectionEnd = se;
+    }
+  }
 
   // Returns the text in the target field up to the current cursor position (or full text
   // for contentEditable elements).  Used to determine whether to capitalise the first word
@@ -10221,10 +10308,25 @@
     recognition.onresult = function(event) {
       var raw = event.results[event.results.length - 1][0].transcript;
       debugLog('[MIC] Raw transcript: ' + raw);
-      var existing = getTextBeforeCursor(target);
-      var processed = processMicTranscript(raw, existing);
-      debugLog('[MIC] Processed transcript: ' + processed);
-      insertAtCursorMic(target, processed);
+
+      // Step 0 (pre-processing): lowercase and extract delete commands before anything else.
+      var lc = raw.toLowerCase();
+      var deleteCount = 0;
+      lc = lc.replace(/\bdelete last word\b/g, function() { deleteCount++; return ''; });
+      lc = lc.replace(/\bdelete\b/g, function() { deleteCount++; return ''; });
+      // Apply any deletions to the field.
+      for (var _d = 0; _d < deleteCount; _d++) { deleteLastWordMic(target); }
+      // Process any remaining words as dictated text.
+      lc = lc.trim();
+      if (lc) {
+        var existing = getTextBeforeCursor(target);
+        var processed = processMicTranscript(lc, existing);
+        debugLog('[MIC] Processed transcript: ' + processed);
+        insertAtCursorMic(target, processed);
+        // Retroactively fix any stray capitals that slipped through (e.g. browser re-capitalising
+        // at the start of each new recognition session after a pause).
+        retroactivelyFixCapitalisationInField(target);
+      }
     };
     recognition.onerror = function(event) {
       debugLog('[MIC] Error: ' + event.error);
