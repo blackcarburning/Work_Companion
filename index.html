@@ -10044,6 +10044,83 @@
   }
   var _mcQACount = 0;
 
+  // Voice command → punctuation map for manual punctuation mode.
+  // Order matters: longer/more-specific phrases must come before shorter ones.
+  var _voiceCommandMap = [
+    { cmd: 'new paragraph',        token: '\u0001NP\u0001',  out: '\n\n' },
+    { cmd: 'new line',             token: '\u0001NL\u0001',  out: '\n'   },
+    { cmd: 'full stop',            token: '\u0001FS\u0001',  out: '.'    },
+    { cmd: 'question mark',        token: '\u0001QM\u0001',  out: '?'    },
+    { cmd: 'exclamation mark',     token: '\u0001EM\u0001',  out: '!'    },
+    { cmd: 'exclamation point',    token: '\u0001EP\u0001',  out: '!'    },
+    { cmd: 'open square bracket',  token: '\u0001OSB\u0001', out: '['    },
+    { cmd: 'close square bracket', token: '\u0001CSB\u0001', out: ']'    },
+    { cmd: 'open bracket',         token: '\u0001OB\u0001',  out: '('    },
+    { cmd: 'close bracket',        token: '\u0001CB\u0001',  out: ')'    },
+    { cmd: 'open quote',           token: '\u0001OQ\u0001',  out: '"'    },
+    { cmd: 'close quote',          token: '\u0001CQ\u0001',  out: '"'    },
+    { cmd: 'forward slash',        token: '\u0001FWS\u0001', out: '/'    },
+    { cmd: 'backslash',            token: '\u0001BWS\u0001', out: '\\'   },
+    { cmd: 'semicolon',            token: '\u0001SC\u0001',  out: ';'    },
+    { cmd: 'hashtag',              token: '\u0001HT\u0001',  out: '#'    },
+    { cmd: 'at sign',              token: '\u0001AT\u0001',  out: '@'    },
+    { cmd: 'ampersand',            token: '\u0001AMP\u0001', out: '&'    },
+    { cmd: 'ellipsis',             token: '\u0001EL\u0001',  out: '...'  },
+    { cmd: 'comma',                token: '\u0001CM\u0001',  out: ','    },
+    { cmd: 'period',               token: '\u0001PD\u0001',  out: '.'    },
+    { cmd: 'colon',                token: '\u0001CL\u0001',  out: ':'    },
+    { cmd: 'hyphen',               token: '\u0001HY\u0001',  out: '-'    },
+    { cmd: 'dash',                 token: '\u0001DA\u0001',  out: '\u2014' /* em dash — */},
+    { cmd: 'hash',                 token: '\u0001HS\u0001',  out: '#'    },
+    { cmd: 'dot',                  token: '\u0001DT\u0001',  out: '.'    }
+  ];
+
+  function processMicTranscript(raw) {
+    var text = raw;
+
+    // Step 1: Replace voice commands with unique placeholder tokens (case-insensitive).
+    // Longer/more-specific phrases are listed first in _voiceCommandMap so they match before
+    // any shorter phrase that shares a prefix (e.g. "open square bracket" before "open bracket").
+    // Commands contain only letters and spaces; the space is already handled by \s+ below.
+    _voiceCommandMap.forEach(function(entry) {
+      var re = new RegExp('\\b' + entry.cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+') + '\\b', 'gi');
+      text = text.replace(re, entry.token);
+    });
+
+    // Step 2: Strip auto-inserted punctuation from the remaining (non-token) text.
+    // Tokens use \u0001 delimiters which are not punctuation, so they are unaffected.
+    text = text.replace(/[.,!?;:]/g, '');
+
+    // Step 3: Replace each placeholder token with its actual punctuation, adjusting spacing.
+    _voiceCommandMap.forEach(function(entry) {
+      var isLineBreak = (entry.out === '\n' || entry.out === '\n\n');
+      if (isLineBreak) {
+        // Absorb any surrounding spaces so line breaks don't leave stray whitespace.
+        text = text.split(' ' + entry.token + ' ').join(entry.out);
+        text = text.split(' ' + entry.token).join(entry.out);
+        text = text.split(entry.token + ' ').join(entry.out);
+        text = text.split(entry.token).join(entry.out);
+      } else {
+        // Inline punctuation: remove the space before the token (so it attaches to the
+        // preceding word), then replace the token with the punctuation followed by a space.
+        // Any resulting double-spaces are cleaned up in step 4.
+        text = text.split(' ' + entry.token).join(entry.token);
+        text = text.split(entry.token).join(entry.out + ' ');
+      }
+    });
+
+    // Step 4: Normalise spacing — collapse runs of spaces/tabs and trim the edges.
+    text = text.replace(/[ \t]{2,}/g, ' ').trim();
+
+    // Step 5: Ensure a single trailing space so the next spoken segment starts cleanly,
+    // unless the text ends with a newline.
+    if (text.length > 0 && text[text.length - 1] !== '\n') {
+      text = text + ' ';
+    }
+
+    return text;
+  }
+
   function toggleMic(btn, target) {
     // If this button is already recording, stop it
     if (_micActiveBtn === btn) {
@@ -10074,9 +10151,11 @@
     recognition.interimResults = false;
 
     recognition.onresult = function(event) {
-      var transcript = event.results[event.results.length - 1][0].transcript;
-      debugLog('[MIC] Transcript: ' + transcript);
-      insertAtCursorMic(target, transcript + ' ');
+      var raw = event.results[event.results.length - 1][0].transcript;
+      debugLog('[MIC] Raw transcript: ' + raw);
+      var processed = processMicTranscript(raw);
+      debugLog('[MIC] Processed transcript: ' + processed);
+      insertAtCursorMic(target, processed);
     };
     recognition.onerror = function(event) {
       debugLog('[MIC] Error: ' + event.error);
