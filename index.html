@@ -2836,6 +2836,113 @@
           return result;
         }
 
+        function wordRenderHtmlToWord(html) {
+          if (!html) return makePara(makeRun("", { font: bodyFont, sz: bodySz, color: bodyHex }), { spaceAfter: 80 });
+          var tmp = document.createElement("div");
+          tmp.innerHTML = html;
+          if (!tmp.textContent.trim()) return makePara(makeRun("", { font: bodyFont, sz: bodySz, color: bodyHex }), { spaceAfter: 80 });
+          var result = "";
+
+          function collectRuns(node, bold, italic, strike, runs) {
+            if (node.nodeType === 3) {
+              var t = node.textContent;
+              if (t) runs.push({ text: t, bold: !!bold, italic: !!italic, strike: !!strike });
+              return;
+            }
+            var tag = (node.nodeName || "").toLowerCase();
+            if (tag === 'br') { runs.push({ text: '\n', bold: !!bold, italic: !!italic, strike: !!strike }); return; }
+            var b = bold || tag === 'b' || tag === 'strong';
+            var it = italic || tag === 'i' || tag === 'em';
+            var st = strike || tag === 's' || tag === 'strike' || tag === 'del';
+            Array.from(node.childNodes).forEach(function(ch) { collectRuns(ch, b, it, st, runs); });
+          }
+
+          function runsToXml(runs, baseOpts) {
+            var xml = "";
+            baseOpts = baseOpts || {};
+            runs.forEach(function(run) {
+              if (run.text === '\n') { xml += '<w:r><w:br/></w:r>'; return; }
+              var rPr = "";
+              var font = baseOpts.font || bodyFont;
+              var sz = baseOpts.sz || bodySz;
+              var color = baseOpts.color || bodyHex;
+              rPr += '<w:rFonts w:ascii="' + escapeXml(font) + '" w:hAnsi="' + escapeXml(font) + '"/>';
+              if (run.bold || baseOpts.bold) rPr += "<w:b/>";
+              if (run.italic || baseOpts.italic) rPr += "<w:i/>";
+              if (run.strike) rPr += "<w:strike/>";
+              rPr += '<w:color w:val="' + color + '"/>';
+              rPr += '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>';
+              rPr = "<w:rPr>" + rPr + "</w:rPr>";
+              var t = run.text != null ? String(run.text) : "";
+              var spaceAttr = (t.charAt(0) === " " || t.charAt(t.length - 1) === " ") ? ' xml:space="preserve"' : "";
+              xml += "<w:r>" + rPr + "<w:t" + spaceAttr + ">" + escapeXml(t) + "</w:t></w:r>";
+            });
+            return xml;
+          }
+
+          function renderBlockWordEx(node, listType, listCounter) {
+            if (node.nodeType === 3) {
+              var t = (node.textContent || "").replace(/\s+/g, ' ');
+              if (t.trim()) result += makePara(makeRun(t, { font: bodyFont, sz: bodySz, color: bodyHex }), { spaceAfter: 80 });
+              return;
+            }
+            var tag = (node.nodeName || "").toLowerCase();
+            if (tag === 'hr') {
+              result += '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="' + wordColors.divider + '"/></w:pBdr><w:spacing w:after="80"/></w:pPr></w:p>';
+              return;
+            }
+            if (tag === 'br') { result += makePara("", { spaceAfter: 40 }); return; }
+            if (tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6') {
+              var lvl = parseInt(tag.slice(1));
+              var hSz = lvl === 1 ? h1Sz : (lvl === 2 ? h2Sz : h3Sz);
+              var spaceBefore = lvl === 1 ? 240 : (lvl === 2 ? 160 : 100);
+              var ht = (node.textContent || "").trim();
+              if (ht) result += makePara(makeRun(ht, { bold: true, font: headingFont, sz: hSz, color: headingHex }), { spaceBefore: spaceBefore, spaceAfter: 80 });
+              return;
+            }
+            if (tag === 'ul') {
+              Array.from(node.childNodes).forEach(function(ch) { renderBlockWordEx(ch, 'bullet', null); });
+              result += makePara("", { spaceAfter: 40 }); return;
+            }
+            if (tag === 'ol') {
+              var ctr = [1];
+              Array.from(node.childNodes).forEach(function(ch) { renderBlockWordEx(ch, 'ordered', ctr); });
+              result += makePara("", { spaceAfter: 40 }); return;
+            }
+            if (tag === 'li') {
+              var runs = [];
+              collectRuns(node, false, false, false, runs);
+              if (!runs.some(function(r) { return r.text.trim(); })) return;
+              var prefix = listType === 'bullet' ? '\u2022 ' : ((listCounter ? listCounter[0]++ : 1) + ". ");
+              var prefixRun = makeRun(prefix, { font: bodyFont, sz: bodySz, color: bodyHex });
+              result += '<w:p><w:pPr><w:ind w:left="360"/><w:spacing w:after="80"/></w:pPr>' + prefixRun + runsToXml(runs) + '</w:p>';
+              return;
+            }
+            var isBlock = ['p', 'div', 'section', 'article', 'blockquote'].indexOf(tag) >= 0;
+            var hasSubBlocks = Array.from(node.childNodes).some(function(ch) {
+              var ct = (ch.nodeName || "").toLowerCase();
+              return ['p', 'div', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr'].indexOf(ct) >= 0;
+            });
+            if (hasSubBlocks) {
+              Array.from(node.childNodes).forEach(function(ch) { renderBlockWordEx(ch, listType, listCounter); });
+              return;
+            }
+            var isBold = tag === 'b' || tag === 'strong';
+            var isItalic = tag === 'i' || tag === 'em';
+            var isStrike = tag === 's' || tag === 'strike' || tag === 'del';
+            var runs = [];
+            collectRuns(node, isBold, isItalic, isStrike, runs);
+            if (!runs.some(function(r) { return r.text.trim(); })) {
+              if (isBlock) result += makePara("", { spaceAfter: 40 });
+              return;
+            }
+            result += makePara(runsToXml(runs), { spaceAfter: 80 });
+          }
+
+          Array.from(tmp.childNodes).forEach(function(node) { renderBlockWordEx(node, null, null); });
+          return result;
+        }
+
         var body = "";
         var imageCounter = 0;
         var imageRelationships = [];
@@ -2942,13 +3049,13 @@
             if (msg.contentType) mcLabel += " (" + msg.contentType + ")";
             body += makePara(makeRun(mcLabel, { bold: true, font: bodyFont, sz: bodySz, color: "1A7F37" }), { spaceAfter: 80 });
             if (msg.content) {
-              body += wordRenderMarkdown(msg.content);
+              body += msg.wasEditedAsHtml ? wordRenderHtmlToWord(msg.content) : wordRenderMarkdown(msg.content);
             }
           } else if (isUser) {
             body += textParas(msg.content || "", { font: bodyFont, sz: bodySz, color: bodyHex });
             body += makePara("", { spaceAfter: 100 });
           } else {
-            body += wordRenderMarkdown(msg.content || "");
+            body += msg.wasEditedAsHtml ? wordRenderHtmlToWord(msg.content || "") : wordRenderMarkdown(msg.content || "");
             body += makePara("", { spaceAfter: 100 });
           }
         });
@@ -5060,7 +5167,7 @@
               body += textParas(msg.content || "", { font: bodyFont, sz: bodySz, color: bodyHex });
               body += makePara("", { spaceAfter: 100 });
             } else if (msg.role === "assistant") {
-              body += wordRenderMarkdown(msg.content || "");
+              body += msg.wasEditedAsHtml ? renderSummaryHtmlToWord(msg.content || "") : wordRenderMarkdown(msg.content || "");
               body += makePara("", { spaceAfter: 100 });
             }
           });
@@ -7376,8 +7483,31 @@
         (function(i) {
           cb.onclick = function() {
             var j = getJob(db.activeJobId);
-            var c = j && j.messages[i + 1] ? j.messages[i + 1].content : content;
-            navigator.clipboard.writeText(c);
+            var m = j && j.messages[i + 1] ? j.messages[i + 1] : null;
+            var c = m ? m.content : content;
+            var htmlContent;
+            if (m && m.wasEditedAsHtml) {
+              htmlContent = c;
+            } else {
+              htmlContent = typeof marked !== 'undefined' ? marked.parse(c || "") : (c || "");
+            }
+            var plainContent = htmlContent
+              .replace(/<br\s*\/?>/gi, '\n')
+              .replace(/<\/p>/gi, '\n')
+              .replace(/<\/div>/gi, '\n')
+              .replace(/<\/li>/gi, '\n')
+              .replace(/<[^>]+>/g, '')
+              .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+              .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
+              .replace(/\n{3,}/g, '\n\n').trim();
+            if (navigator.clipboard && navigator.clipboard.write && typeof ClipboardItem !== 'undefined') {
+              navigator.clipboard.write([new ClipboardItem({
+                'text/html': new Blob([htmlContent], { type: 'text/html' }),
+                'text/plain': new Blob([plainContent], { type: 'text/plain' })
+              })]);
+            } else {
+              navigator.clipboard.writeText(plainContent);
+            }
             cb.textContent = "✅ Copied!"; setTimeout(function() { cb.textContent = "📄 Copy"; }, 2000);
           };
         })(idx);
