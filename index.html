@@ -52,9 +52,12 @@
       --msg-user-bg: linear-gradient(135deg, #eff6ff, #dbeafe);
       --msg-user-border: #bfdbfe;
       --msg-user-label: #4f46e5;
+      --msg-user-text: #1c1f26;
       --msg-assistant-bg: #ffffff;
       --msg-assistant-border: #e5e7eb;
       --msg-assistant-label: #6366f1;
+      --msg-assistant-text: #1c1f26;
+      --card-text: #1c1f26;
 
       --notes-bg: #ffffff;
       --notes-border: #e5e7eb;
@@ -579,8 +582,8 @@
 
     /* Messages */
     .message { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 12px; line-height: 1.65; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
-    .message-user { background: var(--msg-user-bg); border: 1px solid var(--msg-user-border); }
-    .message-assistant { background: var(--msg-assistant-bg); border: 1px solid var(--msg-assistant-border); }
+    .message-user { background: var(--msg-user-bg); border: 1px solid var(--msg-user-border); color: var(--msg-user-text); }
+    .message-assistant { background: var(--msg-assistant-bg); border: 1px solid var(--msg-assistant-border); color: var(--msg-assistant-text); }
     .message-error { background: linear-gradient(135deg, #fef2f2, #fee2e2); border: 1px solid #fca5a5; color: #c0202a; border-radius: 12px; }
     .message-label {
       font-weight: 700; font-size: 0.7rem; text-transform: uppercase;
@@ -810,7 +813,7 @@
     .modal {
       background: var(--bg-card); border-radius: var(--radius-lg); padding: 1.7rem;
       width: 430px; box-shadow: var(--shadow-lg);
-      border: 1px solid rgba(0,0,0,0.06);
+      border: 1px solid rgba(0,0,0,0.06); color: var(--card-text);
     }
     .modal h3 { margin-bottom: 0.55rem; font-size: 1.15rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.01em; }
     .modal p { font-size: 0.83rem; color: var(--text-secondary); margin-bottom: 0.8rem; line-height: 1.55; }
@@ -1093,6 +1096,10 @@
             <label>Text</label>
             <input type="color" id="utc-text-primary" oninput="applyCustomUIThemeLive()">
           </div>
+          <div class="ui-theme-field">
+            <label>Card Text</label>
+            <input type="color" id="utc-card-text" oninput="applyCustomUIThemeLive()">
+          </div>
 
           <div class="ui-theme-section-title" style="margin-top:0.5rem">Messages</div>
           <div class="ui-theme-field">
@@ -1100,8 +1107,16 @@
             <input type="color" id="utc-msg-user-bg" oninput="applyCustomUIThemeLive()">
           </div>
           <div class="ui-theme-field">
+            <label>User Msg Text</label>
+            <input type="color" id="utc-msg-user-text" oninput="applyCustomUIThemeLive()">
+          </div>
+          <div class="ui-theme-field">
             <label>Asst Msg BG</label>
             <input type="color" id="utc-msg-asst-bg" oninput="applyCustomUIThemeLive()">
+          </div>
+          <div class="ui-theme-field">
+            <label>Asst Msg Text</label>
+            <input type="color" id="utc-msg-asst-text" oninput="applyCustomUIThemeLive()">
           </div>
 
           <div class="ui-theme-section-title" style="margin-top:0.5rem">Typography &amp; Style</div>
@@ -9538,9 +9553,12 @@
         "--msg-user-bg": msgUserBg,
         "--msg-user-border": t.msgUserBorder,
         "--msg-user-label": t.msgUserLabel,
+        "--msg-user-text": t.msgUserText || t.textPrimary,
         "--msg-assistant-bg": t.msgAssistantBg,
         "--msg-assistant-border": t.msgAssistantBorder,
         "--msg-assistant-label": t.msgAssistantLabel,
+        "--msg-assistant-text": t.msgAssistantText || t.textPrimary,
+        "--card-text": t.cardText || t.textPrimary,
         "--notes-bg": t.notesBg,
         "--notes-border": t.notesBorder,
         "--notes-header-bg": t.notesHeaderBg,
@@ -9640,8 +9658,11 @@
       setVal("utc-bg-app", base.bgApp || "#fafbfc");
       setVal("utc-bg-card", base.bgCard || "#ffffff");
       setVal("utc-text-primary", base.textPrimary || "#1c1f26");
+      setVal("utc-card-text", base.cardText || "#1c1f26");
       setVal("utc-msg-user-bg", base.msgUserBg1 || "#eff6ff");
+      setVal("utc-msg-user-text", base.msgUserText || "#1c1f26");
       setVal("utc-msg-asst-bg", base.msgAssistantBg || "#ffffff");
+      setVal("utc-msg-asst-text", base.msgAssistantText || "#1c1f26");
       var fontEl = document.getElementById("utc-font");
       if (fontEl) fontEl.value = (base.fontFamily || "'Inter', sans-serif");
       var radEl = document.getElementById("utc-radius");
@@ -9695,9 +9716,12 @@
         msgUserBg2: darkenHex(msgUserBg1, 0.05),
         msgUserBorder: darkenHex(msgUserBg1, 0.15),
         msgUserLabel: darkenHex(accent, 0.15),
+        msgUserText: getVal("utc-msg-user-text") || "#1c1f26",
         msgAssistantBg: getVal("utc-msg-asst-bg") || "#ffffff",
         msgAssistantBorder: lightenHex(getVal("utc-bg-app") || "#e5e7eb", -0.06),
         msgAssistantLabel: accent,
+        msgAssistantText: getVal("utc-msg-asst-text") || "#1c1f26",
+        cardText: getVal("utc-card-text") || "#1c1f26",
         notesBg: getVal("utc-bg-card") || "#ffffff",
         notesBorder: lightenHex(getVal("utc-bg-app") || "#e5e7eb", -0.05),
         notesHeaderBg: lightenHex(getVal("utc-bg-app") || "#fafbfc", 0.01),
