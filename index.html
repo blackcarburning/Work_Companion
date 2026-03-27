@@ -7371,16 +7371,9 @@
 
       // Replace content display with a textarea
       var ta = document.createElement("textarea");
+      ta.className = "msg-edit-textarea";
       ta.value = rawContent;
-      ta.style.width = "100%";
-      ta.style.minHeight = "120px";
-      ta.style.fontFamily = "inherit";
-      ta.style.fontSize = "inherit";
-      ta.style.border = "2px solid #0969da";
-      ta.style.borderRadius = "6px";
-      ta.style.padding = "0.5rem";
-      ta.style.boxSizing = "border-box";
-      ta.style.resize = "vertical";
+      ta.style.height = "calc(100vh - 200px)";
       mcContentDiv.parentNode.insertBefore(ta, mcContentDiv);
       mcContentDiv.style.display = "none";
 
