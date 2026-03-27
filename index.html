@@ -470,16 +470,19 @@
     #chat { flex: 1; overflow-y: auto; padding: 1.2rem 1.1rem; background: var(--bg-app); }
     #input-section {
       padding: 0.8rem 1.1rem; border-top: none;
-      display: flex; gap: 0.5rem; background: var(--bg-card);
+      display: flex; gap: 0.5rem; align-items: flex-end; background: var(--bg-card);
       box-shadow: 0 -1px 3px rgba(0,0,0,0.05);
     }
-    #input-section input {
+    #input-section input, #input-section textarea {
       flex: 1; padding: 0.75rem 1rem;
       border: 2px solid var(--border); border-radius: 12px; font-size: 0.93rem;
       font-family: var(--font-family); background: var(--bg-card); color: var(--text-primary);
       transition: border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
-    #input-section input:focus {
+    #input-section textarea {
+      resize: vertical; min-height: 3.5rem; overflow-y: auto; line-height: 1.5; box-sizing: border-box;
+    }
+    #input-section input:focus, #input-section textarea:focus {
       outline: none; border-color: var(--accent);
       box-shadow: 0 0 0 3px var(--accent-light);
     }
@@ -946,7 +949,7 @@
     }
     #adhoc-input-section {
       display: flex;
-      align-items: center;
+      align-items: flex-end;
       gap: 0.4rem;
       padding: 0.65rem 1rem;
       border-top: 1px solid var(--border);
@@ -959,8 +962,14 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       font-size: 0.93rem;
+      font-family: var(--font-family);
       background: var(--bg-card);
       color: var(--text-primary);
+      resize: vertical;
+      min-height: 3.5rem;
+      overflow-y: auto;
+      line-height: 1.5;
+      box-sizing: border-box;
     }
     #adhoc-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
     #adhoc-send-btn {
@@ -1215,7 +1224,7 @@
       <div id="adhoc-chat"></div>
       <div id="adhoc-input-section">
         <button class="input-attach-btn mic-btn" id="adhoc-mic-btn" title="Voice input" onclick="toggleMic(this, 'adhoc')">🎤</button>
-        <input type="text" id="adhoc-input" placeholder="Ask anything..." />
+        <textarea id="adhoc-input" placeholder="Ask anything..." rows="3"></textarea>
         <button id="adhoc-send-btn" onclick="sendAdhocMessage()">Send</button>
       </div>
     </div>
@@ -7229,7 +7238,7 @@
         '<button class="input-attach-btn mic-btn" id="chat-mic-btn" title="Voice input (click to start, click again to stop)" onclick="toggleMic(this, \'chat\')">🎤</button>' +
 
         '</div>' +
-        '<input type="text" id="userInput" placeholder="Ask a question..." />' +
+        '<textarea id="userInput" placeholder="Ask a question..." rows="3"></textarea>' +
         '<button onclick="sendMessage()" id="sendBtn">Send</button></div></div>' +
         '<div id="notes-panel"><div id="notes-header"><span>📋 Notes / Clipboard</span>' +
         '<button class="mic-btn" id="notes-mic-btn" title="Dictate to notes" onclick="toggleMic(this, \'notes\')" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:0.28rem 0.5rem;">🎤</button>' +
@@ -7254,7 +7263,7 @@
 
       document.getElementById("notes-editor").value = job.notes || "";
       document.getElementById("notes-editor").addEventListener("input", function() { job.notes = this.value; saveDB(); });
-      document.getElementById("userInput").addEventListener("keydown", function(e) { if (e.key === "Enter") sendMessage(); });
+      document.getElementById("userInput").addEventListener("keydown", function(e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
       document.getElementById("userInput").focus();
       updateContextBar();
     }
@@ -8021,11 +8030,11 @@
         '<h3>&#x1F4DD; Summarise Document: &quot;' + escapeHtml(docName) + '&quot;</h3>' +
         '<div class="summarise-modal-field">' +
           '<label class="summarise-modal-label">System Prompt (AI\'s role)</label>' +
-          '<textarea id="sum-modal-system" rows="4" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.82rem;resize:vertical;">' + escapeHtml(db.summariseSystemPrompt || DEFAULT_SUMMARISE_SYSTEM_PROMPT) + '</textarea>' +
+          '<textarea id="sum-modal-system" style="width:100%;min-height:8rem;box-sizing:border-box;font-family:monospace;font-size:0.82rem;resize:vertical;">' + escapeHtml(db.summariseSystemPrompt || DEFAULT_SUMMARISE_SYSTEM_PROMPT) + '</textarea>' +
         '</div>' +
         '<div class="summarise-modal-field" style="margin-top:0.75rem;">' +
           '<label class="summarise-modal-label">Request (sent with the document)</label>' +
-          '<textarea id="sum-modal-user" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.82rem;resize:vertical;">' + escapeHtml(db.summariseUserPrompt || DEFAULT_SUMMARISE_USER_PROMPT) + '</textarea>' +
+          '<textarea id="sum-modal-user" style="width:100%;min-height:6rem;box-sizing:border-box;font-family:monospace;font-size:0.82rem;resize:vertical;">' + escapeHtml(db.summariseUserPrompt || DEFAULT_SUMMARISE_USER_PROMPT) + '</textarea>' +
           '<p style="margin:0.3rem 0 0;font-size:0.78rem;color:var(--text-secondary);">The document content will be appended automatically.</p>' +
         '</div>' +
         '<div style="margin-top:0.75rem;display:flex;align-items:center;gap:0.5rem;">' +
@@ -10038,7 +10047,7 @@
     adhocPanel.style.display = 'flex';
     document.getElementById('adhoc-chat').innerHTML = '';
     document.getElementById('adhoc-input').value = '';
-    document.getElementById('adhoc-input').onkeydown = function(e) { if (e.key === 'Enter') sendAdhocMessage(); };
+    document.getElementById('adhoc-input').onkeydown = function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAdhocMessage(); } };
     document.getElementById('adhoc-input').focus();
   }
 
