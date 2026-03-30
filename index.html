@@ -1327,6 +1327,12 @@
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
     var DEFAULT_MAX_DOC_CHARS = 15000;
+    var PROMPT_TEMPLATE_VERSION = "1.1";
+    var MAX_ASSISTANT_CHARS_IN_CONTEXT = 2000; // Cap old assistant outputs to reduce context bloat
+    var MAX_DERIVED_ARTIFACTS = 10; // Max derived artifacts to retain per job
+    var MAX_ARTIFACT_SUMMARY_CHARS = 200; // Summary preview length for derived artifacts
+    var CONTEXT_KEEP_LAST_FULL = 4; // Last N conv messages always kept at full length (not compacted)
+    var DIAGNOSTIC_DEBUG_LINES = 60; // Number of recent debug lines to include in self-diagnostic
     var DEFAULT_AUTOSAVE_INTERVAL_MIN = 5;
     var RATE_LIMIT_MAX_RETRIES = 3;
     var RATE_LIMIT_DELAYS = [5000, 15000, 30000]; // ms: 5s, 15s, 30s
@@ -1925,6 +1931,12 @@
           if (db.anthropicCacheEnabled === undefined) db.anthropicCacheEnabled = true;
           if (!db.summariseSystemPrompt) db.summariseSystemPrompt = DEFAULT_SUMMARISE_SYSTEM_PROMPT;
           if (!db.summariseUserPrompt) db.summariseUserPrompt = DEFAULT_SUMMARISE_USER_PROMPT;
+          // Migrate existing jobs to include new separated-state buckets (backward compat)
+          db.jobs.forEach(function(job) {
+            if (!job.sourceDocuments) job.sourceDocuments = [];
+            if (!job.userInstructions) job.userInstructions = [];
+            if (!job.derivedArtifacts) job.derivedArtifacts = [];
+          });
           // Rehydrate imageData from IndexedDB for messages that have imageRef
           for (var i = 0; i < db.jobs.length; i++) {
             var job = db.jobs[i];
@@ -2143,71 +2155,97 @@
       return Math.ceil(len / 4);
     }
 
-    function buildContextMessages(all) {
+    // Normalize raw source content: strip UI-generated prefixes and trim whitespace
+    function normalizeSourceContent(content) {
+      if (!content) return "";
+      return content.replace(/^Manual content titled '[^']*' \([^)]*\):\n\n/, "").trim();
+    }
+
+    // Generate a unique source document ID with a given prefix
+    function generateSourceDocId(prefix) {
+      return prefix + "_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+    }
+
+    // buildContextMessages(all, job) — builds the API message array from structured state.
+    // job is optional (omitted for backward compatibility when sourceDocuments is unavailable).
+    function buildContextMessages(all, job) {
       var sys = all[0], conv = all.slice(1);
-      // Filter out excluded messages from context
+
+      // Filter excluded messages
       var excluded = conv.filter(function(m) { return m.excluded; });
       if (excluded.length > 0) {
         debugLog('[CTX] Excluded ' + excluded.length + ' message(s) from context: indices ' +
           conv.map(function(m, i) { return m.excluded ? i : null; }).filter(function(i) { return i !== null; }).join(', '), 'info');
         conv = conv.filter(function(m) { return !m.excluded; });
       }
-      var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2;
-      var msgs;
-      debugLog('[CTX] buildContextMessages: total messages in history = ' + all.length + ' (incl. system), conv = ' + conv.length, 'info');
-      var trimmed = 0;
-      if (conv.length <= fc + lc) { msgs = [sys].concat(conv); }
-      else {
-        var first = conv.slice(0, fc), last = conv.slice(-lc);
-        var middle = conv.slice(fc, conv.length - lc);
-        // Identify pinned messages in the pruned middle that must always be preserved
-        var pinnedInMiddle = middle.filter(function(m) {
-          return m.isDocument || m.isImage || m.isManualContent;
-        });
-        if (pinnedInMiddle.length > 0) {
-          debugLog('[CTX] Preserving ' + pinnedInMiddle.length + ' document/attachment message(s) from pruning', 'info');
-        }
-        var skip = middle.length - pinnedInMiddle.length;
-        trimmed = skip;
-        if (skip > 0) {
-          var note = { role: "developer", content: "[Note: " + skip + " messages omitted. First " + KEEP_FIRST + " and last " + KEEP_LAST + " exchanges included.]" };
-          msgs = [sys].concat(first).concat([note]).concat(pinnedInMiddle).concat(last);
+
+      // Separate source messages (docs/manual) from pure conversation turns.
+      // Messages that have a sourceDocId AND the job has sourceDocuments are handled via
+      // the structured bucket and excluded from the per-message conversation section.
+      var hasStructuredDocs = job && job.sourceDocuments && job.sourceDocuments.length > 0;
+      var oldStyleSourceMsgs = []; // backward-compat: source msgs without a sourceDocId
+      var pureConv = [];            // pure conversation turns
+      conv.forEach(function(m) {
+        if (m.isDocument || m.isManualContent) {
+          if (hasStructuredDocs && m.sourceDocId) {
+            // Handled via job.sourceDocuments — skip from conversation
+          } else {
+            // Old job or message predates structured buckets: treat as pinned source msg
+            oldStyleSourceMsgs.push(m);
+          }
         } else {
-          msgs = [sys].concat(first).concat(pinnedInMiddle).concat(last);
+          pureConv.push(m);
         }
-        debugLog('[CTX] Sliding window trimmed ' + skip + ' messages (kept first ' + KEEP_FIRST + ' + last ' + KEEP_LAST + ' exchanges)', 'warn');
+      });
+
+      // Apply sliding window to pure conversation only
+      var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2;
+      var convMsgs;
+      if (pureConv.length <= fc + lc) {
+        convMsgs = pureConv.slice(); // copy
+      } else {
+        var first = pureConv.slice(0, fc), last = pureConv.slice(-lc);
+        var skip = pureConv.length - fc - lc;
+        var note = { role: "developer", content: "[Note: " + skip + " conversation messages omitted. First " + KEEP_FIRST + " and last " + KEEP_LAST + " exchanges included.]" };
+        convMsgs = first.concat([note]).concat(last);
+        debugLog('[CTX] Sliding window trimmed ' + skip + ' conversation messages (kept first ' + KEEP_FIRST + ' + last ' + KEEP_LAST + ' exchanges)', 'warn');
       }
-      // Append user name as session metadata to the system message (avoids misusing the developer role)
-      if (userName && msgs[0] && msgs[0].role === "system") {
-        var sysNote = "\n\n[Session info: user name is " + userName + "]";
-        msgs = [{ role: "system", content: msgs[0].content + sysNote }].concat(msgs.slice(1));
+
+      // Build system message with user name and output mode appended
+      var sysMsg = sys;
+      if (userName && sysMsg && sysMsg.role === "system") {
+        sysMsg = { role: "system", content: sysMsg.content + "\n\n[Session info: user name is " + userName + "]" };
         debugLog('[CTX] Appended user name to system message as session metadata', 'info');
       }
-      // Append output mode instruction to system message
       var OUTPUT_MODE_INSTRUCTIONS = {
         "word": "\n\n[Output format: Word-compatible — plain text with clear headings, no HTML tags.]",
         "html": "\n\n[Output format: HTML — wrap the response in appropriate HTML tags, use semantic markup.]",
         "pdf":  "\n\n[Output format: PDF-ready — clean plain text, clear structure, no HTML, no preamble, no follow-up suggestions.]"
       };
-      if (outputMode && OUTPUT_MODE_INSTRUCTIONS[outputMode] && msgs[0] && msgs[0].role === "system") {
-        msgs = [{ role: "system", content: msgs[0].content + OUTPUT_MODE_INSTRUCTIONS[outputMode] }].concat(msgs.slice(1));
+      if (outputMode && OUTPUT_MODE_INSTRUCTIONS[outputMode] && sysMsg && sysMsg.role === "system") {
+        sysMsg = { role: "system", content: sysMsg.content + OUTPUT_MODE_INSTRUCTIONS[outputMode] };
         debugLog('[CTX] Appended output mode "' + outputMode + '" instruction to system message', 'info');
       }
-      // Convert image messages to vision multipart format for supported providers
-      var isVisionCapable = (activeProvider === "openai" || activeProvider === "github");
-      var result = msgs.map(function(m) {
-        if (m.isImage && m.imageData && isVisionCapable) {
-          return {
-            role: "user",
-            content: [
-              { type: "text", text: "I've attached a screenshot for analysis." },
-              { type: "image_url", image_url: { url: m.imageData } }
-            ]
-          };
-        }
-        // Strip inline base64 images from content before sending to API
+
+      // Build source document messages from the structured bucket (injected once, deduplicated)
+      var structuredSourceMsgs = [];
+      if (hasStructuredDocs) {
+        job.sourceDocuments.forEach(function(doc) {
+          var content = doc.normalizedContent || doc.rawContent || "";
+          var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+          if (content.length > maxChars) {
+            debugLog('[CTX] ⚠️ Truncating source doc "' + doc.title + '" from ' + content.length.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars', 'warn');
+            content = content.substring(0, maxChars) + '\n[Content truncated at ' + maxChars.toLocaleString() + ' characters for API submission.]';
+          }
+          var header = "## Source: " + doc.title + (doc.type && doc.type !== "Add Conversation" ? " [" + doc.type + "]" : "");
+          structuredSourceMsgs.push({ role: "user", content: header + "\n\n" + content });
+        });
+        debugLog('[CTX] Injected ' + job.sourceDocuments.length + ' source document(s) from structured bucket', 'info');
+      }
+
+      // Process old-style pinned source messages (backward compat)
+      var processedOldSourceMsgs = oldStyleSourceMsgs.map(function(m) {
         var content = m.wasEditedAsHtml ? stripInlineImages(m.content) : m.content;
-        // Normalize manual content: strip the UI-generated "Manual content titled '...' (type):\n\n" prefix
         if (m.isManualContent && m.contentTitle && typeof content === "string") {
           var mcPrefixRe = /^Manual content titled '[^']*' \([^)]*\):\n\n/;
           if (mcPrefixRe.test(content)) {
@@ -2218,7 +2256,6 @@
             debugLog('[CTX] Normalized manual content prefix for "' + m.contentTitle + '"', 'info');
           }
         }
-        // Enforce document character limit at send time (does NOT modify stored message)
         if (m.isDocument && content) {
           var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
           if (content.length > maxChars) {
@@ -2230,11 +2267,61 @@
         return { role: m.role, content: content };
       });
 
-      var totalChars = 0;
+      // Process pure conversation messages:
+      // - Convert images to vision multipart format
+      // - Cap old assistant outputs to reduce context bloat
+      var isVisionCapable = (activeProvider === "openai" || activeProvider === "github");
+      var processedConvMsgs = convMsgs.map(function(m, i) {
+        if (m.isImage && m.imageData && isVisionCapable) {
+          return {
+            role: "user",
+            content: [
+              { type: "text", text: "I've attached a screenshot for analysis." },
+              { type: "image_url", image_url: { url: m.imageData } }
+            ]
+          };
+        }
+        var content = m.wasEditedAsHtml ? stripInlineImages(m.content) : m.content;
+        // Cap old assistant outputs (not within the last CONTEXT_KEEP_LAST_FULL messages) to prevent context bloat
+        if (m.role === "assistant" && i < convMsgs.length - CONTEXT_KEEP_LAST_FULL &&
+            typeof content === "string" && content.length > MAX_ASSISTANT_CHARS_IN_CONTEXT) {
+          debugLog('[CTX] ✂️ Compacting old assistant output at pos ' + i + ' (' + content.length + ' → ' + MAX_ASSISTANT_CHARS_IN_CONTEXT + ' chars)', 'info');
+          content = content.substring(0, MAX_ASSISTANT_CHARS_IN_CONTEXT) +
+            '\n[…output truncated for context compaction. Full output available in chat history.]';
+        }
+        return { role: m.role, content: content };
+      });
+
+      // Assemble final payload: system + sources (structured then legacy) + conversation
+      var result = [sysMsg]
+        .concat(structuredSourceMsgs)
+        .concat(processedOldSourceMsgs)
+        .concat(processedConvMsgs);
+
+      // Token split logging
+      var sysChars = typeof sysMsg.content === "string" ? sysMsg.content.length : JSON.stringify(sysMsg.content).length;
+      var sourceChars = 0;
+      structuredSourceMsgs.concat(processedOldSourceMsgs).forEach(function(m) {
+        sourceChars += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
+      });
+      var convChars = 0;
+      processedConvMsgs.forEach(function(m) {
+        convChars += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
+      });
+      var totalChars = sysChars + sourceChars + convChars;
+
+      debugLog('[CTX] Prompt v' + PROMPT_TEMPLATE_VERSION + ' | output mode: ' + (outputMode || "plain") +
+        ' | source docs: ' + (job && job.sourceDocuments ? job.sourceDocuments.length : 0) +
+        ' | conv msgs: ' + pureConv.length +
+        ' | total history: ' + all.length, 'info');
+      debugLog('[CTX] Token split — system: ~' + estimateTokenCount(sysChars).toLocaleString() +
+        ' | source: ~' + estimateTokenCount(sourceChars).toLocaleString() +
+        ' | conversation: ~' + estimateTokenCount(convChars).toLocaleString() +
+        ' | total: ~' + estimateTokenCount(totalChars).toLocaleString(), 'info');
+
       result.forEach(function(m, i) {
         var chars = typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
-        totalChars += chars;
-        debugLog('[CTX] Message ' + i + ' (' + m.role + '): ' + chars.toLocaleString() + ' chars (~' + estimateTokenCount(typeof m.content === "string" ? m.content : JSON.stringify(m.content)).toLocaleString() + ' tokens)', 'log');
+        debugLog('[CTX] Message ' + i + ' (' + m.role + '): ' + chars.toLocaleString() + ' chars (~' + estimateTokenCount(chars).toLocaleString() + ' tokens)', 'log');
         if (chars > 50000) {
           debugLog('[CTX] ⚠️ WARNING: Message ' + i + ' (' + m.role + ') exceeds 50,000 chars (' + chars.toLocaleString() + ' chars) — may cause API errors!', 'warn');
         }
@@ -2268,13 +2355,12 @@
     function viewApiContext() {
       if (!db.activeJobId) { alert("No active job."); return; }
       var job = getJob(db.activeJobId); if (!job) return;
-      var ctx = buildContextMessages(job.messages);
+      var ctx = buildContextMessages(job.messages, job);
       var json = JSON.stringify(ctx, null, 2);
       var displayJson = json.replace(/(data:image\/[^;]+;base64,)[A-Za-z0-9+\/=]{100,}/g, '$1[BASE64_DATA_TRUNCATED]');
       var totalKB = (json.length / 1024).toFixed(1);
       var totalTokens = estimateTokenCount(json);
       debugLog('[API] Context viewer opened: ' + ctx.length + ' messages, ~' + totalKB + ' KB, ~' + totalTokens.toLocaleString() + ' tokens', 'info');
-
       var ov = document.createElement("div"); ov.className = "modal-overlay";
       var modal = document.createElement("div"); modal.className = "modal"; modal.style.cssText = "width:700px;max-width:95vw;";
       modal.innerHTML =
@@ -2332,15 +2418,38 @@
       var diagBtn = document.getElementById("self-diag-btn");
       if (diagBtn) { diagBtn.disabled = true; diagBtn.setAttribute("aria-busy", "true"); diagBtn.textContent = "⏳ Diagnosing…"; }
 
-      // Capture debug text and API context BEFORE the diagnostic request
+      // Capture compact state BEFORE the diagnostic request (do not send full histories)
       var debugText = getDebugConsoleText();
-      var ctxMessages = buildContextMessages(job.messages);
-      var ctxJson = JSON.stringify(ctxMessages, null, 2)
-        .replace(/(data:image\/[^;]+;base64,)[A-Za-z0-9+\/=]{100,}/g, '$1[BASE64_DATA_TRUNCATED]');
+      var ctxMessages = buildContextMessages(job.messages, job);
+      var compactState = {
+        promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
+        jobName: job.name,
+        outputMode: outputMode,
+        provider: activeProvider,
+        model: selectedModel,
+        totalMessages: job.messages.length,
+        sourceDocumentCount: (job.sourceDocuments || []).length,
+        derivedArtifactCount: (job.derivedArtifacts || []).length,
+        sourceDocuments: (job.sourceDocuments || []).map(function(d) {
+          return { id: d.id, title: d.title, type: d.type, chars: (d.rawContent || "").length, createdAt: d.createdAt };
+        }),
+        promptConfig: {
+          systemPromptChars: (job.messages[0] && job.messages[0].content) ? job.messages[0].content.length : 0,
+          outputMode: outputMode,
+          anthropicCacheEnabled: db.anthropicCacheEnabled
+        },
+        recentContextMessages: ctxMessages.slice(-8).map(function(m) {
+          var content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+          return { role: m.role, chars: content.length, preview: content.substring(0, 120) };
+        }),
+        recentArtifacts: (job.derivedArtifacts || []).slice(-3).map(function(a) {
+          return { id: a.id, type: a.type, outputMode: a.outputMode, chars: (a.content || "").length, summary: a.summary, createdAt: a.createdAt };
+        })
+      };
 
       var diagnosticUserContent =
-        "## Debug Console Output\n\n```\n" + debugText + "\n```\n\n" +
-        "## Current API Context (JSON payload sent to LLM)\n\n```json\n" + ctxJson + "\n```\n\n" +
+        "## Debug Console Output (last " + DIAGNOSTIC_DEBUG_LINES + " lines)\n\n```\n" + debugText.split("\n").slice(-DIAGNOSTIC_DEBUG_LINES).join("\n") + "\n```\n\n" +
+        "## Compact Application State\n\n```json\n" + JSON.stringify(compactState, null, 2) + "\n```\n\n" +
         "Please analyze the above and provide prioritized recommendations for improving this application.";
 
       var diagPayload = [
@@ -7293,7 +7402,8 @@
         showModal("System Prompt", "Sets the AI's role. Sent with every message.", DEFAULT_TASK_SYSTEM_PROMPT, true, function(sp) {
           var job = {
             id: Date.now().toString(), name: name, color: TAB_COLORS[db.jobs.length % TAB_COLORS.length],
-            messages: [{ role: "system", content: sp || DEFAULT_TASK_SYSTEM_PROMPT }], notes: ""
+            messages: [{ role: "system", content: sp || DEFAULT_TASK_SYSTEM_PROMPT }], notes: "",
+            sourceDocuments: [], userInstructions: [], derivedArtifacts: []
           };
           db.jobs.push(job); db.activeJobId = job.id; db.activeView = "job"; saveDB(); renderSidebar(); renderView();
         });
@@ -8052,6 +8162,28 @@
       debugLog('[OUTPUT] Mode set to "' + mode + '"', 'info');
     }
 
+    // Save an assistant reply as a derived artifact on the job (capped at MAX_DERIVED_ARTIFACTS).
+    function saveDerivedArtifact(job, content) {
+      if (!job || !content) return;
+      if (!job.derivedArtifacts) job.derivedArtifacts = [];
+      var summary = typeof content === "string" && content.length > MAX_ARTIFACT_SUMMARY_CHARS ? content.substring(0, MAX_ARTIFACT_SUMMARY_CHARS) + "…" : content;
+      job.derivedArtifacts.push({
+        id: "art_" + Date.now(),
+        type: "formatted_document",
+        outputMode: outputMode || "plain",
+        content: content,
+        summary: summary,
+        createdAt: new Date().toISOString(),
+        model: selectedModel,
+        provider: activeProvider
+      });
+      // Keep only the most recent MAX_DERIVED_ARTIFACTS artifacts
+      if (job.derivedArtifacts.length > MAX_DERIVED_ARTIFACTS) {
+        job.derivedArtifacts = job.derivedArtifacts.slice(-MAX_DERIVED_ARTIFACTS);
+      }
+      debugLog('[ART] Saved derived artifact (outputMode="' + (outputMode || "plain") + '", ' + content.length + ' chars, total artifacts: ' + job.derivedArtifacts.length + ')', 'info');
+    }
+
     async function sendMessage() {
       if (!db.activeJobId) return; var job = getJob(db.activeJobId); if (!job) return;
       var input = document.getElementById("userInput"), ut = input.value.trim();
@@ -8087,7 +8219,7 @@
 
       try {
         debugLog('[API] Building context messages...', 'log');
-        var ctx = buildContextMessages(job.messages);
+        var ctx = buildContextMessages(job.messages, job);
         var payloadStr = JSON.stringify(ctx);
         var payloadKB = (payloadStr.length / 1024).toFixed(1);
         var payloadTokens = estimateTokenCount(payloadStr);
@@ -8173,6 +8305,7 @@
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
+            saveDerivedArtifact(job, reply);
           }
         } else if (activeProvider === "watsonx") {
           var bearerToken = await getWatsonxBearerToken();
@@ -8213,6 +8346,7 @@
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
+            saveDerivedArtifact(job, reply);
           }
         } else {
           var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
@@ -8252,6 +8386,7 @@
             }
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
+            saveDerivedArtifact(job, reply);
           }
         }
       } catch (err) {
@@ -8442,6 +8577,12 @@
             if (db.extractDocImages === undefined) db.extractDocImages = false;
             if (!db.summariseSystemPrompt) db.summariseSystemPrompt = DEFAULT_SUMMARISE_SYSTEM_PROMPT;
             if (!db.summariseUserPrompt) db.summariseUserPrompt = DEFAULT_SUMMARISE_USER_PROMPT;
+            // Migrate imported jobs to include new separated-state buckets
+            db.jobs.forEach(function(job) {
+              if (!job.sourceDocuments) job.sourceDocuments = [];
+              if (!job.userInstructions) job.userInstructions = [];
+              if (!job.derivedArtifacts) job.derivedArtifacts = [];
+            });
             saveDB(); renderSidebar(); renderView();
             purgeOrphanedImages();
           }
@@ -8788,8 +8929,21 @@
     }
 
     function injectDocumentMessage(job, filename, extractedText, documentInfo) {
+      // Store in the structured sourceDocuments bucket (normalized once)
+      if (!job.sourceDocuments) job.sourceDocuments = [];
+      var docId = generateSourceDocId("doc");
+      job.sourceDocuments.push({
+        id: docId,
+        title: filename,
+        rawContent: extractedText,
+        normalizedContent: normalizeSourceContent(extractedText),
+        createdAt: new Date().toISOString(),
+        type: "uploaded_file"
+      });
+      debugLog('[SRC] Stored source document "' + filename + '" (id=' + docId + ', ' + extractedText.length.toLocaleString() + ' chars)', 'info');
+      // Keep in job.messages for UI display; sourceDocId links it to the sourceDocuments entry
       var contentMessage = "I've uploaded a file called '" + filename + "'. Please analyze it.\n\n" + extractedText;
-      job.messages.push({ role: "user", content: contentMessage, isDocument: true, documentName: filename, documentInfo: documentInfo || "" });
+      job.messages.push({ role: "user", content: contentMessage, isDocument: true, documentName: filename, documentInfo: documentInfo || "", sourceDocId: docId });
       saveDB();
       addMessageToDOM("user", contentMessage, false, job.messages.length - 2);
       updateContextBar();
@@ -9133,6 +9287,18 @@
     function handleManualContent(title, type, content, extra) {
       if (!db.activeJobId) return;
       var job = getJob(db.activeJobId); if (!job) return;
+      // Store in the structured sourceDocuments bucket (normalized once)
+      if (!job.sourceDocuments) job.sourceDocuments = [];
+      var docId = generateSourceDocId("src");
+      job.sourceDocuments.push({
+        id: docId,
+        title: title,
+        rawContent: content,
+        normalizedContent: normalizeSourceContent(content),
+        createdAt: new Date().toISOString(),
+        type: type
+      });
+      debugLog('[SRC] Stored manual content "' + title + '" as source document (id=' + docId + ', type="' + type + '", ' + content.length.toLocaleString() + ' chars)', 'info');
       var lineCount = content.split("\n").length;
       var contentInfo = lineCount + " line" + (lineCount !== 1 ? "s" : "");
       var fullContent;
@@ -9146,7 +9312,8 @@
       }
       var msgObj = {
         role: "user", content: fullContent,
-        isManualContent: true, contentTitle: title, contentType: type, contentInfo: contentInfo
+        isManualContent: true, contentTitle: title, contentType: type, contentInfo: contentInfo,
+        sourceDocId: docId // link to sourceDocuments entry to prevent context duplication
       };
       if (extra) {
         if (extra.programName) msgObj.codeProgramName = extra.programName;
