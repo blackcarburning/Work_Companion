@@ -1330,6 +1330,9 @@
     var PROMPT_TEMPLATE_VERSION = "1.1";
     var MAX_ASSISTANT_CHARS_IN_CONTEXT = 2000; // Cap old assistant outputs to reduce context bloat
     var MAX_DERIVED_ARTIFACTS = 10; // Max derived artifacts to retain per job
+    var MAX_ARTIFACT_SUMMARY_CHARS = 200; // Summary preview length for derived artifacts
+    var CONTEXT_KEEP_LAST_FULL = 4; // Last N conv messages always kept at full length (not compacted)
+    var DIAGNOSTIC_DEBUG_LINES = 60; // Number of recent debug lines to include in self-diagnostic
     var DEFAULT_AUTOSAVE_INTERVAL_MIN = 5;
     var RATE_LIMIT_MAX_RETRIES = 3;
     var RATE_LIMIT_DELAYS = [5000, 15000, 30000]; // ms: 5s, 15s, 30s
@@ -2153,10 +2156,14 @@
     }
 
     // Normalize raw source content: strip UI-generated prefixes and trim whitespace
-    function normalizeSourceContent(content, title, type) {
+    function normalizeSourceContent(content) {
       if (!content) return "";
-      var normalized = content.replace(/^Manual content titled '[^']*' \([^)]*\):\n\n/, "").trim();
-      return normalized;
+      return content.replace(/^Manual content titled '[^']*' \([^)]*\):\n\n/, "").trim();
+    }
+
+    // Generate a unique source document ID with a given prefix
+    function generateSourceDocId(prefix) {
+      return prefix + "_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
     }
 
     // buildContextMessages(all, job) — builds the API message array from structured state.
@@ -2275,8 +2282,8 @@
           };
         }
         var content = m.wasEditedAsHtml ? stripInlineImages(m.content) : m.content;
-        // Cap old assistant outputs (not within the last 4 messages) to prevent context bloat
-        if (m.role === "assistant" && i < convMsgs.length - 4 &&
+        // Cap old assistant outputs (not within the last CONTEXT_KEEP_LAST_FULL messages) to prevent context bloat
+        if (m.role === "assistant" && i < convMsgs.length - CONTEXT_KEEP_LAST_FULL &&
             typeof content === "string" && content.length > MAX_ASSISTANT_CHARS_IN_CONTEXT) {
           debugLog('[CTX] ✂️ Compacting old assistant output at pos ' + i + ' (' + content.length + ' → ' + MAX_ASSISTANT_CHARS_IN_CONTEXT + ' chars)', 'info');
           content = content.substring(0, MAX_ASSISTANT_CHARS_IN_CONTEXT) +
@@ -2441,7 +2448,7 @@
       };
 
       var diagnosticUserContent =
-        "## Debug Console Output (last 60 lines)\n\n```\n" + debugText.split("\n").slice(-60).join("\n") + "\n```\n\n" +
+        "## Debug Console Output (last " + DIAGNOSTIC_DEBUG_LINES + " lines)\n\n```\n" + debugText.split("\n").slice(-DIAGNOSTIC_DEBUG_LINES).join("\n") + "\n```\n\n" +
         "## Compact Application State\n\n```json\n" + JSON.stringify(compactState, null, 2) + "\n```\n\n" +
         "Please analyze the above and provide prioritized recommendations for improving this application.";
 
@@ -8159,7 +8166,7 @@
     function saveDerivedArtifact(job, content) {
       if (!job || !content) return;
       if (!job.derivedArtifacts) job.derivedArtifacts = [];
-      var summary = typeof content === "string" && content.length > 200 ? content.substring(0, 200) + "…" : content;
+      var summary = typeof content === "string" && content.length > MAX_ARTIFACT_SUMMARY_CHARS ? content.substring(0, MAX_ARTIFACT_SUMMARY_CHARS) + "…" : content;
       job.derivedArtifacts.push({
         id: "art_" + Date.now(),
         type: "formatted_document",
@@ -8924,12 +8931,12 @@
     function injectDocumentMessage(job, filename, extractedText, documentInfo) {
       // Store in the structured sourceDocuments bucket (normalized once)
       if (!job.sourceDocuments) job.sourceDocuments = [];
-      var docId = "doc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+      var docId = generateSourceDocId("doc");
       job.sourceDocuments.push({
         id: docId,
         title: filename,
         rawContent: extractedText,
-        normalizedContent: normalizeSourceContent(extractedText, filename, "uploaded_file"),
+        normalizedContent: normalizeSourceContent(extractedText),
         createdAt: new Date().toISOString(),
         type: "uploaded_file"
       });
@@ -9282,12 +9289,12 @@
       var job = getJob(db.activeJobId); if (!job) return;
       // Store in the structured sourceDocuments bucket (normalized once)
       if (!job.sourceDocuments) job.sourceDocuments = [];
-      var docId = "src_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+      var docId = generateSourceDocId("src");
       job.sourceDocuments.push({
         id: docId,
         title: title,
         rawContent: content,
-        normalizedContent: normalizeSourceContent(content, title, type),
+        normalizedContent: normalizeSourceContent(content),
         createdAt: new Date().toISOString(),
         type: type
       });
