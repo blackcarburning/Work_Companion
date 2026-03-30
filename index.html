@@ -8186,15 +8186,18 @@
       if (mode === "plain") {
         // Strip markdown headings (## Heading → Heading)
         text = text.replace(/^#{1,6}\s+/gm, "");
-        // Strip bold/italic markers (**text** → text, __text__ → text, *text* → text, _text_ → text)
-        text = text.replace(/(\*\*|__)([^*_\n]+?)\1/g, "$2");
-        text = text.replace(/(\*|_)([^*_\n]+?)\1/g, "$2");
+        // Strip bold: **text** and __text__ (single-line, avoids crossing paragraph boundaries)
+        text = text.replace(/\*\*([^\n]+?)\*\*/g, "$1");
+        text = text.replace(/__([^\n]+?)__/g, "$1");
+        // Strip italic: *text* and _text_ (must not consume remaining bold markers or underscores in words)
+        text = text.replace(/\*([^\n*]+?)\*/g, "$1");
+        text = text.replace(/_([^\n_]+?)_/g, "$1");
         // Strip inline code backticks (`code` → code)
         text = text.replace(/`([^`\n]+)`/g, "$1");
         // Strip horizontal rules
         text = text.replace(/^[-*_]{3,}\s*$/gm, "");
-        // Strip fenced code block delimiters (``` lines), keep content
-        text = text.replace(/^```[^\n]*\n?/gm, "").replace(/^```\s*$/gm, "");
+        // Strip fenced code block delimiter lines (``` with optional language tag), keep content
+        text = text.replace(/^```[^\n]*$/gm, "");
       }
       if (mode === "html") {
         // Basic sanitation: strip script/iframe tags
@@ -8261,6 +8264,8 @@
 
       // Auto-detect "## Source: …" messages pasted directly into the chat input and promote
       // them to the structured sourceDocuments bucket so they are counted in diagnostics.
+      // Note: detects only the first "## Source:" header; use the manual content picker for
+      // multiple sources in a single paste.
       var chatSourceDocId = null;
       var chatIsSourceDoc = false;
       var sourceHeaderMatch = ut.match(/^##\s+Source:\s*(.+?)(?:\s*\[([^\]]*)\])?\s*\n([\s\S]*)$/i);
