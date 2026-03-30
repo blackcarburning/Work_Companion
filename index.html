@@ -1005,6 +1005,10 @@
           <input type="checkbox" id="anthropic-cache-toggle" checked onchange="db.anthropicCacheEnabled=this.checked;saveDB();debugLog('[CACHE] Anthropic prompt caching ' + (this.checked ? 'enabled' : 'disabled'))">
           💾 Anthropic prompt caching
         </label>
+        <label>
+          <input type="checkbox" id="openai-cache-toggle" checked aria-label="Enable OpenAI prompt caching hints" onchange="db.openaiCacheEnabled=this.checked;saveDB();debugLog('[CACHE] OpenAI prompt caching hints ' + (this.checked ? 'enabled' : 'disabled'))">
+          💾 OpenAI prompt caching
+        </label>
       </div>
       <button class="sidebar-btn" onclick="purgeStorage()" aria-label="Purge all stored images from browser storage" style="margin-top:0.3rem; background:#fef2f2; border-color:#fca5a5; color:#c0202a;">🧹 Purge Storage</button>
       <div class="storage-indicator" id="storage-indicator" title="localStorage usage" style="margin-top:0.25rem;display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">💾 <span id="storage-usage-text">calculating...</span><button class="sidebar-btn" onclick="cleanStorage()" style="font-size:0.68rem;padding:0.1rem 0.4rem;margin:0;line-height:1.4" title="Purge orphaned images and clear models cache">🧹 Clean</button></div>
@@ -1327,7 +1331,7 @@
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
     var DEFAULT_MAX_DOC_CHARS = 15000;
-    var PROMPT_TEMPLATE_VERSION = "1.1";
+    var PROMPT_TEMPLATE_VERSION = "1.2";
     var MAX_ASSISTANT_CHARS_IN_CONTEXT = 2000; // Cap old assistant outputs to reduce context bloat
     var MAX_DERIVED_ARTIFACTS = 10; // Max derived artifacts to retain per job
     var MAX_ARTIFACT_SUMMARY_CHARS = 200; // Summary preview length for derived artifacts
@@ -1504,6 +1508,15 @@
       { id: "o1", name: "o1" },
       { id: "o1-mini", name: "o1-mini" }
     ];
+
+    // Models confirmed to support 24h prompt cache retention (conservative list).
+    // All other OpenAI models use the default in_memory retention automatically.
+    var OPENAI_EXTENDED_RETENTION_MODEL_PREFIXES = ["gpt-4.1", "gpt-5"];
+    function openaiSupports24hRetention(model) {
+      return OPENAI_EXTENDED_RETENTION_MODEL_PREFIXES.some(function(prefix) {
+        return model === prefix || model.indexOf(prefix + "-") === 0 || model.indexOf(prefix + ".") === 0;
+      });
+    }
 
     var ANTHROPIC_MODELS = [
       { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
@@ -1929,6 +1942,7 @@
           if (db.autosaveEnabled === undefined) db.autosaveEnabled = true;
           if (db.autosaveIntervalMin === undefined) db.autosaveIntervalMin = DEFAULT_AUTOSAVE_INTERVAL_MIN;
           if (db.anthropicCacheEnabled === undefined) db.anthropicCacheEnabled = true;
+          if (db.openaiCacheEnabled === undefined) db.openaiCacheEnabled = true;
           if (!db.summariseSystemPrompt) db.summariseSystemPrompt = DEFAULT_SUMMARISE_SYSTEM_PROMPT;
           if (!db.summariseUserPrompt) db.summariseUserPrompt = DEFAULT_SUMMARISE_USER_PROMPT;
           // Migrate existing jobs to include new separated-state buckets (backward compat)
@@ -2436,7 +2450,8 @@
         promptConfig: {
           systemPromptChars: (job.messages[0] && job.messages[0].content) ? job.messages[0].content.length : 0,
           outputMode: outputMode,
-          anthropicCacheEnabled: db.anthropicCacheEnabled
+          anthropicCacheEnabled: db.anthropicCacheEnabled,
+          openaiCacheEnabled: db.openaiCacheEnabled !== false
         },
         recentContextMessages: ctxMessages.slice(-8).map(function(m) {
           var content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
@@ -2486,14 +2501,29 @@
         } else {
           var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
           var authToken = activeProvider === "openai" ? openaiToken : token;
+          // Add cache hint for OpenAI direct diagnostic requests too
+          var diagRequestBody = { model: capturedModel, messages: diagPayload };
+          if (activeProvider === "openai" && db.openaiCacheEnabled !== false) {
+            diagRequestBody.prompt_cache_key = job.id + "_diag";
+          }
           r = await fetchWithRetry(endpoint, {
             method: "POST",
             headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
-            body: JSON.stringify({ model: capturedModel, messages: diagPayload })
+            body: JSON.stringify(diagRequestBody)
           }, activeProvider === "openai" ? "OpenAI" : "GitHub Models");
           if (!r.ok) { var et = await r.text(); throw new Error('API error ' + r.status + ': ' + et); }
           d = await r.json();
           reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
+          // Log OpenAI diagnostic usage/cache stats
+          if (d.usage) {
+            var oaiInput = d.usage.prompt_tokens || 0;
+            var oaiOutput = d.usage.completion_tokens || 0;
+            var oaiCached = (d.usage.prompt_tokens_details && d.usage.prompt_tokens_details.cached_tokens) || 0;
+            debugLog('[DIAG] 📊 OpenAI usage — input: ' + oaiInput + ', output: ' + oaiOutput + ', cached: ' + oaiCached, 'info');
+            if (oaiCached > 0) {
+              debugLog('[DIAG] ✅ OpenAI prompt cache HIT — ' + oaiCached + ' tokens served from cache', 'info');
+            }
+          }
         }
 
         job.recommendations = { createdAt: new Date().toISOString(), model: capturedModel, provider: capturedProvider, content: reply };
@@ -8351,8 +8381,26 @@
         } else {
           var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
           var authToken = activeProvider === "openai" ? openaiToken : token;
-          var openaiBody = JSON.stringify({ model: selectedModel, messages: ctx });
-          debugLog('[API] Fetching ' + endpoint + ' — payload ' + (openaiBody.length / 1024).toFixed(1) + ' KB', 'info');
+          // Build request body; add cache hints only for OpenAI direct (not GitHub Models).
+          // prompt_cache_key routes same-job requests to the same cache partition so the
+          // stable system/source prefix is more likely to be reused across turns.
+          // prompt_cache_retention "24h" extends the cache lifetime on supported models.
+          var openaiRequestBody = { model: selectedModel, messages: ctx };
+          if (activeProvider === "openai" && db.openaiCacheEnabled !== false) {
+            openaiRequestBody.prompt_cache_key = job.id;
+            // Only add 24h retention for models confirmed to support it;
+            // other models default to in_memory retention automatically.
+            if (openaiSupports24hRetention(selectedModel)) {
+              openaiRequestBody.prompt_cache_retention = "24h";
+            }
+          }
+          var openaiBody = JSON.stringify(openaiRequestBody);
+          var openaiCacheInfo = "";
+          if (activeProvider === "openai" && db.openaiCacheEnabled !== false) {
+            var retentionMode = openaiSupports24hRetention(selectedModel) ? "24h" : "in_memory";
+            openaiCacheInfo = ', cache_key="' + job.id + '", retention=' + retentionMode;
+          }
+          debugLog('[API] Fetching ' + endpoint + ' — payload ' + (openaiBody.length / 1024).toFixed(1) + ' KB' + openaiCacheInfo, 'info');
           var requestStartTime = Date.now();
           var waitingLogInterval = setInterval(function() {
             var elapsed = Math.round((Date.now() - requestStartTime) / 1000);
@@ -8378,11 +8426,18 @@
             reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
             reply = postProcessResponse(reply, outputMode);
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens), response JSON ' + (respStr.length / 1024).toFixed(1) + ' KB', 'log');
-            // Log OpenAI prompt caching stats (automatic, no request changes needed)
-            if (d.usage && d.usage.prompt_tokens_details && d.usage.prompt_tokens_details.cached_tokens) {
-              var cachedTokens = d.usage.prompt_tokens_details.cached_tokens;
-              var totalPromptTokens = d.usage.prompt_tokens || 0;
-              debugLog('[API] ✅ OpenAI prompt cache HIT — ' + cachedTokens + '/' + totalPromptTokens + ' input tokens cached (50% discount on cached tokens)', 'info');
+            // Log OpenAI usage/cache stats — mirrors Anthropic usage logging for easy comparison
+            if (d.usage) {
+              var oaiInput = d.usage.prompt_tokens || 0;
+              var oaiOutput = d.usage.completion_tokens || 0;
+              var oaiCached = (d.usage.prompt_tokens_details && d.usage.prompt_tokens_details.cached_tokens) || 0;
+              var cacheKeyUsed = (activeProvider === "openai" && db.openaiCacheEnabled !== false) ? job.id : "none";
+              debugLog('[API] 📊 OpenAI usage — input: ' + oaiInput + ', output: ' + oaiOutput + ', cached: ' + oaiCached + ', cache_key: ' + cacheKeyUsed, 'info');
+              if (oaiCached > 0) {
+                debugLog('[API] ✅ OpenAI prompt cache HIT — ' + oaiCached + '/' + oaiInput + ' input tokens served from cache (50% discount on cached tokens)', 'info');
+              } else if (oaiInput >= 1024) {
+                debugLog('[API] 💭 OpenAI prompt cache MISS — ' + oaiInput + ' input tokens, no cached prefix matched', 'info');
+              }
             }
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
@@ -10435,6 +10490,8 @@
       if (_asti) _asti.checked = db.autosaveEnabled !== false;
       var _acti = document.getElementById("anthropic-cache-toggle");
       if (_acti) _acti.checked = db.anthropicCacheEnabled !== false;
+      var _octi = document.getElementById("openai-cache-toggle");
+      if (_octi) _octi.checked = db.openaiCacheEnabled !== false;
       if (db.autosaveEnabled !== false) startAutosave();
       if (activeProvider === "github" && token) setTimeout(fetchModels, 500);
       updateStorageIndicator();
