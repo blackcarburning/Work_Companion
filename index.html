@@ -1038,6 +1038,10 @@
         <button class="sidebar-btn" onclick="toggleDebugConsole()">🐛 Debug</button>
       </div>
       <div class="sidebar-actions">
+        <button class="sidebar-btn" onclick="runSelfDiagnostic()" id="self-diag-btn" aria-label="Run self-diagnostic analysis">🩺 Self Diagnostic</button>
+        <button class="sidebar-btn" onclick="openRecommendations()" aria-label="View saved recommendations">💡 Recommendations</button>
+      </div>
+      <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="toggleUIThemeEditor()" id="ui-theme-toggle-btn" aria-label="Open UI Theme Editor">🖌️ UI Theme</button>
       </div>
       <div class="sidebar-doc-limit">
@@ -2259,6 +2263,158 @@
         });
       };
       ov.addEventListener("keydown", function(e) { if (e.key === "Escape") document.body.removeChild(ov); });
+    }
+
+    // ===== SELF DIAGNOSTIC =====
+    var SELF_DIAGNOSTIC_SYSTEM_PROMPT =
+      "You are a software self-diagnostic assistant. Analyze the provided application API context and debug output. " +
+      "Identify bugs, architectural weaknesses, UX issues, prompt/context inefficiencies, error-handling gaps, and concrete improvements. " +
+      "Do not analyze the diagnostic request itself. Return concise, prioritized recommendations with sections: " +
+      "Critical Issues, Improvements, Context/Prompt Issues, Debug Observations, Suggested Next Steps.";
+
+    function getDebugConsoleText() {
+      var output = document.getElementById("debug-console-output");
+      if (!output) return "(no debug output available)";
+      var entries = output.querySelectorAll(".debug-entry");
+      if (!entries.length) return "(debug console is empty)";
+      return Array.prototype.slice.call(entries).map(function(e) { return e.textContent; }).join("\n");
+    }
+
+    async function runSelfDiagnostic() {
+      if (!db.activeJobId) { alert("No active job selected. Please open a job first."); return; }
+      var job = getJob(db.activeJobId); if (!job) return;
+
+      var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
+      if (!activeToken) {
+        var label = activeProvider === "github" ? "GitHub token" : (activeProvider === "openai" ? "OpenAI API key" : (activeProvider === "watsonx" ? "IBM IAM token" : "Anthropic API key"));
+        alert("Please save your " + label + " before running a self-diagnostic.");
+        return;
+      }
+
+      var diagBtn = document.getElementById("self-diag-btn");
+      if (diagBtn) { diagBtn.disabled = true; diagBtn.setAttribute("aria-busy", "true"); diagBtn.textContent = "⏳ Diagnosing…"; }
+
+      // Capture debug text and API context BEFORE the diagnostic request
+      var debugText = getDebugConsoleText();
+      var ctxMessages = buildContextMessages(job.messages);
+      var ctxJson = JSON.stringify(ctxMessages, null, 2)
+        .replace(/(data:image\/[^;]+;base64,)[A-Za-z0-9+\/=]{100,}/g, '$1[BASE64_DATA_TRUNCATED]');
+
+      var diagnosticUserContent =
+        "## Debug Console Output\n\n```\n" + debugText + "\n```\n\n" +
+        "## Current API Context (JSON payload sent to LLM)\n\n```json\n" + ctxJson + "\n```\n\n" +
+        "Please analyze the above and provide prioritized recommendations for improving this application.";
+
+      var diagPayload = [
+        { role: "system", content: SELF_DIAGNOSTIC_SYSTEM_PROMPT },
+        { role: "user", content: diagnosticUserContent }
+      ];
+
+      debugLog('[DIAG] Running self-diagnostic — provider="' + activeProvider + '", model="' + selectedModel + '"', 'info');
+
+      try {
+        var r, d, reply;
+        var capturedModel = selectedModel;
+        var capturedProvider = activeProvider;
+
+        if (activeProvider === "anthropic") {
+          r = await fetchWithRetry(ANTHROPIC_DIRECT_URL, {
+            method: "POST",
+            headers: { "x-api-key": anthropicToken, "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+            body: JSON.stringify({ model: capturedModel, max_tokens: 4096, system: SELF_DIAGNOSTIC_SYSTEM_PROMPT, messages: [{ role: "user", content: diagnosticUserContent }] })
+          }, "Anthropic");
+          if (!r.ok) { var et = await r.text(); throw new Error('Anthropic API error ' + r.status + ': ' + et); }
+          d = await r.json();
+          reply = (d.content && d.content[0] && d.content[0].text) || "No response.";
+        } else if (activeProvider === "watsonx") {
+          var bearerToken = await getWatsonxBearerToken();
+          r = await fetchWithRetry(WATSONX_PROXY_URL, {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + bearerToken, "Content-Type": "application/json", "Accept": "application/json", "X-Target-URL": WATSONX_CHAT_URL },
+            body: JSON.stringify({ model_id: capturedModel, project_id: watsonxProjectId, max_tokens: 4096, messages: diagPayload.map(function(m) { return { role: m.role === "system" ? "system" : m.role, content: m.content }; }) })
+          }, "IBM watsonx.ai");
+          if (!r.ok) { var et = await r.text(); throw new Error('watsonx API error ' + r.status + ': ' + et); }
+          d = await r.json();
+          reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
+        } else {
+          var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
+          var authToken = activeProvider === "openai" ? openaiToken : token;
+          r = await fetchWithRetry(endpoint, {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + authToken, "Content-Type": "application/json" },
+            body: JSON.stringify({ model: capturedModel, messages: diagPayload })
+          }, activeProvider === "openai" ? "OpenAI" : "GitHub Models");
+          if (!r.ok) { var et = await r.text(); throw new Error('API error ' + r.status + ': ' + et); }
+          d = await r.json();
+          reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
+        }
+
+        job.recommendations = { createdAt: new Date().toISOString(), model: capturedModel, provider: capturedProvider, content: reply };
+        saveDB();
+        debugLog('[DIAG] Self-diagnostic complete — saved to job.recommendations (' + reply.length + ' chars)', 'info');
+        openRecommendations();
+      } catch (err) {
+        debugLog('[DIAG] ❌ Self-diagnostic failed: ' + err.message, 'error');
+        alert("Self-diagnostic failed: " + err.message);
+      } finally {
+        if (diagBtn) { diagBtn.disabled = false; diagBtn.removeAttribute("aria-busy"); diagBtn.textContent = "🩺 Self Diagnostic"; }
+      }
+    }
+
+    function openRecommendations() {
+      var job = db.activeJobId ? getJob(db.activeJobId) : null;
+      var rec = job && job.recommendations;
+
+      var ov = document.createElement("div"); ov.className = "modal-overlay";
+      var modal = document.createElement("div"); modal.className = "modal"; modal.style.cssText = "width:720px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;";
+
+      var bodyHtml;
+      if (!rec) {
+        bodyHtml =
+          '<p style="text-align:center;color:var(--text-secondary);padding:2rem 0;">No recommendations yet.<br>Click <strong>🩺 Self Diagnostic</strong> to generate one.</p>';
+      } else {
+        var dateStr = new Date(rec.createdAt).toLocaleString();
+        bodyHtml =
+          '<div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.6rem;">' +
+            '<span>🕐 ' + escapeHtml(dateStr) + '</span>' +
+            '&nbsp;&nbsp;|&nbsp;&nbsp;<span>🤖 ' + escapeHtml(rec.model) + '</span>' +
+            '&nbsp;&nbsp;|&nbsp;&nbsp;<span>☁️ ' + escapeHtml(rec.provider) + '</span>' +
+          '</div>' +
+          '<div id="rec-content" style="flex:1;overflow-y:auto;padding:0.75rem;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:0.85rem;line-height:1.6;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;">' +
+            escapeHtml(rec.content) +
+          '</div>';
+      }
+
+      modal.innerHTML =
+        '<h3>💡 Recommendations</h3>' +
+        (job ? '<p style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:0.5rem;">Job: <strong>' + escapeHtml(job.name || job.id) + '</strong></p>' : '') +
+        bodyHtml +
+        '<div class="modal-btns" style="margin-top:0.75rem;">' +
+          (rec ? '<button class="cancel" id="rec-clear-btn" style="margin-right:auto;">🗑️ Clear</button>' : '') +
+          '<button class="cancel" id="rec-close-btn">Close</button>' +
+          (rec ? '<button class="confirm" id="rec-copy-btn">📋 Copy</button>' : '') +
+        '</div>';
+
+      ov.appendChild(modal);
+      document.body.appendChild(ov);
+
+      document.getElementById("rec-close-btn").onclick = function() { document.body.removeChild(ov); };
+      ov.addEventListener("keydown", function(e) { if (e.key === "Escape") document.body.removeChild(ov); });
+      if (rec) {
+        document.getElementById("rec-copy-btn").onclick = function() {
+          navigator.clipboard.writeText(rec.content).then(function() {
+            var btn = document.getElementById("rec-copy-btn");
+            if (btn) { btn.textContent = "✅ Copied!"; setTimeout(function() { if (btn.isConnected) btn.textContent = "📋 Copy"; }, 2000); }
+          });
+        };
+        document.getElementById("rec-clear-btn").onclick = function() {
+          if (confirm("Clear saved recommendations for this job?")) {
+            delete job.recommendations;
+            saveDB();
+            document.body.removeChild(ov);
+          }
+        };
+      }
     }
 
     // ===== SUMMARY =====
