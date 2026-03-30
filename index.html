@@ -2232,6 +2232,7 @@
         debugLog('[CTX] Appended user name to system message as session metadata', 'info');
       }
       var OUTPUT_MODE_INSTRUCTIONS = {
+        "plain": "\n\n[Output format: plain text — do not use markdown formatting such as headings (# / ## / ###), bold (**text**), italics (*text*), horizontal rules (---), or code fences (```). Use plain prose and simple dashes for lists.]",
         "word": "\n\n[Output format: Word-compatible — plain text with clear headings, no HTML tags.]",
         "html": "\n\n[Output format: HTML — wrap the response in appropriate HTML tags, use semantic markup.]",
         "pdf":  "\n\n[Output format: PDF-ready — clean plain text, clear structure, no HTML, no preamble, no follow-up suggestions.]"
@@ -2450,8 +2451,13 @@
         promptConfig: {
           systemPromptChars: (job.messages[0] && job.messages[0].content) ? job.messages[0].content.length : 0,
           outputMode: outputMode,
-          anthropicCacheEnabled: db.anthropicCacheEnabled,
-          openaiCacheEnabled: db.openaiCacheEnabled !== false
+          activeProviderCacheEnabled: activeProvider === "anthropic"
+            ? (db.anthropicCacheEnabled !== false)
+            : (activeProvider === "openai" ? (db.openaiCacheEnabled !== false) : false),
+          allProviderCacheSettings: {
+            anthropic: db.anthropicCacheEnabled !== false,
+            openai: db.openaiCacheEnabled !== false
+          }
         },
         recentContextMessages: ctxMessages.slice(-8).map(function(m) {
           var content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
@@ -8177,6 +8183,19 @@
           text = text.substring(0, trailMatch.index).trimEnd();
         }
       }
+      if (mode === "plain") {
+        // Strip markdown headings (## Heading → Heading)
+        text = text.replace(/^#{1,6}\s+/gm, "");
+        // Strip bold/italic markers (**text** → text, __text__ → text, *text* → text, _text_ → text)
+        text = text.replace(/(\*\*|__)([^*_\n]+?)\1/g, "$2");
+        text = text.replace(/(\*|_)([^*_\n]+?)\1/g, "$2");
+        // Strip inline code backticks (`code` → code)
+        text = text.replace(/`([^`\n]+)`/g, "$1");
+        // Strip horizontal rules
+        text = text.replace(/^[-*_]{3,}\s*$/gm, "");
+        // Strip fenced code block delimiters (``` lines), keep content
+        text = text.replace(/^```[^\n]*\n?/gm, "").replace(/^```\s*$/gm, "");
+      }
       if (mode === "html") {
         // Basic sanitation: strip script/iframe tags
         text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
@@ -8240,12 +8259,45 @@
       var compatErr = validateModelProviderCompatibility();
       if (compatErr) { alert(compatErr); return; }
 
+      // Auto-detect "## Source: …" messages pasted directly into the chat input and promote
+      // them to the structured sourceDocuments bucket so they are counted in diagnostics.
+      var chatSourceDocId = null;
+      var chatIsSourceDoc = false;
+      var sourceHeaderMatch = ut.match(/^##\s+Source:\s*(.+?)(?:\s*\[([^\]]*)\])?\s*\n([\s\S]*)$/i);
+      if (sourceHeaderMatch) {
+        var srcTitle = sourceHeaderMatch[1].trim();
+        var srcType  = (sourceHeaderMatch[2] || "pasted_source").trim();
+        var srcBody  = sourceHeaderMatch[3] || "";
+        if (!job.sourceDocuments) job.sourceDocuments = [];
+        chatSourceDocId = generateSourceDocId("chat");
+        job.sourceDocuments.push({
+          id: chatSourceDocId,
+          title: srcTitle,
+          rawContent: srcBody,
+          normalizedContent: normalizeSourceContent(srcBody),
+          createdAt: new Date().toISOString(),
+          type: srcType
+        });
+        debugLog('[SRC] Auto-detected "## Source:" in chat input — created source doc "' + srcTitle + '" (id=' + chatSourceDocId + ', type="' + srcType + '", ' + srcBody.length.toLocaleString() + ' chars)', 'info');
+        chatIsSourceDoc = true;
+      }
+
       addMessageToDOM("user", ut, false, job.messages.length - 1);
-      job.messages.push({ role: "user", content: ut }); saveDB();
+      var userMsgObj = { role: "user", content: ut };
+      if (chatIsSourceDoc) {
+        userMsgObj.isManualContent = true;
+        userMsgObj.contentTitle = sourceHeaderMatch[1].trim();
+        userMsgObj.contentType = (sourceHeaderMatch[2] || "pasted_source").trim();
+        userMsgObj.contentInfo = ut.split("\n").length + " lines";
+        userMsgObj.sourceDocId = chatSourceDocId;
+      }
+      job.messages.push(userMsgObj); saveDB();
       input.value = ""; input.disabled = true; document.getElementById("sendBtn").disabled = true;
       showTyping();
 
-      debugLog('[API] sendMessage: starting — provider="' + activeProvider + '", model="' + selectedModel + '"', 'info');
+      debugLog('[API] sendMessage: starting — provider="' + activeProvider + '", model="' + selectedModel +
+        '", sourceDocs=' + (job.sourceDocuments || []).length +
+        ', derivedArtifacts=' + (job.derivedArtifacts || []).length, 'info');
 
       try {
         debugLog('[API] Building context messages...', 'log');
