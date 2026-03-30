@@ -1333,6 +1333,18 @@
     var DEFAULT_SUMMARISE_SYSTEM_PROMPT = "You are a document summariser. Summarise the following document concisely, preserving all key facts, figures, names, dates, and actionable information. The summary should be detailed enough to be useful as reference material.";
     var DEFAULT_SUMMARISE_USER_PROMPT = "Please summarise this document:";
 
+    var DEFAULT_TASK_SYSTEM_PROMPT =
+      "You are a professional document and task assistant.\n" +
+      "## Output rules\n" +
+      "- Default to plain text unless the user explicitly requests HTML or a specific format.\n" +
+      "- Formatting tasks: preserve the original wording exactly unless the user asks you to edit.\n" +
+      "- Print/plain output: produce clean, concise text — no preamble (e.g. \"Sure!\"), no unsolicited follow-up option lists.\n" +
+      "- Missing answers: mark them as '[No answer provided]' in place and continue.\n" +
+      "- Do not add suggestions or alternatives at the end of a response unless asked.";
+
+    // Output mode: "plain" | "word" | "html" | "pdf"
+    var outputMode = "plain";
+
     if (window.pdfjsLib) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
       debugLog('pdfjsLib worker source set: https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js');
@@ -2165,10 +2177,21 @@
         }
         debugLog('[CTX] Sliding window trimmed ' + skip + ' messages (kept first ' + KEEP_FIRST + ' + last ' + KEEP_LAST + ' exchanges)', 'warn');
       }
-      // Inject user name as a developer message right after the system message
-      if (userName) {
-        msgs = [msgs[0]].concat([{ role: "developer", content: "My name is " + userName }]).concat(msgs.slice(1));
-        debugLog('[CTX] Injected user name developer message: "My name is ' + userName + '"', 'info');
+      // Append user name as session metadata to the system message (avoids misusing the developer role)
+      if (userName && msgs[0] && msgs[0].role === "system") {
+        var sysNote = "\n\n[Session info: user name is " + userName + "]";
+        msgs = [{ role: "system", content: msgs[0].content + sysNote }].concat(msgs.slice(1));
+        debugLog('[CTX] Appended user name to system message as session metadata', 'info');
+      }
+      // Append output mode instruction to system message
+      var OUTPUT_MODE_INSTRUCTIONS = {
+        "word": "\n\n[Output format: Word-compatible — plain text with clear headings, no HTML tags.]",
+        "html": "\n\n[Output format: HTML — wrap the response in appropriate HTML tags, use semantic markup.]",
+        "pdf":  "\n\n[Output format: PDF-ready — clean plain text, clear structure, no HTML, no preamble, no follow-up suggestions.]"
+      };
+      if (outputMode && OUTPUT_MODE_INSTRUCTIONS[outputMode] && msgs[0] && msgs[0].role === "system") {
+        msgs = [{ role: "system", content: msgs[0].content + OUTPUT_MODE_INSTRUCTIONS[outputMode] }].concat(msgs.slice(1));
+        debugLog('[CTX] Appended output mode "' + outputMode + '" instruction to system message', 'info');
       }
       // Convert image messages to vision multipart format for supported providers
       var isVisionCapable = (activeProvider === "openai" || activeProvider === "github");
@@ -2184,6 +2207,17 @@
         }
         // Strip inline base64 images from content before sending to API
         var content = m.wasEditedAsHtml ? stripInlineImages(m.content) : m.content;
+        // Normalize manual content: strip the UI-generated "Manual content titled '...' (type):\n\n" prefix
+        if (m.isManualContent && m.contentTitle && typeof content === "string") {
+          var mcPrefixRe = /^Manual content titled '[^']*' \([^)]*\):\n\n/;
+          if (mcPrefixRe.test(content)) {
+            var rawBody = content.replace(mcPrefixRe, "");
+            content = "## Source: " + m.contentTitle +
+              (m.contentType && m.contentType !== "Add Conversation" ? " [" + m.contentType + "]" : "") +
+              "\n\n" + rawBody;
+            debugLog('[CTX] Normalized manual content prefix for "' + m.contentTitle + '"', 'info');
+          }
+        }
         // Enforce document character limit at send time (does NOT modify stored message)
         if (m.isDocument && content) {
           var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
@@ -2290,6 +2324,10 @@
         alert("Please save your " + label + " before running a self-diagnostic.");
         return;
       }
+
+      // Validate model/provider compatibility before dispatch
+      var compatErr = validateModelProviderCompatibility();
+      if (compatErr) { alert(compatErr); return; }
 
       var diagBtn = document.getElementById("self-diag-btn");
       if (diagBtn) { diagBtn.disabled = true; diagBtn.setAttribute("aria-busy", "true"); diagBtn.textContent = "⏳ Diagnosing…"; }
@@ -7252,10 +7290,10 @@
     function createNewJob() {
       showModal("New Job Section", "Give this job a name", "", false, function(name) {
         if (!name) return;
-        showModal("System Prompt", "Sets the AI's role. Sent with every message.", "You are a helpful assistant.", true, function(sp) {
+        showModal("System Prompt", "Sets the AI's role. Sent with every message.", DEFAULT_TASK_SYSTEM_PROMPT, true, function(sp) {
           var job = {
             id: Date.now().toString(), name: name, color: TAB_COLORS[db.jobs.length % TAB_COLORS.length],
-            messages: [{ role: "system", content: sp || "You are a helpful assistant." }], notes: ""
+            messages: [{ role: "system", content: sp || DEFAULT_TASK_SYSTEM_PROMPT }], notes: ""
           };
           db.jobs.push(job); db.activeJobId = job.id; db.activeView = "job"; saveDB(); renderSidebar(); renderView();
         });
@@ -7392,6 +7430,12 @@
         '<button class="input-attach-btn" id="image-btn" onclick="openImagePicker()" title="Add Screenshot">📷</button>' +
         '<button class="input-attach-btn" id="view-context-btn" onclick="viewApiContext()" title="View API Context">🔍</button>' +
         '<button class="input-attach-btn mic-btn" id="chat-mic-btn" title="Voice input (click to start, click again to stop)" onclick="toggleMic(this, \'chat\')">🎤</button>' +
+        '<select id="output-mode-select" class="input-attach-btn" title="Output mode" onchange="setOutputMode(this.value)" style="font-size:0.78rem;cursor:pointer;">' +
+        '<option value="plain">📄 Plain</option>' +
+        '<option value="word">📝 Word</option>' +
+        '<option value="html">🌐 HTML</option>' +
+        '<option value="pdf">🖨️ PDF</option>' +
+        '</select>' +
 
         '</div>' +
         '<textarea id="userInput" placeholder="Ask a question..." rows="3"></textarea>' +
@@ -7400,6 +7444,14 @@
         '<button class="mic-btn" id="notes-mic-btn" title="Dictate to notes" onclick="toggleMic(this, \'notes\')" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:0.28rem 0.5rem;">🎤</button>' +
         '<button onclick="clearNotes()">Clear</button></div>' +
         '<div id="notes-content"><textarea id="notes-editor" placeholder="Paste or type notes here..."></textarea></div></div>';
+
+      // Restore output mode for this job
+      var omSel = document.getElementById("output-mode-select");
+      if (omSel) {
+        var jobOutputMode = job.outputMode || "plain";
+        outputMode = jobOutputMode;
+        omSel.value = jobOutputMode;
+      }
 
       var chatDiv = document.getElementById("chat"), conv = job.messages.slice(1);
       var fc = KEEP_FIRST * 2, lc = KEEP_LAST * 2, trim = conv.length > fc + lc;
@@ -7953,6 +8005,53 @@
       return watsonxToken;
     }
 
+    // ===== MODEL/PROVIDER COMPATIBILITY VALIDATION =====
+    function validateModelProviderCompatibility() {
+      // GitHub Models use namespaced IDs like "openai/gpt-4.1"; direct providers use plain IDs like "gpt-4.1"
+      var hasNamespace = selectedModel.indexOf("/") !== -1;
+      if (activeProvider === "openai" && hasNamespace) {
+        return '⚙️ Configuration error: model "' + selectedModel + '" uses GitHub Models format (namespace/model). ' +
+          'For the OpenAI provider, select a plain model ID such as "gpt-4.1" from the model list.';
+      }
+      if (activeProvider === "anthropic" && hasNamespace) {
+        return '⚙️ Configuration error: model "' + selectedModel + '" uses GitHub Models format. ' +
+          'For the Anthropic provider, select a plain model ID such as "claude-3-5-sonnet-20241022".';
+      }
+      if (activeProvider === "github" && !hasNamespace) {
+        return '⚙️ Configuration error: model "' + selectedModel + '" looks like a direct-provider ID. ' +
+          'GitHub Models require a namespaced format like "openai/gpt-4.1". Please refresh the model list (🔄) or select a GitHub-format model.';
+      }
+      return null;
+    }
+
+    // ===== RESPONSE POST-PROCESSING =====
+    function postProcessResponse(text, mode) {
+      if (!text || typeof text !== "string") return text;
+      if (mode === "plain" || mode === "pdf" || mode === "word") {
+        // Strip common LLM filler preambles (anchored to start of response)
+        text = text.replace(/^(Sure[,!]?\s+|Of course[,!]?\s+|Certainly[,!]?\s+|Absolutely[,!]?\s+|Great[,!]?\s+|Here(?:'s| is)(?: the| a| your)[^\n:]{0,60}:\s*\n?)/i, "");
+        // Strip trailing unsolicited follow-up option lists, but only when near the end
+        // and preceded by a paragraph break, to avoid stripping legitimate mid-response content
+        var trailMatch = text.match(/\n{2,}(?:Would you like|Do you (?:want|need)|Is there anything else|Let me know if|Feel free to|I (?:can|could) also|Here are some (?:additional|more|other)|If you (?:want|need)|Shall I)[\s\S]{0,400}$/i);
+        if (trailMatch && trailMatch.index >= text.length - 500) {
+          text = text.substring(0, trailMatch.index).trimEnd();
+        }
+      }
+      if (mode === "html") {
+        // Basic sanitation: strip script/iframe tags
+        text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
+        text = text.replace(/<iframe[\s\S]*?>/gi, "");
+      }
+      return text;
+    }
+
+    // ===== OUTPUT MODE =====
+    function setOutputMode(mode) {
+      outputMode = mode;
+      if (db.activeJobId) { var job = getJob(db.activeJobId); if (job) { job.outputMode = mode; saveDB(); } }
+      debugLog('[OUTPUT] Mode set to "' + mode + '"', 'info');
+    }
+
     async function sendMessage() {
       if (!db.activeJobId) return; var job = getJob(db.activeJobId); if (!job) return;
       var input = document.getElementById("userInput"), ut = input.value.trim();
@@ -7974,6 +8073,10 @@
         }
         return;
       }
+
+      // Validate model/provider compatibility before dispatch
+      var compatErr = validateModelProviderCompatibility();
+      if (compatErr) { alert(compatErr); return; }
 
       addMessageToDOM("user", ut, false, job.messages.length - 1);
       job.messages.push({ role: "user", content: ut }); saveDB();
@@ -8066,6 +8169,7 @@
               }
             }
             reply = (d.content && d.content[0] && d.content[0].text) || "No response.";
+            reply = postProcessResponse(reply, outputMode);
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
@@ -8105,6 +8209,7 @@
             debugLog('[API] ✅ watsonx response HTTP ' + r.status + ' in ' + elapsed + 'ms', 'info');
             d = await r.json();
             reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
+            reply = postProcessResponse(reply, outputMode);
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
             job.messages.push({ role: "assistant", content: reply }); saveDB();
             addMessageToDOM("assistant", reply, false, job.messages.length - 2);
@@ -8137,6 +8242,7 @@
             d = await r.json();
             var respStr = JSON.stringify(d);
             reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
+            reply = postProcessResponse(reply, outputMode);
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens), response JSON ' + (respStr.length / 1024).toFixed(1) + ' KB', 'log');
             // Log OpenAI prompt caching stats (automatic, no request changes needed)
             if (d.usage && d.usage.prompt_tokens_details && d.usage.prompt_tokens_details.cached_tokens) {
