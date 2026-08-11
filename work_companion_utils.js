@@ -516,6 +516,275 @@
     return (Date.now() - record.cachedAt) <= (maxAgeMs || 15 * 60 * 1000);
   }
 
+  var IMAGE_TYPE_TO_MIME = {
+    png: "image/png",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    svg: "image/svg+xml",
+    bmp: "image/bmp",
+    tiff: "image/tiff",
+    emf: "image/x-emf",
+    wmf: "image/x-wmf"
+  };
+
+  function normalizeImageType(type) {
+    var t = String(type || "").toLowerCase().trim();
+    if (t === "jpg") return "jpeg";
+    return t;
+  }
+
+  function extensionFromPath(path) {
+    var match = String(path || "").match(/\.([a-z0-9]+)(?:$|\?)/i);
+    return normalizeImageType(match ? match[1] : "");
+  }
+
+  function decodeBase64ToBytes(base64Text) {
+    var text = String(base64Text || "").replace(/\s+/g, "");
+    if (!text) return new Uint8Array(0);
+    if (typeof Buffer !== "undefined") {
+      return Uint8Array.from(Buffer.from(text, "base64"));
+    }
+    var binary = atob(text);
+    var out = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+  }
+
+  function utf8Decode(bytes) {
+    if (typeof TextDecoder !== "undefined") {
+      try { return new TextDecoder("utf-8").decode(bytes); } catch (err) {}
+    }
+    var out = "";
+    for (var i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+    return out;
+  }
+
+  function detectImageTypeFromBytes(bytes) {
+    var b = bytes || new Uint8Array(0);
+    if (b.length >= 8 &&
+        b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47 &&
+        b[4] === 0x0D && b[5] === 0x0A && b[6] === 0x1A && b[7] === 0x0A) return "png";
+    if (b.length >= 3 && b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return "jpeg";
+    if (b.length >= 6) {
+      var gifHead = String.fromCharCode(b[0], b[1], b[2], b[3], b[4], b[5]);
+      if (gifHead === "GIF87a" || gifHead === "GIF89a") return "gif";
+    }
+    if (b.length >= 12 &&
+        b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+        b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "webp";
+    if (b.length >= 2 && b[0] === 0x42 && b[1] === 0x4D) return "bmp";
+    if (b.length >= 4) {
+      if ((b[0] === 0x49 && b[1] === 0x49 && b[2] === 0x2A && b[3] === 0x00) ||
+          (b[0] === 0x4D && b[1] === 0x4D && b[2] === 0x00 && b[3] === 0x2A)) return "tiff";
+      if (b[0] === 0xD7 && b[1] === 0xCD && b[2] === 0xC6 && b[3] === 0x9A) return "wmf";
+      if (b[0] === 0x01 && b[1] === 0x00 && b[2] === 0x09 && b[3] === 0x00) return "wmf";
+      if (b[0] === 0x01 && b[1] === 0x00 && b[2] === 0x00 && b[3] === 0x00 &&
+          b.length >= 44 && b[40] === 0x20 && b[41] === 0x45 && b[42] === 0x4D && b[43] === 0x46) return "emf";
+    }
+    var text = utf8Decode(b.slice(0, Math.min(b.length, 512))).replace(/^\uFEFF/, "").trim();
+    if (/^<\?xml[\s\S]*?<svg[\s>]/i.test(text) || /^<svg[\s>]/i.test(text)) return "svg";
+    return "";
+  }
+
+  function parseDataUrl(dataUrl) {
+    var match = String(dataUrl || "").match(/^data:([^;,]+)?(?:;([^,]*))?,(.*)$/i);
+    if (!match) return null;
+    var mimeType = String(match[1] || "").toLowerCase();
+    var params = String(match[2] || "").toLowerCase();
+    return {
+      mimeType: mimeType,
+      isBase64: params.indexOf("base64") !== -1,
+      payload: match[3] || ""
+    };
+  }
+
+  function imageTypeFromMime(mimeType) {
+    var mime = String(mimeType || "").toLowerCase();
+    if (!mime) return "";
+    if (mime === "image/jpg") return "jpeg";
+    if (mime === "image/svg+xml") return "svg";
+    if (mime === "image/x-emf" || mime === "application/x-emf") return "emf";
+    if (mime === "image/x-wmf" || mime === "application/x-msmetafile" || mime === "application/x-wmf") return "wmf";
+    if (mime.indexOf("image/") === 0) return normalizeImageType(mime.slice(6));
+    return "";
+  }
+
+  function getMimeForImageType(type) {
+    return IMAGE_TYPE_TO_MIME[normalizeImageType(type)] || "";
+  }
+
+  function detectImageDescriptor(options) {
+    options = options || {};
+    var bytes = options.bytes instanceof Uint8Array ? options.bytes : new Uint8Array(0);
+    if (!bytes.length && options.base64) bytes = decodeBase64ToBytes(options.base64);
+    var extensionType = extensionFromPath(options.path || "");
+    var signatureType = detectImageTypeFromBytes(bytes);
+    var mimeType = String(options.mimeType || "").toLowerCase();
+    var mimeBasedType = imageTypeFromMime(mimeType);
+    var detectedType = signatureType || extensionType || mimeBasedType || "";
+    return {
+      path: String(options.path || ""),
+      sizeBytes: bytes.length,
+      mimeType: mimeType,
+      extensionType: extensionType,
+      signatureType: signatureType,
+      mimeBasedType: mimeBasedType,
+      detectedType: normalizeImageType(detectedType)
+    };
+  }
+
+  function isProviderSupportedImageType(type, provider) {
+    var normalized = normalizeImageType(type);
+    var allowed = ["png", "jpeg", "gif", "webp"];
+    if (provider && typeof provider === "object" && Array.isArray(provider.allowedTypes)) {
+      allowed = provider.allowedTypes.map(normalizeImageType);
+    }
+    return allowed.indexOf(normalized) !== -1;
+  }
+
+  function validateProviderImageDataUrl(dataUrl, options) {
+    options = options || {};
+    var parsed = parseDataUrl(dataUrl);
+    if (!parsed || !parsed.isBase64) {
+      return { ok: false, reason: "invalid-data-url", detectedType: "", sizeBytes: 0 };
+    }
+    var bytes;
+    try {
+      bytes = decodeBase64ToBytes(parsed.payload);
+    } catch (err) {
+      return { ok: false, reason: "invalid-base64", detectedType: "", sizeBytes: 0 };
+    }
+    var descriptor = detectImageDescriptor({
+      path: options.path || "",
+      bytes: bytes,
+      mimeType: parsed.mimeType
+    });
+    var mimeType = normalizeImageType(imageTypeFromMime(parsed.mimeType));
+    if (!descriptor.detectedType) {
+      return { ok: false, reason: "unknown-image-type", detectedType: "", sizeBytes: bytes.length };
+    }
+    if (mimeType && descriptor.signatureType && mimeType !== normalizeImageType(descriptor.signatureType)) {
+      return { ok: false, reason: "mime-signature-mismatch", detectedType: descriptor.detectedType, sizeBytes: bytes.length };
+    }
+    if (!isProviderSupportedImageType(descriptor.detectedType, options.provider || options)) {
+      return { ok: false, reason: "unsupported-image-type", detectedType: descriptor.detectedType, sizeBytes: bytes.length };
+    }
+    var canonicalMime = getMimeForImageType(descriptor.detectedType) || parsed.mimeType;
+    return {
+      ok: true,
+      reason: "ok",
+      detectedType: descriptor.detectedType,
+      mimeType: canonicalMime,
+      sizeBytes: bytes.length
+    };
+  }
+
+  function selectProviderImageCandidate(candidates, options) {
+    var list = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+    if (!list.length) return { selected: null, reason: "no-candidates" };
+    var primary = list[0];
+    if (isProviderSupportedImageType(primary.detectedType, options)) {
+      return { selected: primary, reason: "primary-supported", primary: primary };
+    }
+    var primaryGroup = primary.groupKey || "";
+    var primaryStem = primary.basenameStem || "";
+    for (var i = 1; i < list.length; i++) {
+      if (!isProviderSupportedImageType(list[i].detectedType, options)) continue;
+      if (primaryGroup && list[i].groupKey === primaryGroup) {
+        return { selected: list[i], reason: "group-fallback", primary: primary };
+      }
+      if (primaryStem && list[i].basenameStem === primaryStem) {
+        return { selected: list[i], reason: "basename-fallback", primary: primary };
+      }
+    }
+    for (var j = 1; j < list.length; j++) {
+      if (isProviderSupportedImageType(list[j].detectedType, options)) {
+        return { selected: list[j], reason: "document-fallback", primary: primary };
+      }
+    }
+    return { selected: primary, reason: "no-supported-fallback", primary: primary };
+  }
+
+  async function sanitizeTemplateImageForProvider(options) {
+    options = options || {};
+    var provider = options.provider || {};
+    var source = options.source || null;
+    if (!source || !source.dataUrl) {
+      return { attached: false, metadataOnly: true, reason: "missing-source", source: source };
+    }
+    var validation = validateProviderImageDataUrl(source.dataUrl, {
+      provider: provider,
+      path: source.path || ""
+    });
+    if (validation.ok) {
+      return {
+        attached: true,
+        metadataOnly: false,
+        reason: "validated",
+        source: source,
+        dataUrl: source.dataUrl,
+        detectedType: validation.detectedType,
+        mimeType: validation.mimeType,
+        sizeBytes: validation.sizeBytes
+      };
+    }
+
+    var fallbackList = Array.isArray(options.fallbacks) ? options.fallbacks : [];
+    for (var i = 0; i < fallbackList.length; i++) {
+      var fallback = fallbackList[i];
+      if (!fallback || !fallback.dataUrl) continue;
+      var fallbackValidation = validateProviderImageDataUrl(fallback.dataUrl, {
+        provider: provider,
+        path: fallback.path || ""
+      });
+      if (fallbackValidation.ok) {
+        return {
+          attached: true,
+          metadataOnly: false,
+          reason: "fallback-" + validation.reason,
+          source: source,
+          fallback: fallback,
+          dataUrl: fallback.dataUrl,
+          detectedType: fallbackValidation.detectedType,
+          mimeType: fallbackValidation.mimeType,
+          sizeBytes: fallbackValidation.sizeBytes
+        };
+      }
+    }
+
+    if (typeof options.convertUnsupported === "function") {
+      var converted = await options.convertUnsupported(source, validation);
+      if (converted && converted.dataUrl) {
+        var convertedValidation = validateProviderImageDataUrl(converted.dataUrl, {
+          provider: provider,
+          path: converted.path || source.path || ""
+        });
+        if (convertedValidation.ok) {
+          return {
+            attached: true,
+            metadataOnly: false,
+            reason: "converted-" + validation.reason,
+            source: source,
+            converted: converted,
+            dataUrl: converted.dataUrl,
+            detectedType: convertedValidation.detectedType,
+            mimeType: convertedValidation.mimeType,
+            sizeBytes: convertedValidation.sizeBytes
+          };
+        }
+      }
+    }
+
+    return {
+      attached: false,
+      metadataOnly: true,
+      reason: validation.reason,
+      source: source
+    };
+  }
+
   function buildJobSectionExportPayload(job, options) {
     options = options || {};
     job = job || {};
@@ -621,7 +890,12 @@
       jpg: "image/jpeg",
       gif: "image/gif",
       webp: "image/webp",
-      bmp: "image/bmp"
+      bmp: "image/bmp",
+      tif: "image/tiff",
+      tiff: "image/tiff",
+      svg: "image/svg+xml",
+      emf: "image/x-emf",
+      wmf: "image/x-wmf"
     };
     var needed = {};
     (imageRelationships || []).forEach(function(rel) {
@@ -758,6 +1032,15 @@
     buildModelSelectState: buildModelSelectState,
     shouldApplyModelRefreshResult: shouldApplyModelRefreshResult,
     isModelCacheFresh: isModelCacheFresh,
+    detectImageTypeFromBytes: detectImageTypeFromBytes,
+    imageTypeFromMime: imageTypeFromMime,
+    detectImageDescriptor: detectImageDescriptor,
+    validateProviderImageDataUrl: validateProviderImageDataUrl,
+    isProviderSupportedImageType: isProviderSupportedImageType,
+    selectProviderImageCandidate: selectProviderImageCandidate,
+    sanitizeTemplateImageForProvider: sanitizeTemplateImageForProvider,
+    extensionFromPath: extensionFromPath,
+    getMimeForImageType: getMimeForImageType,
     buildJobSectionExportPayload: buildJobSectionExportPayload,
     buildWordDocxArchive: buildWordDocxArchive,
     injectTemplateSectPr: injectTemplateSectPr,

@@ -1445,6 +1445,7 @@
       summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" },
       pdfTheme: "professional", customPdfTheme: null,
       templateStyle: null,
+      templateImageDiagnostics: null,
       wordTemplateRevision: 0,
       maxDocChars: DEFAULT_MAX_DOC_CHARS,
       extractDocImages: false,
@@ -2895,6 +2896,19 @@
       var isVisionCapable = (activeProvider === "openai" || activeProvider === "github");
       var processedConvMsgs = convMsgs.map(function(m, i) {
         if (m.isImage && m.imageData && isVisionCapable) {
+          var imageValidation = WCUtils.validateProviderImageDataUrl
+            ? WCUtils.validateProviderImageDataUrl(m.imageData, {
+              provider: { allowedTypes: PROVIDER_IMAGE_TYPES },
+              path: m.imageName || ("chat-image-" + (i + 1))
+            })
+            : { ok: true };
+          if (!imageValidation.ok) {
+            debugLog('[CTX] Omitting unsupported image attachment "' + (m.imageName || ("image-" + (i + 1))) + '" (' + imageValidation.reason + '); continuing with text context only.', 'warn');
+            return {
+              role: "user",
+              content: "Image attachment omitted due to unsupported/invalid format (" + imageValidation.reason + ")."
+            };
+          }
           return {
             role: "user",
             content: [
@@ -6596,6 +6610,22 @@
       }
       var imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
       var isImage = imageExts.indexOf((fileType || '').toLowerCase()) !== -1;
+      var sanitizedImagePayload = null;
+      if (typeof fileContent === "string" && fileContent.indexOf("data:image/") === 0) {
+        sanitizedImagePayload = await sanitizeTemplateImageAttachment({
+          path: "work-template." + (fileType || "image"),
+          dataUrl: fileContent
+        }, []);
+        if (!sanitizedImagePayload.attached) {
+          debugLog('[TEMPLATE] Template image could not be attached (' + sanitizedImagePayload.reason + '); continuing with metadata-only analysis.', 'warn');
+          isImage = false;
+          fileContent = "Template image metadata only: attachment omitted because " + sanitizedImagePayload.reason + ".";
+        } else {
+          fileContent = sanitizedImagePayload.dataUrl;
+          isImage = true;
+          debugLog('[TEMPLATE] Template image validated for provider: type=' + sanitizedImagePayload.detectedType + ', size=' + sanitizedImagePayload.sizeBytes + ' bytes', 'info');
+        }
+      }
       var systemMsg = "You are a document template analysis expert. Extract all formatting and styling properties from the provided document template. Return ONLY a valid JSON object with no markdown fences and no explanation.";
       var analysisPrompt = 'Analyze this document template and extract ALL formatting/styling properties. Return ONLY a JSON object with this structure:\n{\n  "fonts": {\n    "heading1": { "family": "...", "size": 18, "weight": "bold", "color": "#..." },\n    "heading2": { "family": "...", "size": 15, "weight": "bold", "color": "#..." },\n    "heading3": { "family": "...", "size": 13, "weight": "bold", "color": "#..." },\n    "body": { "family": "...", "size": 11, "weight": "normal", "color": "#...", "lineHeight": 1.6 },\n    "caption": { "family": "...", "size": 9, "weight": "normal", "color": "#..." }\n  },\n  "colors": {\n    "primary": "#...",\n    "secondary": "#...",\n    "accent": "#...",\n    "background": "#...",\n    "headerBg": "#...",\n    "footerBg": "#...",\n    "tableBorder": "#...",\n    "tableHeaderBg": "#...",\n    "tableAltRowBg": "#..."\n  },\n  "margins": { "top": 25, "bottom": 20, "left": 20, "right": 20 },\n  "header": {\n    "enabled": true,\n    "text": "...",\n    "fontSize": 9,\n    "color": "#...",\n    "backgroundColor": "#...",\n    "logoPosition": "left",\n    "height": 15,\n    "borderBottom": true\n  },\n  "footer": {\n    "enabled": true,\n    "text": "...",\n    "fontSize": 8,\n    "color": "#...",\n    "backgroundColor": "#...",\n    "pageNumbers": true,\n    "borderTop": true\n  },\n  "layout": {\n    "pageSize": "a4",\n    "orientation": "portrait",\n    "columns": 1\n  },\n  "spacing": {\n    "paragraphSpacing": 6,\n    "sectionSpacing": 12,\n    "listIndent": 10\n  },\n  "branding": {\n    "companyName": "...",\n    "tagline": "...",\n    "logoDescription": "..."\n  }\n}';
 
@@ -7158,6 +7188,255 @@
       return lines.join('\n');
     }
 
+    var PROVIDER_IMAGE_TYPES = ["png", "jpeg", "gif", "webp"];
+    var TEMPLATE_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+    var TEMPLATE_IMAGE_MAX_PIXELS = 12 * 1024 * 1024;
+    var TEMPLATE_IMAGE_MAX_DIMENSION = 2200;
+
+    function normalizeDocxPath(path) {
+      var parts = String(path || "").split("/");
+      var out = [];
+      for (var i = 0; i < parts.length; i++) {
+        var p = parts[i];
+        if (!p || p === ".") continue;
+        if (p === "..") out.pop();
+        else out.push(p);
+      }
+      return out.join("/");
+    }
+
+    function resolveDocxRelationshipTargetPath(sourcePartPath, target) {
+      var raw = String(target || "");
+      if (!raw) return "";
+      if (/^[a-z]+:/i.test(raw)) return "";
+      if (raw.charAt(0) === "/") return normalizeDocxPath(raw.slice(1));
+      var sourceDir = String(sourcePartPath || "");
+      if (sourceDir.indexOf("/") !== -1) sourceDir = sourceDir.slice(0, sourceDir.lastIndexOf("/") + 1);
+      else sourceDir = "";
+      return normalizeDocxPath(sourceDir + raw);
+    }
+
+    function imageDataUrlFromAsset(asset, forcedType) {
+      if (!asset || !asset.base64) return null;
+      var type = forcedType || asset.detectedType || asset.extensionType || "png";
+      var mimeType = WCUtils.getMimeForImageType ? WCUtils.getMimeForImageType(type) : ("image/" + type);
+      return "data:" + mimeType + ";base64," + asset.base64;
+    }
+
+    function bytesToBase64(bytes) {
+      var chunkSize = 0x8000;
+      var binary = "";
+      for (var i = 0; i < bytes.length; i += chunkSize) {
+        var chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+        binary += String.fromCharCode.apply(null, chunk);
+      }
+      return btoa(binary);
+    }
+
+    function collectImageRelationshipRefs(partDoc, relMap) {
+      var ids = [];
+      var seen = {};
+      function pushRelId(value) {
+        var relId = String(value || "").trim();
+        if (!relId || seen[relId] || !relMap[relId]) return;
+        seen[relId] = true;
+        ids.push(relId);
+      }
+      if (!partDoc) return ids;
+      var blips = partDoc.getElementsByTagName("a:blip");
+      for (var bi = 0; bi < blips.length; bi++) {
+        pushRelId(blips[bi].getAttribute("r:embed") || blips[bi].getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed"));
+        pushRelId(blips[bi].getAttribute("r:link") || blips[bi].getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "link"));
+      }
+      var vmlImages = partDoc.getElementsByTagName("v:imagedata");
+      for (var vi = 0; vi < vmlImages.length; vi++) {
+        pushRelId(vmlImages[vi].getAttribute("r:id") || vmlImages[vi].getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id"));
+      }
+      Object.keys(relMap).forEach(function(relId) {
+        if (!seen[relId]) ids.push(relId);
+      });
+      return ids;
+    }
+
+    async function collectTemplateImageCandidates(zip) {
+      var parser = new DOMParser();
+      var candidates = [];
+      var sources = [
+        { relsPath: "word/_rels/header1.xml.rels", partPath: "word/header1.xml", scope: "header1" },
+        { relsPath: "word/_rels/header2.xml.rels", partPath: "word/header2.xml", scope: "header2" },
+        { relsPath: "word/_rels/header3.xml.rels", partPath: "word/header3.xml", scope: "header3" },
+        { relsPath: "word/_rels/document.xml.rels", partPath: "word/document.xml", scope: "document" }
+      ];
+
+      for (var si = 0; si < sources.length; si++) {
+        var src = sources[si];
+        var relsFile = zip.file(src.relsPath);
+        if (!relsFile) continue;
+        var relsXml = await relsFile.async("string");
+        var relsDoc = parser.parseFromString(relsXml, "application/xml");
+        var relEls = relsDoc.getElementsByTagName("Relationship");
+        var relMap = {};
+        for (var ri = 0; ri < relEls.length; ri++) {
+          var relType = relEls[ri].getAttribute("Type") || "";
+          if (relType.indexOf("/image") === -1) continue;
+          var relId = relEls[ri].getAttribute("Id") || "";
+          var relTarget = relEls[ri].getAttribute("Target") || "";
+          var resolvedPath = resolveDocxRelationshipTargetPath(src.partPath, relTarget);
+          if (!relId || !resolvedPath) continue;
+          relMap[relId] = { id: relId, target: relTarget, path: resolvedPath };
+        }
+        var relIds = [];
+        var partFile = zip.file(src.partPath);
+        if (partFile) {
+          try {
+            var partXml = await partFile.async("string");
+            var partDoc = parser.parseFromString(partXml, "application/xml");
+            relIds = collectImageRelationshipRefs(partDoc, relMap);
+          } catch(partErr) {
+            debugLog('[TEMPLATE] Could not parse ' + src.partPath + ' for image refs: ' + partErr.message, 'warn');
+          }
+        }
+        if (!relIds.length) relIds = Object.keys(relMap);
+
+        for (var rj = 0; rj < relIds.length; rj++) {
+          var relRef = relMap[relIds[rj]];
+          if (!relRef) continue;
+          var file = zip.file(relRef.path);
+          if (!file) continue;
+          var bytes = await file.async("uint8array");
+          var descriptor = WCUtils.detectImageDescriptor
+            ? WCUtils.detectImageDescriptor({ path: relRef.path, bytes: bytes })
+            : { detectedType: (relRef.path.split(".").pop() || "").toLowerCase(), extensionType: "", signatureType: "", sizeBytes: bytes.length };
+          var stemMatch = relRef.path.match(/([^\/]+)\.[a-z0-9]+(?:$|\?)/i);
+          candidates.push({
+            path: relRef.path,
+            relId: relRef.id,
+            scope: src.scope,
+            groupKey: src.scope + ":" + relRef.id,
+            basenameStem: stemMatch ? stemMatch[1].toLowerCase() : "",
+            sizeBytes: bytes.length,
+            bytes: bytes,
+            base64: bytesToBase64(bytes),
+            detectedType: descriptor.detectedType || descriptor.extensionType || "",
+            extensionType: descriptor.extensionType || "",
+            signatureType: descriptor.signatureType || ""
+          });
+        }
+      }
+
+      return candidates;
+    }
+
+    async function rasterizeDataUrlToPng(dataUrl, options) {
+      options = options || {};
+      return new Promise(function(resolve, reject) {
+        var img = new Image();
+        img.onload = function() {
+          var width = img.naturalWidth || img.width || 0;
+          var height = img.naturalHeight || img.height || 0;
+          if (!width || !height) return reject(new Error("Decoded image has invalid dimensions"));
+          if ((width * height) > TEMPLATE_IMAGE_MAX_PIXELS) return reject(new Error("Image exceeds pixel safety limit"));
+          var scale = Math.min(TEMPLATE_IMAGE_MAX_DIMENSION / width, TEMPLATE_IMAGE_MAX_DIMENSION / height, 1);
+          var outW = Math.max(1, Math.round(width * scale));
+          var outH = Math.max(1, Math.round(height * scale));
+          var canvas = document.createElement("canvas");
+          canvas.width = outW;
+          canvas.height = outH;
+          var ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, outW, outH);
+          var pngDataUrl = canvas.toDataURL("image/png");
+          var sizeBytes = Math.round((pngDataUrl.split(",")[1] || "").length * 0.75);
+          resolve({ dataUrl: pngDataUrl, width: outW, height: outH, sizeBytes: sizeBytes, type: "png" });
+        };
+        img.onerror = function() { reject(new Error("Browser failed to decode image")); };
+        img.src = dataUrl;
+      });
+    }
+
+    function bytesToSvgDataUrl(bytes) {
+      try {
+        var svgText = new TextDecoder("utf-8").decode(bytes || new Uint8Array(0));
+        if (!/<svg[\s>]/i.test(svgText)) return null;
+        return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgText)));
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function tryConvertMetafileToSvgDataUrl(asset) {
+      try {
+        var converter = window.TemplateMetafileConverter;
+        if (converter && typeof converter.toSvgString === "function") {
+          var svg = converter.toSvgString(asset.bytes, asset.detectedType);
+          if (svg && /<svg[\s>]/i.test(svg)) return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svg)));
+        }
+        var ns = asset.detectedType === "emf" ? window.EMFJS : window.WMFJS;
+        var rendererCtor = ns && (ns.Renderer || ns);
+        if (typeof rendererCtor === "function") {
+          var renderer = new rendererCtor(asset.bytes.buffer || asset.bytes);
+          var rendered = typeof renderer.render === "function" ? renderer.render() : null;
+          var svgText = "";
+          if (typeof rendered === "string") svgText = rendered;
+          else if (rendered && rendered.outerHTML) svgText = rendered.outerHTML;
+          else if (renderer && renderer.svg && renderer.svg.outerHTML) svgText = renderer.svg.outerHTML;
+          if (svgText && /<svg[\s>]/i.test(svgText)) {
+            return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgText)));
+          }
+        }
+      } catch (err) {
+        debugLog('[TEMPLATE] Metafile converter failed for ' + asset.path + ': ' + err.message, 'warn');
+      }
+      return null;
+    }
+
+    async function convertTemplateImageAssetForProvider(asset) {
+      if (!asset || !asset.base64) return null;
+      if (asset.sizeBytes > TEMPLATE_IMAGE_MAX_BYTES) {
+        debugLog('[TEMPLATE] Conversion skipped for ' + asset.path + ' — image exceeds byte safety limit (' + asset.sizeBytes + ' bytes)', 'warn');
+        return null;
+      }
+      var originalDataUrl = imageDataUrlFromAsset(asset);
+      if (!originalDataUrl) return null;
+      try {
+        if (asset.detectedType === "svg") {
+          var svgDataUrl = bytesToSvgDataUrl(asset.bytes);
+          if (!svgDataUrl) return null;
+          return await rasterizeDataUrlToPng(svgDataUrl);
+        }
+        if (asset.detectedType === "emf" || asset.detectedType === "wmf") {
+          var metafileSvgDataUrl = tryConvertMetafileToSvgDataUrl(asset);
+          if (!metafileSvgDataUrl) return null;
+          return await rasterizeDataUrlToPng(metafileSvgDataUrl);
+        }
+        return await rasterizeDataUrlToPng(originalDataUrl);
+      } catch (err) {
+        debugLog('[TEMPLATE] Conversion failed for ' + asset.path + ': ' + err.message, 'warn');
+        return null;
+      }
+    }
+
+    async function sanitizeTemplateImageAttachment(sourceAsset, fallbackAssets) {
+      if (!WCUtils.sanitizeTemplateImageForProvider) {
+        return { attached: false, metadataOnly: true, reason: "sanitizer-unavailable", source: sourceAsset };
+      }
+      return WCUtils.sanitizeTemplateImageForProvider({
+        provider: { allowedTypes: PROVIDER_IMAGE_TYPES },
+        source: sourceAsset,
+        fallbacks: fallbackAssets || [],
+        convertUnsupported: async function(asset) {
+          var converted = await convertTemplateImageAssetForProvider(asset);
+          if (!converted || !converted.dataUrl) return null;
+          return {
+            path: (asset && asset.path ? asset.path.replace(/\.[a-z0-9]+$/i, "") : "template-image") + ".png",
+            dataUrl: converted.dataUrl,
+            width: converted.width,
+            height: converted.height,
+            sizeBytes: converted.sizeBytes
+          };
+        }
+      });
+    }
+
     // Analyze a Word template ZIP with AI. Optionally pass logoDataUrl (base64 data URL) to
     // include the extracted logo in the AI request so the AI can specify placement/sizing.
     // logoSource is a string describing where the logo was found (e.g. "header", "document",
@@ -7214,10 +7493,21 @@
         xmlContent += '\n=== ' + key + ' ===\n' + xmlFiles[key] + '\n';
       }
 
-      // Build logo section for the prompt depending on whether a logo was extracted
-      var logoPromptSection = logoDataUrl
-        ? 'A logo image has been automatically extracted from this template (it is the first image found in the template\'s header/cover area). The image is attached to this message. Based on where it was found in the template XML and its visual appearance, please specify precise logo placement and sizing instructions in the "logo" field of the JSON response.'
-        : 'No logo image was found in this template. Set "logo" to null in the JSON response.';
+      var safeLogoDataUrl = logoDataUrl;
+      if (logoDataUrl) {
+        var directValidation = WCUtils.validateProviderImageDataUrl
+          ? WCUtils.validateProviderImageDataUrl(logoDataUrl, { provider: { allowedTypes: PROVIDER_IMAGE_TYPES }, path: String(logoSource || "template-logo") })
+          : { ok: true };
+        if (!directValidation.ok) {
+          debugLog('[TEMPLATE] Logo image omitted before AI call (' + directValidation.reason + '); continuing with metadata-only logo analysis', 'warn');
+          safeLogoDataUrl = null;
+        }
+      }
+
+      // Build logo section for the prompt depending on whether a logo is safe to attach
+      var logoPromptSection = safeLogoDataUrl
+        ? 'A logo image has been automatically extracted from this template. The image is attached to this message. Based on where it was found in the template XML and its visual appearance, please specify precise logo placement and sizing instructions in the "logo" field of the JSON response.'
+        : 'No provider-compatible logo image was attached for this template. Use XML metadata only and set "logo" to null when placement cannot be inferred.';
 
       // Extract structured design metadata (fonts, theme colors, header/footer content, backgrounds)
       // and prepend it to the prompt so the AI gets clear, pre-parsed style information in addition
@@ -7231,7 +7521,7 @@
       } catch(metaErr) {
         debugLog('[TEMPLATE] Could not extract design metadata: ' + metaErr.message, 'warn');
       }
-      var metadataBlock = buildDesignMetadataBlock(designMeta, logoDataUrl, logoSource || 'template');
+      var metadataBlock = buildDesignMetadataBlock(designMeta, safeLogoDataUrl, logoSource || 'template');
 
       var analysisPrompt = 'Analyze this Microsoft Word template and extract ALL styling properties into a structured JSON object. I need a complete style profile that captures the document\'s visual design.\n\n' + logoPromptSection + '\n\nThe following structured metadata has been pre-extracted from the template\'s XML parts to help you produce accurate values — use this as your primary source of truth for fonts, colors, headers, footers, and backgrounds:\n\n' + metadataBlock + '\n\nHere are the raw template XML files for additional context:\n' + xmlContent + '\n\nReturn ONLY a valid JSON object (no markdown, no code fences, no explanation) with this exact structure:\n{\n  "templateName": "descriptive name based on the template design",\n  "fonts": {\n    "heading": "font name",\n    "body": "font name",\n    "code": "monospace font name or Courier New"\n  },\n  "fontSizes": {\n    "h1": 24,\n    "h2": 18,\n    "h3": 14,\n    "body": 11,\n    "small": 9\n  },\n  "colors": {\n    "heading": [r, g, b],\n    "body": [r, g, b],\n    "background": [255, 255, 255],\n    "userMsgBg": [r, g, b],\n    "assistantMsgBg": [r, g, b],\n    "codeBg": [r, g, b],\n    "codeText": [r, g, b],\n    "tableBorder": [r, g, b],\n    "tableHeaderBg": [r, g, b],\n    "tableHeaderText": [r, g, b],\n    "accent": [r, g, b],\n    "linkColor": [r, g, b],\n    "headerText": [r, g, b],\n    "footerText": [r, g, b],\n    "divider": [r, g, b]\n  },\n  "spacing": {\n    "marginLeftMm": 25,\n    "marginRightMm": 25,\n    "marginTopMm": 25,\n    "marginBottomMm": 20,\n    "lineHeight": 1.15,\n    "paragraphSpacingPt": 8,\n    "headingSpacingPt": 12\n  },\n  "pageLayout": {\n    "orientation": "portrait",\n    "paperSize": "A4"\n  },\n  "headerFooter": {\n    "hasHeader": true,\n    "hasFooter": true,\n    "headerContent": "description of header content",\n    "footerContent": "description of footer content"\n  },\n  "styleNames": {\n    "heading1": "style name from styles.xml",\n    "heading2": "style name from styles.xml",\n    "heading3": "style name from styles.xml",\n    "normal": "style name from styles.xml",\n    "code": "style name if exists or null"\n  },\n  "logo": {\n    "placement": "header",\n    "alignment": "right",\n    "widthMm": 40,\n    "heightMm": 15\n  },\n  "designNotes": "brief description of the overall design aesthetic"\n}';
       // NOTE: "logo" values above are examples — AI should fill in accurate values or set "logo" to null
@@ -7244,7 +7534,7 @@
         throw new Error('No API token configured for ' + activeProvider + '. Save your token first.');
       }
 
-      debugLog('[TEMPLATE] Sending template XML to AI for analysis (provider: ' + activeProvider + ', model: ' + selectedModel + (logoDataUrl ? ', with logo image' : ', no logo') + ')...', 'info');
+      debugLog('[TEMPLATE] Sending template XML to AI for analysis (provider: ' + activeProvider + ', model: ' + selectedModel + (safeLogoDataUrl ? ', with logo image' : ', metadata only') + ')...', 'info');
 
       // Determine whether the active provider supports vision (image input)
       var supportsVision = (activeProvider === "openai" || activeProvider === "github" || activeProvider === "anthropic");
@@ -7254,9 +7544,9 @@
       if (activeProvider === "anthropic") {
         // Build Anthropic message content — include logo image if available and vision is supported
         var anthropicContent;
-        if (logoDataUrl && supportsVision) {
-          var logoBase64 = logoDataUrl.indexOf(',') !== -1 ? logoDataUrl.split(',')[1] : logoDataUrl;
-          var logoMime = logoDataUrl.startsWith('data:') ? logoDataUrl.split(';')[0].slice(5) : 'image/png';
+        if (safeLogoDataUrl && supportsVision) {
+          var logoBase64 = safeLogoDataUrl.indexOf(',') !== -1 ? safeLogoDataUrl.split(',')[1] : safeLogoDataUrl;
+          var logoMime = safeLogoDataUrl.startsWith('data:') ? safeLogoDataUrl.split(';')[0].slice(5) : 'image/png';
           anthropicContent = [
             { type: "text", text: analysisPrompt },
             { type: "image", source: { type: "base64", media_type: logoMime, data: logoBase64 } }
@@ -7289,10 +7579,10 @@
       } else if (activeProvider === "openai") {
         // Build OpenAI user content — include logo image if available
         var openaiUserContent;
-        if (logoDataUrl && supportsVision) {
+        if (safeLogoDataUrl && supportsVision) {
           openaiUserContent = [
             { type: "text", text: analysisPrompt },
-            { type: "image_url", image_url: { url: logoDataUrl, detail: "low" } }
+            { type: "image_url", image_url: { url: safeLogoDataUrl, detail: "low" } }
           ];
           debugLog('[Logo] Attaching logo image to OpenAI request', 'info');
         } else {
@@ -7348,10 +7638,10 @@
       } else {
         // GitHub Models (default) — include logo image if available
         var githubUserContent;
-        if (logoDataUrl && supportsVision) {
+        if (safeLogoDataUrl && supportsVision) {
           githubUserContent = [
             { type: "text", text: analysisPrompt },
-            { type: "image_url", image_url: { url: logoDataUrl, detail: "low" } }
+            { type: "image_url", image_url: { url: safeLogoDataUrl, detail: "low" } }
           ];
           debugLog('[Logo] Attaching logo image to GitHub Models request', 'info');
         } else {
@@ -7438,117 +7728,67 @@
         var logoFound = false;
         var logoSource = "none";
         var logoDataUrl = null;
-        var logoImgExt = "png";
+        var logoOriginalAsset = null;
+        var logoAttachmentState = null;
+        var templateImageDiagnostic = null;
         var parser = new DOMParser();
         try {
-          // Step 1: Look for images referenced in header files
-          var headerNums = [1, 2, 3];
-          for (var hi = 0; hi < headerNums.length && !logoDataUrl; hi++) {
-            var hNum = headerNums[hi];
-            var headerRelsFile = zip.file("word/_rels/header" + hNum + ".xml.rels");
-            if (!headerRelsFile) continue;
-            var headerRelsXml = await headerRelsFile.async("string");
-            var headerRelsDoc = parser.parseFromString(headerRelsXml, "application/xml");
-            var rels = headerRelsDoc.getElementsByTagName("Relationship");
-            for (var ri = 0; ri < rels.length && !logoDataUrl; ri++) {
-              var relType = rels[ri].getAttribute("Type") || "";
-              var relTarget = rels[ri].getAttribute("Target") || "";
-              if (relType.indexOf("/image") !== -1 && relTarget) {
-                var imgPath = relTarget.indexOf("media/") === 0 ? "word/" + relTarget : relTarget;
-                var imgFile = zip.file(imgPath);
-                if (imgFile) {
-                  var extMatch = imgPath.match(/\.(png|jpe?g|gif|bmp|webp)$/i);
-                  logoImgExt = extMatch ? (extMatch[1].toLowerCase() === "jpg" ? "jpeg" : extMatch[1].toLowerCase()) : "png";
-                  var imgBase64 = await imgFile.async("base64");
-                  logoDataUrl = "data:image/" + logoImgExt + ";base64," + imgBase64;
-                  logoSource = "header";
-                  debugLog("[Logo] Found logo in header" + hNum + ".xml: " + imgPath, "info");
-                }
-              }
-            }
+          var logoCandidates = await collectTemplateImageCandidates(zip);
+          if (logoCandidates.length) {
+            debugLog('[TEMPLATE] Found ' + logoCandidates.length + ' image candidate(s) across header/document relationships', 'info');
           }
-
-          // Step 2: Look for first image in document.xml relationships
-          if (!logoDataUrl) {
-            var docRelsFile = zip.file("word/_rels/document.xml.rels");
-            if (docRelsFile) {
-              var docRelsXml = await docRelsFile.async("string");
-              var docRelsDoc = parser.parseFromString(docRelsXml, "application/xml");
-              var docRels = docRelsDoc.getElementsByTagName("Relationship");
-              for (var dri = 0; dri < docRels.length && !logoDataUrl; dri++) {
-                var drType = docRels[dri].getAttribute("Type") || "";
-                var drTarget = docRels[dri].getAttribute("Target") || "";
-                if (drType.indexOf("/image") !== -1 && drTarget) {
-                  var dImgPath = drTarget.indexOf("media/") === 0 ? "word/" + drTarget : drTarget;
-                  var dImgFile = zip.file(dImgPath);
-                  if (dImgFile) {
-                    var dExtMatch = dImgPath.match(/\.(png|jpe?g|gif|bmp|webp)$/i);
-                    logoImgExt = dExtMatch ? (dExtMatch[1].toLowerCase() === "jpg" ? "jpeg" : dExtMatch[1].toLowerCase()) : "png";
-                    var dImgBase64 = await dImgFile.async("base64");
-                    logoDataUrl = "data:image/" + logoImgExt + ";base64," + dImgBase64;
-                    logoSource = "document";
-                    debugLog("[Logo] Found logo in document.xml: " + dImgPath, "info");
-                  }
-                }
-              }
-            }
-          }
-
-          // Step 3: Scan word/media/ and take the smallest image file
-          if (!logoDataUrl) {
-            var mediaFiles = [];
-            zip.forEach(function(relativePath, zipEntry) {
-              if (relativePath.indexOf("word/media/") === 0 && !zipEntry.dir) {
-                var extM = relativePath.match(/\.(png|jpe?g|gif|bmp|webp)$/i);
-                if (extM) mediaFiles.push({ path: relativePath, ext: extM[1].toLowerCase(), entry: zipEntry });
-              }
+          var logoPick = WCUtils.selectProviderImageCandidate
+            ? WCUtils.selectProviderImageCandidate(logoCandidates, { allowedTypes: PROVIDER_IMAGE_TYPES })
+            : { selected: logoCandidates[0] || null, reason: "no-selector" };
+          logoOriginalAsset = logoPick.selected || null;
+          if (logoOriginalAsset) {
+            logoSource = logoOriginalAsset.scope || "document";
+            debugLog('[TEMPLATE] Logo candidate selected: path=' + logoOriginalAsset.path + ', type=' + (logoOriginalAsset.detectedType || 'unknown') + ', size=' + logoOriginalAsset.sizeBytes + ' bytes, reason=' + logoPick.reason, 'info');
+            var fallbackCandidates = logoCandidates.filter(function(candidate) {
+              if (!candidate || candidate === logoOriginalAsset) return false;
+              if (logoOriginalAsset.groupKey && candidate.groupKey === logoOriginalAsset.groupKey) return true;
+              if (logoOriginalAsset.basenameStem && candidate.basenameStem === logoOriginalAsset.basenameStem) return true;
+              return false;
+            }).map(function(candidate) {
+              return {
+                path: candidate.path,
+                dataUrl: imageDataUrlFromAsset(candidate, candidate.detectedType),
+                detectedType: candidate.detectedType,
+                sizeBytes: candidate.sizeBytes
+              };
             });
-            if (mediaFiles.length > 0) {
-              var smallest = null;
-              for (var mi = 0; mi < mediaFiles.length; mi++) {
-                var mData = await mediaFiles[mi].entry.async("uint8array");
-                if (!smallest || mData.length < smallest.size) {
-                  smallest = { path: mediaFiles[mi].path, ext: mediaFiles[mi].ext, size: mData.length, entry: mediaFiles[mi].entry };
-                }
-              }
-              if (smallest) {
-                logoImgExt = smallest.ext === "jpg" ? "jpeg" : smallest.ext;
-                var sBase64 = await smallest.entry.async("base64");
-                logoDataUrl = "data:image/" + logoImgExt + ";base64," + sBase64;
-                logoSource = "media folder";
-                debugLog("[Logo] Found logo (smallest media file): " + smallest.path, "info");
-              }
+            logoAttachmentState = await sanitizeTemplateImageAttachment({
+              path: logoOriginalAsset.path,
+              dataUrl: imageDataUrlFromAsset(logoOriginalAsset, logoOriginalAsset.detectedType),
+              detectedType: logoOriginalAsset.detectedType,
+              sizeBytes: logoOriginalAsset.sizeBytes,
+              bytes: logoOriginalAsset.bytes,
+              base64: logoOriginalAsset.base64
+            }, fallbackCandidates);
+            if (logoAttachmentState.attached) {
+              logoDataUrl = logoAttachmentState.dataUrl;
+              logoFound = true;
+              var convertedMeta = logoAttachmentState.converted || null;
+              var dimText = convertedMeta && convertedMeta.width && convertedMeta.height ? (' (' + convertedMeta.width + 'x' + convertedMeta.height + ')') : '';
+              debugLog('[TEMPLATE] Logo attached to provider: source=' + logoOriginalAsset.path + ', outputType=' + logoAttachmentState.detectedType + ', outputSize=' + (logoAttachmentState.sizeBytes || 0) + ' bytes' + dimText + ', mode=' + logoAttachmentState.reason, 'info');
+            } else {
+              debugLog('[TEMPLATE] Template image ' + logoOriginalAsset.path + ' could not be converted (' + logoAttachmentState.reason + '); continuing with OOXML metadata only.', 'warn');
             }
-          }
-
-          if (logoDataUrl) {
-            var base64Part = logoDataUrl.split(",")[1] || "";
-            var logoWidth = null;
-            var logoHeight = null;
-            if (base64Part.length > 666000) {
-              debugLog("[Logo] Logo from template exceeds 500KB; resizing.", "warn");
-              var resizeResult = await new Promise(function(resolve) {
-                var img = new Image();
-                img.onload = function() {
-                  var canvas = document.createElement("canvas");
-                  var maxDim = 400;
-                  var scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
-                  canvas.width = Math.round(img.width * scale);
-                  canvas.height = Math.round(img.height * scale);
-                  canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-                  resolve({ dataUrl: canvas.toDataURL("image/png", 0.85), w: canvas.width, h: canvas.height });
-                };
-                img.src = logoDataUrl;
-              });
-              logoDataUrl = resizeResult.dataUrl;
-              logoWidth = resizeResult.w;
-              logoHeight = resizeResult.h;
-              debugLog("[Logo] Resized to " + logoWidth + "\u00d7" + logoHeight, "info");
-            }
-            logoFound = true;
+            templateImageDiagnostic = {
+              originalPath: logoOriginalAsset.path,
+              originalType: logoOriginalAsset.detectedType || "unknown",
+              originalSizeBytes: logoOriginalAsset.sizeBytes || 0,
+              attachedToProvider: !!logoAttachmentState.attached,
+              attachmentReason: logoAttachmentState.reason || "",
+              aiPreviewType: logoAttachmentState.detectedType || "",
+              aiPreviewSizeBytes: logoAttachmentState.sizeBytes || 0,
+              aiPreviewDimensions: logoAttachmentState.converted ? { width: logoAttachmentState.converted.width || 0, height: logoAttachmentState.converted.height || 0 } : null
+            };
+          } else {
+            debugLog('[TEMPLATE] No relationship-linked logo candidate found; continuing without logo attachment', 'info');
           }
         } catch (logoErr) {
-          debugLog("[Logo] Could not extract logo: " + logoErr.message, "warn");
+          debugLog("[Logo] Could not extract logo metadata: " + logoErr.message, "warn");
         }
 
         // ===== COVER IMAGE EXTRACTION =====
@@ -7594,15 +7834,19 @@
               var cImgPath = cImgTarget.indexOf("media/") === 0 ? "word/" + cImgTarget : cImgTarget;
               var cImgFile = zip.file(cImgPath);
               if (!cImgFile) return null;
-              var cExtMatch = cImgPath.match(/\.(png|jpe?g|gif|bmp|webp)$/i);
-              var cExt = cExtMatch ? (cExtMatch[1].toLowerCase() === "jpg" ? "jpeg" : cExtMatch[1].toLowerCase()) : "png";
+              var cBytes = await cImgFile.async("uint8array");
+              var cDescriptor = WCUtils.detectImageDescriptor
+                ? WCUtils.detectImageDescriptor({ path: cImgPath, bytes: cBytes })
+                : { detectedType: (cImgPath.split(".").pop() || "").toLowerCase() };
+              var cExt = cDescriptor.detectedType || cDescriptor.extensionType || "png";
               var cBase64 = await cImgFile.async("base64");
-              var cSizeKB = Math.round(cBase64.length * 0.75 / 1024);
+              var cSizeKB = Math.round((cDescriptor.sizeBytes || Math.round(cBase64.length * 0.75)) / 1024);
               // 9144 EMU per pixel at 96 DPI (914400 EMU/inch / 100 pixels/inch = 9144)
               var cWidthPx = Math.round(cCx / 9144);
               var cHeightPx = Math.round(cCy / 9144);
-              debugLog('[TEMPLATE] Cover image extracted: ' + cWidthPx + 'x' + cHeightPx + ', ' + cSizeKB + 'KB', 'info');
-              return { dataUrl: "data:image/" + cExt + ";base64," + cBase64, ext: cExt };
+              var cMime = WCUtils.getMimeForImageType ? WCUtils.getMimeForImageType(cExt) : ("image/" + cExt);
+              debugLog('[TEMPLATE] Cover image extracted: path=' + cImgPath + ', type=' + cExt + ', size=' + cSizeKB + 'KB, dims=' + cWidthPx + 'x' + cHeightPx, 'info');
+              return { dataUrl: "data:" + cMime + ";base64," + cBase64, ext: cExt };
             }
             // Search <w:drawing> elements directly in the document
             var allDrawings = docDocForCover.getElementsByTagName("w:drawing");
@@ -7646,6 +7890,7 @@
 
             // Store the AI profile
             db.aiTemplateProfile = aiProfile;
+            db.templateImageDiagnostics = templateImageDiagnostic;
 
             // Convert to PDF theme (aiProfileToPdfTheme now reads aiProfile.logo for placement)
             var pdfTheme = aiProfileToPdfTheme(aiProfile);
@@ -7695,7 +7940,7 @@
               if (notification.parentNode) notification.parentNode.removeChild(notification);
             }, 4000);
 
-            alert('\u2705 Template imported and analyzed by AI!\n\n\u2022 Template: ' + (aiProfile.templateName || file.name) + '\n\u2022 Heading font: ' + (aiProfile.fonts && aiProfile.fonts.heading || 'default') + '\n\u2022 Body font: ' + (aiProfile.fonts && aiProfile.fonts.body || 'default') + '\n\u2022 Design: ' + (aiProfile.designNotes || 'N/A') + '\n\u2022 Logo/graphic extracted: ' + (logoFound ? 'Yes (from ' + logoSource + ')' : 'None found') + (pdfTheme.logo ? '\n\u2022 Logo placement (AI): ' + pdfTheme.logo.placement + ', ' + pdfTheme.logo.alignment + ', ' + (pdfTheme.logo.widthMm || 'auto') + 'x' + (pdfTheme.logo.heightMm || 'auto') + 'mm' : '') + '\n\nThe AI-extracted styling will be used for all exports.');
+            alert('\u2705 Template imported and analyzed by AI!\n\n\u2022 Template: ' + (aiProfile.templateName || file.name) + '\n\u2022 Heading font: ' + (aiProfile.fonts && aiProfile.fonts.heading || 'default') + '\n\u2022 Body font: ' + (aiProfile.fonts && aiProfile.fonts.body || 'default') + '\n\u2022 Design: ' + (aiProfile.designNotes || 'N/A') + '\n\u2022 Logo source: ' + (templateImageDiagnostic ? (templateImageDiagnostic.originalPath + ' (' + templateImageDiagnostic.originalType + ', ' + Math.round((templateImageDiagnostic.originalSizeBytes || 0) / 1024) + ' KB)') : 'None found') + '\n\u2022 AI image attachment: ' + (templateImageDiagnostic ? (templateImageDiagnostic.attachedToProvider ? ('Attached as ' + templateImageDiagnostic.aiPreviewType) : 'Metadata-only (not attached)') : 'Not available') + (pdfTheme.logo ? '\n\u2022 Logo placement (AI): ' + pdfTheme.logo.placement + ', ' + pdfTheme.logo.alignment + ', ' + (pdfTheme.logo.widthMm || 'auto') + 'x' + (pdfTheme.logo.heightMm || 'auto') + 'mm' : '') + '\n\nThe AI-extracted styling will be used for all exports.');
 
             var existingModal = document.querySelector(".pdf-theme-modal");
             if (existingModal) {
@@ -7788,6 +8033,7 @@
         db.pdfTheme = "custom";
         db.customPdfTheme = theme;
         db.templateStyle = null;
+        db.templateImageDiagnostics = templateImageDiagnostic;
         saveDB();
         renderSidebar();
         alert(
@@ -7797,7 +8043,8 @@
           "\u2022 Body font: " + theme.extractedInfo.bodyFont + "\n" +
           "\u2022 Primary color: " + theme.extractedInfo.primaryColor + "\n" +
           "\u2022 " + theme.extractedInfo.stylesFound + " styles found\n" +
-          "\u2022 Logo/graphic extracted: " + (logoFound ? "Yes (from " + logoSource + ")" : "None found") + "\n\n" +
+          "\u2022 Original image: " + (templateImageDiagnostic ? (templateImageDiagnostic.originalPath + " (" + templateImageDiagnostic.originalType + ", " + Math.round((templateImageDiagnostic.originalSizeBytes || 0) / 1024) + " KB)") : "None found") + "\n" +
+          "\u2022 AI/provider attachment: " + (templateImageDiagnostic ? (templateImageDiagnostic.attachedToProvider ? ("Attached as " + templateImageDiagnostic.aiPreviewType) : "Metadata-only continuation") : "Not attempted") + "\n\n" +
           "Note: For better results, ensure an API token is configured and try again \u2014 AI analysis provides much more accurate styling extraction."
         );
         var existingModal = document.querySelector(".pdf-theme-modal");

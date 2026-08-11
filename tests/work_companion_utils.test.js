@@ -121,6 +121,83 @@ test('model response normalization supports wrapped shapes, mixed IDs, fallback 
   assert.ok(!utils.isModelCacheFresh({ identity: 'other', cachedAt: Date.now(), models: githubTopLevel }, identity, 1000));
 });
 
+test('EMF and WMF signatures are detected correctly', function() {
+  const emfBytes = new Uint8Array(44);
+  emfBytes[0] = 0x01; emfBytes[1] = 0x00; emfBytes[2] = 0x00; emfBytes[3] = 0x00;
+  emfBytes[40] = 0x20; emfBytes[41] = 0x45; emfBytes[42] = 0x4D; emfBytes[43] = 0x46;
+  const wmfBytes = new Uint8Array([0xD7, 0xCD, 0xC6, 0x9A, 0x00, 0x00, 0x00, 0x00]);
+  assert.strictEqual(utils.detectImageTypeFromBytes(emfBytes), 'emf');
+  assert.strictEqual(utils.detectImageTypeFromBytes(wmfBytes), 'wmf');
+  assert.strictEqual(utils.extensionFromPath('word/media/logo.WMF'), 'wmf');
+});
+
+test('provider validation rejects MIME/signature mismatch', function() {
+  const wmfBytes = Buffer.from([0xD7, 0xCD, 0xC6, 0x9A, 0x00, 0x00, 0x00, 0x00]);
+  const badDataUrl = 'data:image/png;base64,' + wmfBytes.toString('base64');
+  const result = utils.validateProviderImageDataUrl(badDataUrl, {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'mime-signature-mismatch');
+});
+
+test('provider validation accepts PNG/JPEG/GIF/WebP signatures', function() {
+  const png = 'data:image/png;base64,' + Buffer.from([0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A,0x00]).toString('base64');
+  const jpeg = 'data:image/jpeg;base64,' + Buffer.from([0xFF,0xD8,0xFF,0xD9]).toString('base64');
+  const gif = 'data:image/gif;base64,' + Buffer.from('GIF89a', 'ascii').toString('base64');
+  const webp = 'data:image/webp;base64,' + Buffer.from([0x52,0x49,0x46,0x46,0x24,0x00,0x00,0x00,0x57,0x45,0x42,0x50]).toString('base64');
+  [png, jpeg, gif, webp].forEach(function(dataUrl) {
+    const result = utils.validateProviderImageDataUrl(dataUrl, {});
+    assert.strictEqual(result.ok, true);
+  });
+});
+
+test('alternate supported fallback selection prefers linked fallback', function() {
+  const selected = utils.selectProviderImageCandidate([
+    { path: 'word/media/logo.emf', detectedType: 'emf', groupKey: 'hdr1:rId5', basenameStem: 'logo' },
+    { path: 'word/media/logo.png', detectedType: 'png', groupKey: 'hdr1:rId5', basenameStem: 'logo' },
+    { path: 'word/media/unrelated.png', detectedType: 'png', groupKey: 'hdr1:rId9', basenameStem: 'unrelated' }
+  ], {});
+  assert.strictEqual(selected.reason, 'group-fallback');
+  assert.strictEqual(selected.selected.path, 'word/media/logo.png');
+});
+
+testAsync('unsupported image never reaches provider payload when conversion unavailable', async function() {
+  const wmf = 'data:image/x-wmf;base64,' + Buffer.from([0xD7,0xCD,0xC6,0x9A,0x00]).toString('base64');
+  const result = await utils.sanitizeTemplateImageForProvider({
+    source: { path: 'word/media/logo.wmf', dataUrl: wmf },
+    convertUnsupported: async function() { return null; }
+  });
+  assert.strictEqual(result.attached, false);
+  assert.strictEqual(result.metadataOnly, true);
+});
+
+testAsync('conversion boundary success produces attachable payload', async function() {
+  const emfBytes = new Uint8Array(44);
+  emfBytes[0] = 0x01; emfBytes[40] = 0x20; emfBytes[41] = 0x45; emfBytes[42] = 0x4D; emfBytes[43] = 0x46;
+  const emfDataUrl = 'data:image/x-emf;base64,' + Buffer.from(emfBytes).toString('base64');
+  const pngDataUrl = 'data:image/png;base64,' + Buffer.from([0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A]).toString('base64');
+  const result = await utils.sanitizeTemplateImageForProvider({
+    source: { path: 'word/media/logo.emf', dataUrl: emfDataUrl },
+    convertUnsupported: async function() { return { path: 'word/media/logo-preview.png', dataUrl: pngDataUrl }; }
+  });
+  assert.strictEqual(result.attached, true);
+  assert.ok(result.reason.indexOf('converted-') === 0);
+  assert.strictEqual(result.detectedType, 'png');
+});
+
+testAsync('conversion failure continues as metadata-only', async function() {
+  const emfBytes = new Uint8Array(44);
+  emfBytes[0] = 0x01; emfBytes[40] = 0x20; emfBytes[41] = 0x45; emfBytes[42] = 0x4D; emfBytes[43] = 0x46;
+  const emfDataUrl = 'data:image/x-emf;base64,' + Buffer.from(emfBytes).toString('base64');
+  const result = await utils.sanitizeTemplateImageForProvider({
+    source: { path: 'word/media/logo.emf', dataUrl: emfDataUrl },
+    convertUnsupported: async function() {
+      return { path: 'word/media/logo-preview.bmp', dataUrl: 'data:image/bmp;base64,' + Buffer.from([0x42,0x4D,0x00]).toString('base64') };
+    }
+  });
+  assert.strictEqual(result.attached, false);
+  assert.strictEqual(result.metadataOnly, true);
+});
+
 test('section export payload contains only selected section and cached template analysis', function() {
   const payload = utils.buildJobSectionExportPayload({
     id: 'job1',
@@ -236,6 +313,22 @@ testAsync('template-aware DOCX archive preserves imported package assets and pro
   assert.ok(profileOnlyDocumentXml.includes('Selected Section Only'));
   assert.ok(!profileOnlyDocumentXml.includes('Template seed body'));
   assert.ok(profileOnlyStylesXml.includes('ProfileOnlyFont'));
+
+  const emfPayload = Buffer.from([0xD7, 0xCD, 0xC6, 0x9A, 0x00, 0x00]).toString('base64');
+  const emfArchive = await utils.buildWordDocxArchive({
+    JSZip,
+    documentXml: sectionDocumentXml,
+    stylesXml: '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+    imageRelationships: [{ id: 'rIdLogo', target: 'media/logo.emf' }],
+    imageFiles: [{ filename: 'word/media/logo.emf', base64: emfPayload }],
+    baseTemplateBase64,
+    hasTemplateProfile: true
+  });
+  const emfZip = await JSZip.loadAsync(emfArchive.base64, { base64: true });
+  const emfOut = await emfZip.file('word/media/logo.emf').async('base64');
+  const contentTypesXml = await emfZip.file('[Content_Types].xml').async('string');
+  assert.strictEqual(emfOut, emfPayload);
+  assert.ok(contentTypesXml.includes('Extension="emf"'));
 });
 
 (async function runAsyncTests() {
