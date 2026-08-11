@@ -7223,6 +7223,16 @@
       return "data:" + mimeType + ";base64," + asset.base64;
     }
 
+    function bytesToBase64(bytes) {
+      var chunkSize = 0x8000;
+      var binary = "";
+      for (var i = 0; i < bytes.length; i += chunkSize) {
+        var chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+        binary += String.fromCharCode.apply(null, chunk);
+      }
+      return btoa(binary);
+    }
+
     function collectImageRelationshipRefs(partDoc, relMap) {
       var ids = [];
       var seen = {};
@@ -7306,7 +7316,7 @@
             basenameStem: stemMatch ? stemMatch[1].toLowerCase() : "",
             sizeBytes: bytes.length,
             bytes: bytes,
-            base64: await file.async("base64"),
+            base64: bytesToBase64(bytes),
             detectedType: descriptor.detectedType || descriptor.extensionType || "",
             extensionType: descriptor.extensionType || "",
             signatureType: descriptor.signatureType || ""
@@ -7334,7 +7344,7 @@
           canvas.height = outH;
           var ctx = canvas.getContext("2d");
           ctx.drawImage(img, 0, 0, outW, outH);
-          var pngDataUrl = canvas.toDataURL("image/png", options.quality || 0.9);
+          var pngDataUrl = canvas.toDataURL("image/png");
           var sizeBytes = Math.round((pngDataUrl.split(",")[1] || "").length * 0.75);
           resolve({ dataUrl: pngDataUrl, width: outW, height: outH, sizeBytes: sizeBytes, type: "png" });
         };
