@@ -1,4 +1,5 @@
 const assert = require('assert');
+const JSZip = require('jszip');
 const utils = require('../work_companion_utils.js');
 
 function test(name, fn) {
@@ -9,6 +10,11 @@ function test(name, fn) {
     console.error('✗', name);
     throw err;
   }
+}
+
+const asyncTests = [];
+function testAsync(name, fn) {
+  asyncTests.push({ name, fn });
 }
 
 test('DOCX-like structured blocks become stable anchored chunks', function() {
@@ -77,18 +83,42 @@ test('multi-document retrieval retains source identity', function() {
   assert.strictEqual(hits[0].filename, 'B.docx');
 });
 
-test('model normalization, selection preservation, fallback, and cache freshness work', function() {
-  const models = utils.normalizeModelEntries('github', [
-    { id: 'openai/gpt-4.1', friendly_name: 'GPT-4.1', publisher: 'OpenAI' },
-    { id: 'openai/gpt-4.1', friendly_name: 'GPT-4.1', publisher: 'OpenAI' },
-    { id: 'openai/gpt-4.1-mini', friendly_name: 'GPT-4.1 Mini', publisher: 'OpenAI' }
-  ]);
-  assert.strictEqual(models.length, 2);
-  assert.strictEqual(utils.resolveModelSelection({ models, selectedModel: 'openai/gpt-4.1', fallbackModels: models }).reason, 'preserved');
-  assert.strictEqual(utils.resolveModelSelection({ models, selectedModel: 'missing', fallbackModels: [{ id: 'openai/gpt-4.1-mini' }] }).selectedModel, 'openai/gpt-4.1-mini');
+test('model response normalization supports wrapped shapes, mixed IDs, fallback selection, and stale protection', function() {
+  const githubTopLevel = utils.normalizeModelEntries('github', utils.extractModelEntriesFromResponse('github', [
+    { id: 'openai/gpt-4.1', display_name: 'GPT-4.1' },
+    { modelId: 'openai/gpt-4.1-mini', friendly_name: 'GPT-4.1 Mini' },
+    { name: 'openai/gpt-4.1', publisher: 'OpenAI' },
+    { invalid: true }
+  ]));
+  assert.deepStrictEqual(githubTopLevel.map(m => m.id), ['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
+
+  const githubData = utils.extractModelEntriesFromResponse('github', { data: [{ id: 'a' }] });
+  const githubModels = utils.extractModelEntriesFromResponse('github', { models: [{ id: 'b' }] });
+  const githubItems = utils.extractModelEntriesFromResponse('github', { items: [{ id: 'c' }] });
+  const openaiData = utils.extractModelEntriesFromResponse('openai', { data: [{ id: 'gpt-4.1' }] });
+  assert.strictEqual(githubData.length, 1);
+  assert.strictEqual(githubModels.length, 1);
+  assert.strictEqual(githubItems.length, 1);
+  assert.strictEqual(openaiData.length, 1);
+
+  const selectState = utils.buildModelSelectState({
+    provider: 'github',
+    models: githubTopLevel,
+    selectedModel: 'missing',
+    fallbackModels: [{ id: 'openai/gpt-4.1-mini' }]
+  });
+  assert.strictEqual(selectState.options.length, 2);
+  assert.strictEqual(selectState.options[0].value, 'openai/gpt-4.1');
+  assert.strictEqual(selectState.options[1].value, 'openai/gpt-4.1-mini');
+  assert.strictEqual(selectState.selectedModel, 'openai/gpt-4.1-mini');
+
+  assert.ok(utils.shouldApplyModelRefreshResult({ requestSeq: 4, currentSeq: 4, requestProvider: 'github', activeProvider: 'github' }));
+  assert.ok(!utils.shouldApplyModelRefreshResult({ requestSeq: 3, currentSeq: 4, requestProvider: 'github', activeProvider: 'github' }));
+  assert.ok(!utils.shouldApplyModelRefreshResult({ requestSeq: 4, currentSeq: 4, requestProvider: 'openai', activeProvider: 'github' }));
+
   const identity = utils.computeModelCacheIdentity({ provider: 'github', endpoint: 'x', token: 'abc' });
-  assert.ok(utils.isModelCacheFresh({ identity, cachedAt: Date.now(), models }, identity, 1000));
-  assert.ok(!utils.isModelCacheFresh({ identity: 'other', cachedAt: Date.now(), models }, identity, 1000));
+  assert.ok(utils.isModelCacheFresh({ identity, cachedAt: Date.now(), models: githubTopLevel }, identity, 1000));
+  assert.ok(!utils.isModelCacheFresh({ identity: 'other', cachedAt: Date.now(), models: githubTopLevel }, identity, 1000));
 });
 
 test('section export payload contains only selected section and cached template analysis', function() {
@@ -113,4 +143,113 @@ test('section export payload contains only selected section and cached template 
   assert.deepStrictEqual(payload.templateAnalysis, { templateName: 'Brand Template' });
 });
 
-console.log('All utility tests passed.');
+testAsync('template-aware DOCX archive preserves imported package assets and profile-only fallback works', async function() {
+  const baseZip = new JSZip();
+  baseZip.file('[Content_Types].xml',
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Default Extension="png" ContentType="image/png"/>' +
+    '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+    '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+    '<Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>' +
+    '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>' +
+    '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>' +
+    '</Types>');
+  baseZip.file('_rels/.rels',
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+    '</Relationships>');
+  baseZip.file('word/document.xml',
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<w:body><w:p><w:r><w:t>Template seed body</w:t></w:r></w:p>' +
+    '<w:sectPr><w:headerReference w:type="default" r:id="rIdHeader1"/><w:footerReference w:type="default" r:id="rIdFooter1"/><w:pgMar w:top="1500" w:right="1400" w:bottom="1300" w:left="1200"/></w:sectPr>' +
+    '</w:body></w:document>');
+  baseZip.file('word/styles.xml', '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="TemplateFont"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>');
+  baseZip.file('word/theme/theme1.xml', '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="TemplateTheme"><a:themeElements><a:clrScheme name="TemplateColorScheme"/></a:themeElements></a:theme>');
+  baseZip.file('word/header1.xml', '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>TEMPLATE_HEADER_MARKER</w:t></w:r></w:p></w:hdr>');
+  baseZip.file('word/footer1.xml', '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>TEMPLATE_FOOTER_MARKER</w:t></w:r></w:p></w:ftr>');
+  baseZip.file('word/_rels/document.xml.rels',
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+    '<Relationship Id="rIdTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>' +
+    '<Relationship Id="rIdHeader1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>' +
+    '<Relationship Id="rIdFooter1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>' +
+    '</Relationships>');
+
+  const baseTemplateBase64 = await baseZip.generateAsync({ type: 'base64' });
+  const sectionDocumentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+    '<w:body><w:p><w:r><w:t>Selected Section Only</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>';
+
+  const packaged = await utils.buildWordDocxArchive({
+    JSZip,
+    documentXml: sectionDocumentXml,
+    stylesXml: '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+    imageRelationships: [],
+    imageFiles: [],
+    baseTemplateBase64,
+    hasTemplateProfile: true
+  });
+
+  assert.strictEqual(packaged.mode, 'template-package');
+  assert.strictEqual(packaged.usedBaseTemplate, true);
+  assert.strictEqual(packaged.appliedTemplateSectPr, true);
+
+  const outZip = await JSZip.loadAsync(packaged.base64, { base64: true });
+  const outDocumentXml = await outZip.file('word/document.xml').async('string');
+  const outStylesXml = await outZip.file('word/styles.xml').async('string');
+  const outThemeXml = await outZip.file('word/theme/theme1.xml').async('string');
+  const outHeaderXml = await outZip.file('word/header1.xml').async('string');
+  const outFooterXml = await outZip.file('word/footer1.xml').async('string');
+  const outRelsXml = await outZip.file('word/_rels/document.xml.rels').async('string');
+
+  assert.ok(outDocumentXml.includes('Selected Section Only'));
+  assert.ok(!outDocumentXml.includes('Template seed body'));
+  assert.ok(outDocumentXml.includes('w:headerReference'));
+  assert.ok(outDocumentXml.includes('w:footerReference'));
+  assert.ok(outStylesXml.includes('TemplateFont'));
+  assert.ok(outThemeXml.includes('TemplateTheme'));
+  assert.ok(outHeaderXml.includes('TEMPLATE_HEADER_MARKER'));
+  assert.ok(outFooterXml.includes('TEMPLATE_FOOTER_MARKER'));
+  assert.ok(outRelsXml.includes('header1.xml'));
+  assert.ok(outRelsXml.includes('footer1.xml'));
+
+  const profileOnly = await utils.buildWordDocxArchive({
+    JSZip,
+    documentXml: sectionDocumentXml,
+    stylesXml: '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="ProfileOnlyFont"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>',
+    imageRelationships: [],
+    imageFiles: [],
+    baseTemplateBase64: '',
+    hasTemplateProfile: true
+  });
+
+  assert.strictEqual(profileOnly.mode, 'profile-only');
+  const profileOnlyZip = await JSZip.loadAsync(profileOnly.base64, { base64: true });
+  const profileOnlyDocumentXml = await profileOnlyZip.file('word/document.xml').async('string');
+  const profileOnlyStylesXml = await profileOnlyZip.file('word/styles.xml').async('string');
+  assert.ok(profileOnlyDocumentXml.includes('Selected Section Only'));
+  assert.ok(!profileOnlyDocumentXml.includes('Template seed body'));
+  assert.ok(profileOnlyStylesXml.includes('ProfileOnlyFont'));
+});
+
+(async function runAsyncTests() {
+  for (const t of asyncTests) {
+    try {
+      await t.fn();
+      console.log('✓', t.name);
+    } catch (err) {
+      console.error('✗', t.name);
+      throw err;
+    }
+  }
+  console.log('All utility tests passed.');
+})().catch(function(err) {
+  console.error(err);
+  process.exit(1);
+});

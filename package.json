@@ -1,0 +1,22 @@
+{
+  "name": "work_companion",
+  "version": "1.0.0",
+  "description": "",
+  "main": "work_companion_utils.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "node tests/work_companion_utils.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://localhost:26831/blackcarburning/Work_Companion"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "jszip": "^3.10.1"
+  }
+}

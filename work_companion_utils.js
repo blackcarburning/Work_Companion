@@ -403,20 +403,59 @@
     }
   }
 
+  function extractModelEntriesFromResponse(provider, rawResponse) {
+    var response = rawResponse;
+    if (Array.isArray(response)) return response.slice();
+    if (!response || typeof response !== "object") return [];
+    if (Array.isArray(response.data)) return response.data.slice();
+    if (Array.isArray(response.models)) return response.models.slice();
+    if (Array.isArray(response.items)) return response.items.slice();
+    if (response.result && Array.isArray(response.result.models)) return response.result.models.slice();
+    if (response.result && Array.isArray(response.result.items)) return response.result.items.slice();
+    if (provider === "anthropic" && response.list && Array.isArray(response.list.data)) return response.list.data.slice();
+    return [];
+  }
+
+  function describeModelResponse(rawResponse) {
+    if (Array.isArray(rawResponse)) {
+      return { type: "array", keys: [], length: rawResponse.length };
+    }
+    if (!rawResponse || typeof rawResponse !== "object") {
+      return { type: typeof rawResponse, keys: [], length: 0 };
+    }
+    var keys = Object.keys(rawResponse).slice(0, 12);
+    var list = extractModelEntriesFromResponse("", rawResponse);
+    return { type: "object", keys: keys, length: list.length };
+  }
+
   function normalizeModelEntries(provider, rawModels) {
     var items = Array.isArray(rawModels) ? rawModels : [];
     var out = [];
     var seen = {};
+    var idFields = ["id", "modelId", "model_id", "model", "name", "slug", "key"];
+    var labelFields = ["display_name", "friendly_name", "label", "title", "name"];
     items.forEach(function(model) {
       if (!model) return;
-      var id = String(model.id || model.name || model.model || "").trim();
-      if (!id || seen[id]) return;
+      var id = "";
+      var label = "";
+      if (typeof model === "string") {
+        id = model.trim();
+        label = id;
+      } else if (typeof model === "object") {
+        for (var i = 0; i < idFields.length && !id; i++) {
+          if (model[idFields[i]] != null) id = String(model[idFields[i]]).trim();
+        }
+        for (var j = 0; j < labelFields.length && !label; j++) {
+          if (model[labelFields[j]] != null) label = String(model[labelFields[j]]).trim();
+        }
+      }
+      if (!id) return;
+      if (seen[id]) return;
       seen[id] = true;
-      var label = String(model.name || model.display_name || model.friendly_name || id).trim();
-      if (model.publisher) label += " (" + model.publisher + ")";
+      if (!label) label = id;
+      if (model && model.publisher) label += " (" + model.publisher + ")";
       out.push({ id: id, name: label, provider: provider });
     });
-    out.sort(function(a, b) { return a.name.localeCompare(b.name); });
     return out;
   }
 
@@ -445,6 +484,29 @@
       }
     }
     return { selectedModel: models[0] ? models[0].id : "", reason: "first-available" };
+  }
+
+  function buildModelSelectState(options) {
+    options = options || {};
+    var provider = options.provider || "";
+    var models = normalizeModelEntries(provider, options.models || []);
+    var resolved = resolveModelSelection({
+      models: models,
+      selectedModel: options.selectedModel || "",
+      fallbackModels: options.fallbackModels || []
+    });
+    if (!resolved.selectedModel && models[0]) resolved = { selectedModel: models[0].id, reason: "first-available" };
+    return {
+      models: models,
+      options: models.map(function(model) { return { value: model.id, label: model.name || model.id }; }),
+      selectedModel: resolved.selectedModel || "",
+      reason: resolved.reason || "first-available"
+    };
+  }
+
+  function shouldApplyModelRefreshResult(state) {
+    state = state || {};
+    return state.requestSeq === state.currentSeq && state.requestProvider === state.activeProvider;
   }
 
   function isModelCacheFresh(record, identity, maxAgeMs) {
@@ -501,6 +563,180 @@
     };
   }
 
+  function extractLastSectPrXml(documentXml) {
+    var matches = String(documentXml || "").match(/<w:sectPr[\s\S]*?<\/w:sectPr>/g);
+    if (!matches || !matches.length) return "";
+    return matches[matches.length - 1];
+  }
+
+  function injectTemplateSectPr(documentXml, templateDocumentXml) {
+    var generatedXml = String(documentXml || "");
+    var templateSectPr = extractLastSectPrXml(templateDocumentXml);
+    if (!templateSectPr) return { documentXml: generatedXml, applied: false };
+    var generatedSectPrMatch = generatedXml.match(/<w:sectPr[\s\S]*?<\/w:sectPr>(?![\s\S]*<w:sectPr)/);
+    if (!generatedSectPrMatch) return { documentXml: generatedXml, applied: false };
+    return {
+      documentXml: generatedXml.replace(generatedSectPrMatch[0], templateSectPr),
+      applied: true
+    };
+  }
+
+  function mergeDocumentRelationshipsXml(existingRelsXml, imageRelationships) {
+    var xml = String(existingRelsXml || "");
+    if (!xml) {
+      xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    }
+    var known = {};
+    var idRegex = /Id="([^"]+)"/g;
+    var idMatch;
+    while ((idMatch = idRegex.exec(xml))) known[idMatch[1]] = true;
+    var additions = "";
+    (imageRelationships || []).forEach(function(rel) {
+      if (!rel || !rel.id || !rel.target || known[rel.id]) return;
+      known[rel.id] = true;
+      additions += '<Relationship Id="' + rel.id + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="' + rel.target + '"/>';
+    });
+    if (!additions) return xml;
+    if (xml.indexOf("</Relationships>") !== -1) {
+      return xml.replace("</Relationships>", additions + "</Relationships>");
+    }
+    return xml + additions;
+  }
+
+  function ensureContentTypesForImages(contentTypesXml, imageRelationships) {
+    var xml = String(contentTypesXml || "");
+    if (!xml) {
+      xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+        '<Default Extension="xml" ContentType="application/xml"/>' +
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+        '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+        '</Types>';
+    }
+    var extByContentType = {
+      png: "image/png",
+      jpeg: "image/jpeg",
+      jpg: "image/jpeg",
+      gif: "image/gif",
+      webp: "image/webp",
+      bmp: "image/bmp"
+    };
+    var needed = {};
+    (imageRelationships || []).forEach(function(rel) {
+      if (!rel || !rel.target) return;
+      var match = rel.target.match(/\.([a-z0-9]+)(?:$|\?)/i);
+      if (!match) return;
+      var ext = match[1].toLowerCase();
+      if (extByContentType[ext]) needed[ext] = extByContentType[ext];
+    });
+    Object.keys(needed).forEach(function(ext) {
+      var extensionPattern = new RegExp('Extension="' + ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '"', "i");
+      if (!extensionPattern.test(xml) && xml.indexOf("</Types>") !== -1) {
+        xml = xml.replace("</Types>", '<Default Extension="' + ext + '" ContentType="' + needed[ext] + '"/></Types>');
+      }
+    });
+    return xml;
+  }
+
+  async function buildWordDocxArchive(options) {
+    options = options || {};
+    var JSZipImpl = options.JSZip;
+    if (!JSZipImpl) throw new Error("JSZip is required");
+
+    var documentXml = String(options.documentXml || "");
+    var stylesXml = String(options.stylesXml || "");
+    var imageRelationships = Array.isArray(options.imageRelationships) ? options.imageRelationships.slice() : [];
+    var imageFiles = Array.isArray(options.imageFiles) ? options.imageFiles.slice() : [];
+    var baseTemplateBase64 = String(options.baseTemplateBase64 || "");
+    var hasProfile = !!options.hasTemplateProfile;
+
+    var mode = "default";
+    var usedBaseTemplate = false;
+    var appliedTemplateSectPr = false;
+    var templateError = "";
+    var zip = null;
+
+    if (baseTemplateBase64) {
+      try {
+        zip = await JSZipImpl.loadAsync(baseTemplateBase64, { base64: true });
+        usedBaseTemplate = true;
+        mode = "template-package";
+
+        var templateDocumentFile = zip.file("word/document.xml");
+        if (templateDocumentFile) {
+          var templateDocumentXml = await templateDocumentFile.async("string");
+          var injected = injectTemplateSectPr(documentXml, templateDocumentXml);
+          documentXml = injected.documentXml;
+          appliedTemplateSectPr = injected.applied;
+        }
+
+        zip.file("word/document.xml", documentXml);
+        if (stylesXml && !zip.file("word/styles.xml")) zip.file("word/styles.xml", stylesXml);
+
+        var existingRelsFile = zip.file("word/_rels/document.xml.rels");
+        var existingRelsXml = existingRelsFile ? await existingRelsFile.async("string") : "";
+        zip.file("word/_rels/document.xml.rels", mergeDocumentRelationshipsXml(existingRelsXml, imageRelationships));
+
+        var contentTypesFile = zip.file("[Content_Types].xml");
+        var contentTypesXml = contentTypesFile ? await contentTypesFile.async("string") : "";
+        zip.file("[Content_Types].xml", ensureContentTypesForImages(contentTypesXml, imageRelationships));
+
+        imageFiles.forEach(function(imgFile) {
+          if (!imgFile || !imgFile.filename || !imgFile.base64) return;
+          zip.file(imgFile.filename, imgFile.base64, { base64: true });
+        });
+      } catch (err) {
+        templateError = err && err.message ? err.message : String(err);
+        zip = null;
+      }
+    }
+
+    if (!zip) {
+      mode = hasProfile ? "profile-only" : "default";
+      var contentTypesFallbackXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+        '<Default Extension="xml" ContentType="application/xml"/>' +
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+        '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+        '</Types>';
+      contentTypesFallbackXml = ensureContentTypesForImages(contentTypesFallbackXml, imageRelationships);
+
+      var relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+        '</Relationships>';
+
+      var docRelsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+        '</Relationships>';
+      docRelsXml = mergeDocumentRelationshipsXml(docRelsXml, imageRelationships);
+
+      zip = new JSZipImpl();
+      zip.file("[Content_Types].xml", contentTypesFallbackXml);
+      zip.file("_rels/.rels", relsXml);
+      zip.file("word/document.xml", documentXml);
+      zip.file("word/styles.xml", stylesXml);
+      zip.file("word/_rels/document.xml.rels", docRelsXml);
+      imageFiles.forEach(function(imgFile) {
+        if (!imgFile || !imgFile.filename || !imgFile.base64) return;
+        zip.file(imgFile.filename, imgFile.base64, { base64: true });
+      });
+    }
+
+    var base64 = await zip.generateAsync({ type: "base64" });
+    return {
+      base64: base64,
+      mode: mode,
+      usedBaseTemplate: usedBaseTemplate,
+      appliedTemplateSectPr: appliedTemplateSectPr,
+      templateError: templateError
+    };
+  }
+
   return {
     ALIAS_GROUPS: ALIAS_GROUPS,
     sanitizeFilename: sanitizeFilename,
@@ -514,11 +750,19 @@
     formatCitationLocation: formatCitationLocation,
     buildEvidenceContext: buildEvidenceContext,
     parseStructuredAnswer: parseStructuredAnswer,
+    extractModelEntriesFromResponse: extractModelEntriesFromResponse,
+    describeModelResponse: describeModelResponse,
     normalizeModelEntries: normalizeModelEntries,
     computeModelCacheIdentity: computeModelCacheIdentity,
     resolveModelSelection: resolveModelSelection,
+    buildModelSelectState: buildModelSelectState,
+    shouldApplyModelRefreshResult: shouldApplyModelRefreshResult,
     isModelCacheFresh: isModelCacheFresh,
     buildJobSectionExportPayload: buildJobSectionExportPayload,
+    buildWordDocxArchive: buildWordDocxArchive,
+    injectTemplateSectPr: injectTemplateSectPr,
+    mergeDocumentRelationshipsXml: mergeDocumentRelationshipsXml,
+    ensureContentTypesForImages: ensureContentTypesForImages,
     excerptText: excerptText
   };
 });
