@@ -1077,6 +1077,9 @@
         <span id="template-status-label" role="status" aria-live="polite" style="font-size:0.75rem;color:#16a34a;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📋 Template: Active</span>
         <button class="sidebar-btn" style="padding:2px 6px;font-size:0.72rem" onclick="clearWorkTemplate()" aria-label="Clear active work template">✕ Clear</button>
       </div>
+      <div id="word-export-status-row" class="sidebar-actions" style="display:none">
+        <span id="word-export-status" role="status" aria-live="polite" style="font-size:0.72rem;color:#475569;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
+      </div>
       <div class="sidebar-actions">
         <button class="sidebar-btn" onclick="toggleDebugConsole()">🐛 Debug</button>
       </div>
@@ -1372,8 +1375,10 @@
     var NAME_KEY = "wc_user_name";
     var userName = "";
     var modelListCache = null;
+    var modelRefreshSeq = 0;
     var lastRetrievedSourceContext = null;
     var storedWordTemplateBase64 = "";
+    var wordTemplateRevision = 0;
     var _imageRefCounter = 0;
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
@@ -1440,6 +1445,7 @@
       summaryStyle: { fontFamily: "sans-serif", fontSize: 16, textColor: "#1f2328", bgColor: "#ffffff" },
       pdfTheme: "professional", customPdfTheme: null,
       templateStyle: null,
+      wordTemplateRevision: 0,
       maxDocChars: DEFAULT_MAX_DOC_CHARS,
       extractDocImages: false,
       autosaveEnabled: true,
@@ -2013,6 +2019,8 @@
           if (db.customPdfTheme === undefined) db.customPdfTheme = null;
           if (db.aiTemplateProfile === undefined) db.aiTemplateProfile = null;
           if (db.templateStyle === undefined) db.templateStyle = null;
+          if (db.wordTemplateRevision === undefined) db.wordTemplateRevision = 0;
+          wordTemplateRevision = db.wordTemplateRevision || 0;
           if (db.activeProvider) activeProvider = db.activeProvider;
           if (!db.maxDocChars) db.maxDocChars = DEFAULT_MAX_DOC_CHARS;
           if (db.extractDocImages === undefined) db.extractDocImages = false;
@@ -2055,7 +2063,8 @@
           db = { jobs:[], activeJobId:null, activeView:"summary", summary:"", summaryTitle:"Document Summary",
             summaryStyle:{ fontFamily:"sans-serif", fontSize:16, textColor:"#1f2328", bgColor:"#ffffff" },
             pdfTheme:"professional", customPdfTheme:null, maxDocChars:DEFAULT_MAX_DOC_CHARS, extractDocImages:false,
-            autosaveEnabled:true, autosaveIntervalMin:DEFAULT_AUTOSAVE_INTERVAL_MIN };
+            autosaveEnabled:true, autosaveIntervalMin:DEFAULT_AUTOSAVE_INTERVAL_MIN, wordTemplateRevision: 0 };
+          wordTemplateRevision = 0;
         }
       }
     }
@@ -2139,6 +2148,7 @@
     // ===== PROVIDER =====
     function onProviderChange() {
       activeProvider = document.getElementById("provider-select").value;
+      modelRefreshSeq++;
       db.activeProvider = activeProvider;
       saveDB();
       updateProviderUI();
@@ -2169,6 +2179,7 @@
     }
 
     function invalidateModelCache(reason) {
+      modelRefreshSeq++;
       if (localStorage.getItem(MODELS_CACHE_KEY)) {
         debugLog('[MODELS] Cache invalidated' + (reason ? ' (' + reason + ')' : ''), 'info');
       }
@@ -2224,11 +2235,28 @@
     async function fetchModels(forceRefresh) {
       var btn = document.getElementById("model-refresh-btn");
       if (btn) { btn.textContent = "⏳"; btn.disabled = true; }
+      var requestSeq = ++modelRefreshSeq;
+      var requestProvider = activeProvider;
       var identity = getModelCacheIdentity();
       var cached = getCachedModelRecord();
+      function isStaleRefresh() {
+        if (WCUtils.shouldApplyModelRefreshResult) {
+          return !WCUtils.shouldApplyModelRefreshResult({
+            requestSeq: requestSeq,
+            currentSeq: modelRefreshSeq,
+            requestProvider: requestProvider,
+            activeProvider: activeProvider
+          });
+        }
+        return requestSeq !== modelRefreshSeq || requestProvider !== activeProvider;
+      }
       if (!forceRefresh && cached && WCUtils.isModelCacheFresh && WCUtils.isModelCacheFresh(cached, identity, MODEL_CACHE_MAX_AGE_MS)) {
+        if (isStaleRefresh()) {
+          debugLog('[MODELS] Ignoring stale cached refresh result for provider "' + requestProvider + '" (seq ' + requestSeq + ')', 'warn');
+          return cached.models;
+        }
         populateModelSelect(cached.models, { reason: "cache" });
-        setModelRefreshStatus("Cached list", "success");
+        setModelRefreshStatus("Cached list (" + cached.models.length + ")", "success");
         debugLog('[MODELS] Cache hit for provider "' + activeProvider + '"', 'info');
         if (btn) { btn.textContent = "🔄"; btn.disabled = false; }
         return cached.models;
@@ -2251,6 +2279,10 @@
           url = ANTHROPIC_MODELS_LIST_URL;
         } else {
           var staticModels = getStaticModelsForProvider(activeProvider);
+          if (isStaleRefresh()) {
+            debugLog('[MODELS] Ignoring stale built-in fallback for provider "' + requestProvider + '" (seq ' + requestSeq + ')', 'warn');
+            return staticModels;
+          }
           populateModelSelect(staticModels, { reason: "unsupported-provider" });
           setModelRefreshStatus("Built-in list", "warn");
           debugLog('[MODELS] Provider "' + activeProvider + '" does not support runtime model listing; using built-in list', 'warn');
@@ -2262,18 +2294,33 @@
         var r = await fetch(url, { headers: headers, cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         var data = await r.json();
-        var list = Array.isArray(data) ? data : (data.data || data.models || []);
+        var shape = WCUtils.describeModelResponse ? WCUtils.describeModelResponse(data) : {
+          type: Array.isArray(data) ? "array" : typeof data,
+          keys: (data && typeof data === "object") ? Object.keys(data).slice(0, 12) : [],
+          length: Array.isArray(data) ? data.length : 0
+        };
+        debugLog('[MODELS] Raw response shape: ' + shape.type + ', keys=[' + (shape.keys || []).join(", ") + '], candidateCount=' + shape.length, 'info');
+        var list = WCUtils.extractModelEntriesFromResponse ? WCUtils.extractModelEntriesFromResponse(activeProvider, data) : (Array.isArray(data) ? data : (data && (data.data || data.models || data.items) || []));
+        if (!Array.isArray(list)) list = [];
         if (activeProvider === "github") {
           list = list.filter(function(model) { return !model.task || model.task === "chat-completion"; });
         }
         var models = WCUtils.normalizeModelEntries ? WCUtils.normalizeModelEntries(activeProvider, list) : list;
+        debugLog('[MODELS] Normalized models count=' + models.length, 'info');
+        if (isStaleRefresh()) {
+          debugLog('[MODELS] Suppressed stale refresh result for provider "' + requestProvider + '" (seq ' + requestSeq + ')', 'warn');
+          return models;
+        }
         if (!models.length) {
-          models = getStaticModelsForProvider(activeProvider);
-          setModelRefreshStatus("No models returned", "warn");
-          debugLog('[MODELS] Provider "' + activeProvider + '" returned an empty list; using built-in fallback', 'warn');
+          models = (cached && cached.identity === identity && cached.models && cached.models.length)
+            ? cached.models
+            : getStaticModelsForProvider(activeProvider);
+          var reason = list.length ? "malformed" : "empty";
+          setModelRefreshStatus(reason === "malformed" ? "Malformed list — fallback used" : "No models returned — fallback used", "warn");
+          debugLog('[MODELS] Provider "' + activeProvider + '" returned ' + reason + ' model data; fallback model count=' + models.length, 'warn');
         } else {
           saveCachedModelRecord({ identity: identity, provider: activeProvider, cachedAt: Date.now(), models: models });
-          setModelRefreshStatus(models.length + " models", "success");
+          setModelRefreshStatus(models.length + " models loaded", "success");
           debugLog('[MODELS] Loaded ' + models.length + ' model(s) for provider "' + activeProvider + '"', 'info');
         }
         populateModelSelect(models, { reason: forceRefresh ? "refreshed" : "loaded" });
@@ -2282,33 +2329,61 @@
         var fallback = (cached && cached.identity === identity && cached.models && cached.models.length)
           ? cached.models
           : getStaticModelsForProvider(activeProvider);
+        if (isStaleRefresh()) {
+          debugLog('[MODELS] Suppressed stale error result for provider "' + requestProvider + '" (seq ' + requestSeq + ')', 'warn');
+          return fallback;
+        }
         populateModelSelect(fallback, { reason: "error" });
-        if (/HTTP 401|HTTP 403|token/i.test(e.message)) setModelRefreshStatus("Auth failed", "error");
-        else setModelRefreshStatus("Refresh failed", "error");
+        if (/HTTP 401|HTTP 403|token/i.test(e.message)) setModelRefreshStatus("Auth failed — fallback used", "error");
+        else if (/HTTP\s\d+/.test(e.message)) setModelRefreshStatus("Provider error — fallback used", "error");
+        else if (/Network|Failed to fetch|fetch/i.test(e.message)) setModelRefreshStatus("Network error — fallback used", "error");
+        else setModelRefreshStatus("Refresh failed — fallback used", "error");
         debugLog('[MODELS] Refresh failed for provider "' + activeProvider + '": ' + e.message + (fallback === getStaticModelsForProvider(activeProvider) ? ' (using built-in fallback)' : ' (using cached list)'), 'error');
         return fallback;
       } finally {
-        if (btn) { btn.textContent = "🔄"; btn.disabled = false; }
+        if (btn && requestSeq === modelRefreshSeq) { btn.textContent = "🔄"; btn.disabled = false; }
       }
     }
 
     function populateModelSelect(models, options) {
       options = options || {};
       var sel = document.getElementById("model-select");
-      sel.innerHTML = "";
-      models.forEach(function(m) {
-        var o = document.createElement("option");
-        o.value = m.id; o.textContent = m.name;
-        sel.appendChild(o);
-      });
-      var resolved = WCUtils.resolveModelSelection ? WCUtils.resolveModelSelection({
-        models: models,
+      if (!sel) return;
+      var modelState = WCUtils.buildModelSelectState ? WCUtils.buildModelSelectState({
+        provider: activeProvider,
+        models: models || [],
         selectedModel: selectedModel,
         fallbackModels: getStaticModelsForProvider(activeProvider)
-      }) : { selectedModel: models[0] ? models[0].id : "", reason: "first-available" };
+      }) : {
+        models: (WCUtils.normalizeModelEntries ? WCUtils.normalizeModelEntries(activeProvider, models || []) : (models || [])),
+        options: (models || []).map(function(m) { return { value: m.id, label: m.name || m.id }; }),
+        selectedModel: selectedModel,
+        reason: "preserved"
+      };
+      var normalizedModels = modelState.models || [];
+      while (sel.firstChild) sel.removeChild(sel.firstChild);
+      (modelState.options || []).forEach(function(opt) {
+        if (!opt || !opt.value) return;
+        var o = document.createElement("option");
+        o.value = String(opt.value);
+        o.textContent = opt.label || opt.value;
+        sel.appendChild(o);
+      });
+      var resolved = { selectedModel: modelState.selectedModel, reason: modelState.reason || "first-available" };
       if (resolved.selectedModel) sel.value = resolved.selectedModel;
+      if (!sel.value && normalizedModels[0]) {
+        sel.value = normalizedModels[0].id;
+        resolved.reason = "first-available";
+      }
+      if (!sel.value) {
+        var emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "No models available";
+        sel.appendChild(emptyOption);
+      }
       if (sel.value) selectedModel = sel.value;
       sel.onchange = function() { selectedModel = this.value; };
+      debugLog('[MODELS] populateModelSelect reason=' + (options.reason || "unknown") + ', models=' + normalizedModels.length + ', options=' + sel.options.length, 'info');
       debugLog('[MODELS] Model selection ' + resolved.reason + ' → "' + selectedModel + '"', 'info');
     }
 
@@ -2404,6 +2479,38 @@
       if (!el) return;
       el.textContent = message || "";
       el.className = level ? level : "";
+    }
+
+    function setWordExportStatus(message, level) {
+      var row = document.getElementById("word-export-status-row");
+      var el = document.getElementById("word-export-status");
+      if (!row || !el) return;
+      if (!message) {
+        el.textContent = "";
+        row.style.display = "none";
+        el.style.color = "#475569";
+        return;
+      }
+      row.style.display = "";
+      el.textContent = message;
+      if (level === "error") el.style.color = "#b91c1c";
+      else if (level === "warn") el.style.color = "#b45309";
+      else if (level === "success") el.style.color = "#15803d";
+      else el.style.color = "#475569";
+    }
+
+    function bumpWordTemplateRevision(reason) {
+      wordTemplateRevision = (wordTemplateRevision || 0) + 1;
+      db.wordTemplateRevision = wordTemplateRevision;
+      debugLog('[TEMPLATE] Template revision updated to ' + wordTemplateRevision + (reason ? ' (' + reason + ')' : ''), 'info');
+    }
+
+    function base64ToBlob(base64Data, mimeType) {
+      var binary = atob(base64Data || "");
+      var len = binary.length;
+      var bytes = new Uint8Array(len);
+      for (var i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+      return new Blob([bytes], { type: mimeType || "application/octet-stream" });
     }
 
     function migrateSourceDocument(doc) {
@@ -3375,6 +3482,21 @@
       return PDF_THEMES[db.pdfTheme] || PDF_THEMES["professional"];
     }
 
+    function getActiveWordTemplateContext() {
+      var profile = db.aiTemplateProfile || db.templateStyle || null;
+      var profileName = (db.aiTemplateProfile && db.aiTemplateProfile.templateName) ||
+        (db.templateStyle && db.templateStyle.branding && db.templateStyle.branding.companyName) ||
+        "Word Template";
+      return {
+        revision: wordTemplateRevision || db.wordTemplateRevision || 0,
+        profile: profile,
+        profileName: profileName,
+        hasBaseTemplateZip: !!storedWordTemplateBase64,
+        baseTemplateBase64: storedWordTemplateBase64 || "",
+        modeHint: storedWordTemplateBase64 ? "template-package" : (profile ? "profile-only" : "default")
+      };
+    }
+
     function exportExchangeToWord(jobId, convIdx) {
       var job = getJob(jobId);
       if (!job) return;
@@ -3396,6 +3518,7 @@
       }) : null;
       showModal("Export Job Section to Word", "Enter a title for this section export:", job.name, false, async function(title) {
         if (!title || !payload) return;
+        var templateCtx = getActiveWordTemplateContext();
         var original = {
           summary: db.summary,
           summaryTitle: db.summaryTitle,
@@ -3410,7 +3533,11 @@
           db.jobs = [];
           db.activeJobId = null;
           db.activeView = "summary";
-          debugLog('[WORD-EXPORT] Exporting job section "' + job.name + '" with cached template analysis=' + (!!payload.templateAnalysis), 'info');
+          var modeMessage = templateCtx.hasBaseTemplateZip
+            ? ('Using imported template: ' + templateCtx.profileName)
+            : (templateCtx.profile ? ('Using imported template profile only: ' + templateCtx.profileName) : "Using default Word styling");
+          setWordExportStatus(modeMessage, templateCtx.hasBaseTemplateZip ? "success" : (templateCtx.profile ? "warn" : "warn"));
+          debugLog('[WORD-EXPORT] Section export start — jobId=' + (job.id || "unknown") + ', section="' + job.name + '", title="' + title + '", templateRevision=' + templateCtx.revision + ', baseTemplateZip=' + templateCtx.hasBaseTemplateZip + ', profileApplied=' + (!!templateCtx.profile), 'info');
           await exportToWord(btn);
         } finally {
           db.summary = original.summary;
@@ -5472,6 +5599,12 @@
         return;
       }
       if (btn) { btn.textContent = "⏳ Generating…"; btn.disabled = true; }
+      var templateCtx = getActiveWordTemplateContext();
+      var exportModeMessage = templateCtx.hasBaseTemplateZip
+        ? ('Using imported template: ' + templateCtx.profileName)
+        : (templateCtx.profile ? ('Using imported template profile only: ' + templateCtx.profileName) : "Using default Word styling");
+      setWordExportStatus(exportModeMessage, templateCtx.hasBaseTemplateZip ? "success" : (templateCtx.profile ? "warn" : "warn"));
+      debugLog('[WORD-EXPORT] Workbook export start — templateRevision=' + templateCtx.revision + ', baseTemplateZip=' + templateCtx.hasBaseTemplateZip + ', profileApplied=' + (!!templateCtx.profile) + ', modeHint=' + templateCtx.modeHint, 'info');
       try {
         saveCurrentNotes();
         var se = document.getElementById("summary-editor");
@@ -6096,53 +6229,41 @@
           '<w:sz w:val="' + bodySz + '"/><w:szCs w:val="' + bodySz + '"/>' +
           '</w:rPr></w:rPrDefault></w:docDefaults></w:styles>';
 
-        var contentTypesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
-          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
-          '<Default Extension="xml" ContentType="application/xml"/>' +
-          '<Default Extension="png" ContentType="image/png"/>' +
-          '<Default Extension="jpeg" ContentType="image/jpeg"/>' +
-          '<Default Extension="gif" ContentType="image/gif"/>' +
-          '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
-          '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
-          '</Types>';
-
-        var relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
-          '</Relationships>';
-
-        var imgRelsXml = "";
-        imageRelationships.forEach(function(rel) {
-          imgRelsXml += '<Relationship Id="' + rel.id + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="' + rel.target + '"/>';
-        });
-        var docRelsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
-          imgRelsXml +
-          '</Relationships>';
-
-        var zip = new JSZip();
-        zip.file("[Content_Types].xml", contentTypesXml);
-        zip.file("_rels/.rels", relsXml);
-        zip.file("word/document.xml", documentXml);
-        zip.file("word/styles.xml", stylesXml);
-        zip.file("word/_rels/document.xml.rels", docRelsXml);
-        imageFiles.forEach(function(imgFile) {
-          zip.file(imgFile.filename, imgFile.base64, { base64: true });
-        });
-
-        var blob = await zip.generateAsync({
-          type: "blob",
-          mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        });
+        var archiveInfo = WCUtils.buildWordDocxArchive
+          ? await WCUtils.buildWordDocxArchive({
+              JSZip: JSZip,
+              documentXml: documentXml,
+              stylesXml: stylesXml,
+              imageRelationships: imageRelationships,
+              imageFiles: imageFiles,
+              baseTemplateBase64: templateCtx.baseTemplateBase64,
+              hasTemplateProfile: !!templateCtx.profile
+            })
+          : null;
+        if (!archiveInfo || !archiveInfo.base64) {
+          throw new Error("Could not generate Word archive");
+        }
+        if (archiveInfo.mode === "template-package") {
+          setWordExportStatus("Using imported template: " + templateCtx.profileName, "success");
+        } else if (archiveInfo.mode === "profile-only") {
+          setWordExportStatus("Using imported template profile only: " + templateCtx.profileName, "warn");
+        } else {
+          setWordExportStatus("Using default Word styling", "warn");
+        }
+        debugLog('[WORD-EXPORT] Archive mode=' + archiveInfo.mode + ', baseTemplateZip=' + archiveInfo.usedBaseTemplate + ', sectPrApplied=' + archiveInfo.appliedTemplateSectPr +
+          (archiveInfo.templateError ? ', templateError=' + archiveInfo.templateError : ''), 'info');
+        var blob = base64ToBlob(archiveInfo.base64, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
         var url = URL.createObjectURL(blob);
         var a = document.createElement("a");
         a.href = url;
-        a.download = (db.summaryTitle || "document-summary").replace(/[^a-z0-9_\-]/gi, "_") + "_" + dateFileStr + ".docx";
+        var generatedFileName = (db.summaryTitle || "document-summary").replace(/[^a-z0-9_\-]/gi, "_") + "_" + dateFileStr + ".docx";
+        a.download = generatedFileName;
         a.click();
         URL.revokeObjectURL(url);
+        debugLog('[WORD-EXPORT] Download prepared — file="' + generatedFileName + '", template="' + templateCtx.profileName + '", revision=' + templateCtx.revision + ', profileApplied=' + (!!templateCtx.profile) + ', baseTemplateZip=' + templateCtx.hasBaseTemplateZip, 'info');
+        setWordExportStatus((archiveInfo.mode === "template-package" ? "Exported with imported template: " : (archiveInfo.mode === "profile-only" ? "Exported with template profile only: " : "Exported with default styling: ")) + generatedFileName, archiveInfo.mode === "template-package" ? "success" : "warn");
       } catch (err) {
+        setWordExportStatus("Word export failed: " + err.message, "error");
         alert("Word export failed: " + err.message);
       }
       if (btn) { btn.textContent = "📝 Word"; btn.disabled = false; }
@@ -6662,6 +6783,7 @@
     function clearWorkTemplate() {
       if (!db.templateStyle && !db.aiTemplateProfile) return;
       db.templateStyle = null;
+      storedWordTemplateBase64 = "";
       if (db.aiTemplateProfile) {
         db.aiTemplateProfile = null;
         db.customPdfTheme = null;
@@ -6670,8 +6792,10 @@
       } else {
         debugLog('[TEMPLATE] Template style cleared — reverting to pdfTheme', 'info');
       }
+      bumpWordTemplateRevision("template-cleared");
       saveDB();
       renderSidebar();
+      setWordExportStatus("Using default Word styling", "warn");
     }
 
     function rgbArrayToHex(rgb) {
@@ -7303,8 +7427,10 @@
 
         // Store the template ZIP as base64 for later use in exports
         try {
+          var hadTemplateZip = !!storedWordTemplateBase64;
           storedWordTemplateBase64 = await zip.generateAsync({ type: 'base64' });
           debugLog('[TEMPLATE] Stored template ZIP (' + Math.round(storedWordTemplateBase64.length / 1024) + ' KB base64)', 'info');
+          bumpWordTemplateRevision(hadTemplateZip ? "template-replaced" : "template-imported");
         } catch(e) {
           debugLog('[TEMPLATE] Could not store template ZIP: ' + e.message, 'warn');
         }
@@ -8080,11 +8206,11 @@
         if (db.templateStyle) {
           statusRow.style.display = "";
           var name = (db.templateStyle.branding && db.templateStyle.branding.companyName) || "Active";
-          statusLabel.textContent = "📋 Template: " + name;
+          statusLabel.textContent = "📋 Template: " + name + (storedWordTemplateBase64 ? " (package + profile)" : " (profile only)");
         } else if (db.aiTemplateProfile) {
           statusRow.style.display = "";
           var aiTemplateName = db.aiTemplateProfile.templateName || "Word Template";
-          statusLabel.textContent = "📋 Template: " + aiTemplateName;
+          statusLabel.textContent = "📋 Template: " + aiTemplateName + (storedWordTemplateBase64 ? " (package + AI profile)" : " (AI profile only)");
         } else {
           statusRow.style.display = "none";
         }
