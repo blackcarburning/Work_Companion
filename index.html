@@ -2326,9 +2326,8 @@
         populateModelSelect(models, { reason: forceRefresh ? "refreshed" : "loaded" });
         return models;
       } catch (e) {
-        var fallback = (cached && cached.identity === identity && cached.models && cached.models.length)
-          ? cached.models
-          : getStaticModelsForProvider(activeProvider);
+        var usingCachedFallback = !!(cached && cached.identity === identity && cached.models && cached.models.length);
+        var fallback = usingCachedFallback ? cached.models : getStaticModelsForProvider(activeProvider);
         if (isStaleRefresh()) {
           debugLog('[MODELS] Suppressed stale error result for provider "' + requestProvider + '" (seq ' + requestSeq + ')', 'warn');
           return fallback;
@@ -2338,7 +2337,7 @@
         else if (/HTTP\s\d+/.test(e.message)) setModelRefreshStatus("Provider error — fallback used", "error");
         else if (/Network|Failed to fetch|fetch/i.test(e.message)) setModelRefreshStatus("Network error — fallback used", "error");
         else setModelRefreshStatus("Refresh failed — fallback used", "error");
-        debugLog('[MODELS] Refresh failed for provider "' + activeProvider + '": ' + e.message + (fallback === getStaticModelsForProvider(activeProvider) ? ' (using built-in fallback)' : ' (using cached list)'), 'error');
+        debugLog('[MODELS] Refresh failed for provider "' + activeProvider + '": ' + e.message + (usingCachedFallback ? ' (using cached list)' : ' (using built-in fallback)'), 'error');
         return fallback;
       } finally {
         if (btn && requestSeq === modelRefreshSeq) { btn.textContent = "🔄"; btn.disabled = false; }
@@ -3536,7 +3535,7 @@
           var modeMessage = templateCtx.hasBaseTemplateZip
             ? ('Using imported template: ' + templateCtx.profileName)
             : (templateCtx.profile ? ('Using imported template profile only: ' + templateCtx.profileName) : "Using default Word styling");
-          setWordExportStatus(modeMessage, templateCtx.hasBaseTemplateZip ? "success" : (templateCtx.profile ? "warn" : "warn"));
+          setWordExportStatus(modeMessage, templateCtx.hasBaseTemplateZip ? "success" : "warn");
           debugLog('[WORD-EXPORT] Section export start — jobId=' + (job.id || "unknown") + ', section="' + job.name + '", title="' + title + '", templateRevision=' + templateCtx.revision + ', baseTemplateZip=' + templateCtx.hasBaseTemplateZip + ', profileApplied=' + (!!templateCtx.profile), 'info');
           await exportToWord(btn);
         } finally {
@@ -5603,7 +5602,7 @@
       var exportModeMessage = templateCtx.hasBaseTemplateZip
         ? ('Using imported template: ' + templateCtx.profileName)
         : (templateCtx.profile ? ('Using imported template profile only: ' + templateCtx.profileName) : "Using default Word styling");
-      setWordExportStatus(exportModeMessage, templateCtx.hasBaseTemplateZip ? "success" : (templateCtx.profile ? "warn" : "warn"));
+      setWordExportStatus(exportModeMessage, templateCtx.hasBaseTemplateZip ? "success" : "warn");
       debugLog('[WORD-EXPORT] Workbook export start — templateRevision=' + templateCtx.revision + ', baseTemplateZip=' + templateCtx.hasBaseTemplateZip + ', profileApplied=' + (!!templateCtx.profile) + ', modeHint=' + templateCtx.modeHint, 'info');
       try {
         saveCurrentNotes();
