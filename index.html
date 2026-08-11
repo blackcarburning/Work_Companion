@@ -2077,7 +2077,6 @@
         token = input;
         localStorage.setItem(TOKEN_KEY, token);
         invalidateModelCache("github token updated");
-        fetchModels(true);
       } else if (activeProvider === "openai") {
         openaiToken = input;
         localStorage.setItem(OPENAI_TOKEN_KEY, openaiToken);
@@ -6470,8 +6469,6 @@
       updateLogoPreview();
     }
 
-    if (storedWordTemplateBase64 == null) storedWordTemplateBase64 = "";
-
     async function analyzeWorkTemplate(fileContent, fileType) {
       var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
       if (!activeToken) {
@@ -9540,13 +9537,13 @@
               return;
             }
             debugLog('[PDF] Starting PDF parse: "' + filename + '", buffer size=' + buffer.byteLength.toLocaleString() + ' bytes (' + (buffer.byteLength / 1024).toFixed(1) + ' KB)', 'info');
-            configurePdfWorker(false).then(function() {
-              return pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
-            }).catch(function(workerErr) {
+            configurePdfWorker(false).catch(function(workerErr) {
               debugLog('[PDF] Worker load failed: ' + workerErr.message + ' — retrying with pinned CDN fallback', 'warn');
               return configurePdfWorker(true).then(function() {
-                return pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+                return null;
               });
+            }).then(function() {
+              return pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
             }).then(function(pdfDoc) {
               var numPages = pdfDoc.numPages;
               debugLog('[PDF] PDF opened: ' + numPages + ' page' + (numPages !== 1 ? 's' : '') + ' found', 'info');

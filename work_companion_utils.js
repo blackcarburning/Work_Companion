@@ -319,7 +319,7 @@
     var charBudget = 0;
     for (var i = 0; i < ranked.length && selected.length < maxResults; i++) {
       var item = ranked[i];
-      if (charBudget && charBudget + item.text.length > maxChars) continue;
+      if (charBudget + item.text.length > maxChars) continue;
       selected.push(item);
       charBudget += item.text.length;
     }
