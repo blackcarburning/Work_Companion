@@ -14,6 +14,7 @@
   <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <script src="work_companion_utils.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&family=Source+Sans+3:wght@400;600;700&family=Lato:wght@400;700&display=swap');
 
@@ -409,6 +410,14 @@
       transition: background 0.18s, border-color 0.18s;
     }
     #model-refresh-btn:hover { background: #eef0f5; border-color: #c8cdd5; }
+    #model-refresh-btn:disabled { opacity: 0.65; cursor: wait; }
+    #model-refresh-status {
+      font-size: 0.68rem; color: var(--text-secondary); min-width: 88px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #model-refresh-status.error { color: #b91c1c; }
+    #model-refresh-status.success { color: #15803d; }
+    #model-refresh-status.warn { color: #b45309; }
 
     #token-section { display: flex; align-items: center; gap: 0.35rem; }
     #token-section input {
@@ -769,6 +778,36 @@
       white-space: pre-wrap; border: 1px solid #2a3040;
     }
     .manual-content-text { background: #f5f7fb; border: 1px solid #dde1ea; font-family: inherit; white-space: pre-wrap; }
+
+    .message-citations {
+      margin-top: 0.8rem; border-top: 1px solid var(--border);
+      padding-top: 0.7rem; display: flex; flex-direction: column; gap: 0.45rem;
+    }
+    .message-citations-header { font-size: 0.72rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+    .message-citation-card {
+      background: var(--bg-input); border: 1px solid var(--border-light); border-radius: 9px;
+      padding: 0.55rem 0.7rem;
+    }
+    .message-citation-topline {
+      display: flex; justify-content: space-between; gap: 0.5rem; align-items: center; margin-bottom: 0.3rem;
+    }
+    .message-citation-title { font-size: 0.78rem; font-weight: 600; color: var(--text-primary); }
+    .message-citation-tag {
+      font-size: 0.68rem; padding: 0.14rem 0.42rem; border-radius: 999px;
+      background: var(--accent-light); color: var(--accent-dark); text-transform: capitalize;
+    }
+    .message-citation-location { font-size: 0.72rem; color: var(--text-secondary); margin-bottom: 0.35rem; }
+    .message-citation-toggle {
+      border: 1px solid var(--border-light); background: var(--bg-card); color: var(--text-primary);
+      border-radius: 7px; padding: 0.15rem 0.48rem; font-size: 0.72rem; cursor: pointer; font-family: inherit;
+    }
+    .message-citation-toggle:hover { background: var(--bg-input); }
+    .message-citation-excerpt {
+      display: none; margin-top: 0.45rem; white-space: pre-wrap; font-size: 0.76rem;
+      color: var(--text-primary); background: var(--bg-card); border: 1px solid var(--border-light);
+      border-radius: 8px; padding: 0.55rem 0.65rem;
+    }
+    .message-citation-excerpt.visible { display: block; }
 
     .message-image { background: #fff8f0; border: 1px solid #f8d8a0; border-left: 3px solid #f0a030; }
     .image-indicator { font-size: 0.93rem; font-weight: 600; color: #d87810; }
@@ -1193,7 +1232,8 @@
       <div id="model-section">
         <label>Model:</label>
         <select id="model-select"><option value="">Loading...</option></select>
-        <button id="model-refresh-btn" onclick="fetchModels()" title="Refresh models">🔄</button>
+        <button id="model-refresh-btn" onclick="fetchModels(true)" title="Refresh models" aria-label="Refresh models">🔄</button>
+        <span id="model-refresh-status" role="status" aria-live="polite"></span>
       </div>
       <div id="token-section">
         <input type="password" id="tokenInput" placeholder="ghp_xxxxxxxxxxxx" />
@@ -1311,6 +1351,10 @@
     var ANTHROPIC_DIRECT_URL = "https://api.anthropic.com/v1/messages";
     var WATSONX_CHAT_URL = "https://eu-gb.ml.cloud.ibm.com/ml/v1/chat/completions";
     var WATSONX_PROXY_URL = "http://localhost:3001";
+    var OPENAI_MODELS_LIST_URL = "https://api.openai.com/v1/models";
+    var ANTHROPIC_MODELS_LIST_URL = "https://api.anthropic.com/v1/models";
+    var PDF_WORKER_LOCAL_PATH = "./pdf.worker.min.js";
+    var PDF_WORKER_CDN_PATH = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
     var selectedModel = "openai/gpt-4.1";
     var token = "";
     var openaiToken = "";
@@ -1324,9 +1368,12 @@
     var ANTHROPIC_TOKEN_KEY = "anthropic_token";
     var WATSONX_TOKEN_KEY = "watsonx_token";
     var WATSONX_PROJECT_ID_KEY = "watsonx_project_id";
-    var MODELS_CACHE_KEY = "github_models_cache";
+    var MODELS_CACHE_KEY = "github_models_cache_v2";
     var NAME_KEY = "wc_user_name";
     var userName = "";
+    var modelListCache = null;
+    var lastRetrievedSourceContext = null;
+    var storedWordTemplateBase64 = "";
     var _imageRefCounter = 0;
     var KEEP_FIRST = 5;
     var KEEP_LAST = 15;
@@ -1342,6 +1389,10 @@
     var RATE_LIMIT_DELAYS = [5000, 15000, 30000]; // ms: 5s, 15s, 30s
     var DEFAULT_SUMMARISE_SYSTEM_PROMPT = "You are a document summariser. Summarise the following document concisely, preserving all key facts, figures, names, dates, and actionable information. The summary should be detailed enough to be useful as reference material.";
     var DEFAULT_SUMMARISE_USER_PROMPT = "Please summarise this document:";
+    var MODEL_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
+    var MODEL_LISTING_PROVIDERS = { github: true, openai: true, anthropic: true };
+    var SOURCE_CHUNK_OPTIONS = { maxChunkChars: 900, overlapChars: 140 };
+    var SOURCE_RETRIEVAL_OPTIONS = { maxResults: 6, maxPerDoc: 3, maxChars: 5200 };
 
     var DEFAULT_TASK_SYSTEM_PROMPT =
       "You are a professional document and task assistant.\n" +
@@ -1352,12 +1403,35 @@
       "- Missing answers: mark them as '[No answer provided]' in place and continue.\n" +
       "- Do not add suggestions or alternatives at the end of a response unless asked.";
 
+    var WCUtils = window.WorkCompanionUtils || {};
+
     // Output mode: "plain" | "word" | "html" | "pdf"
     var outputMode = "plain";
 
-    if (window.pdfjsLib) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
-      debugLog('pdfjsLib worker source set: https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js');
+    function setPdfWorkerSource(workerSrc, reason) {
+      if (!window.pdfjsLib) return;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
+      debugLog('[PDF] Worker source set to ' + workerSrc + (reason ? ' (' + reason + ')' : ''), 'info');
+    }
+
+    async function configurePdfWorker(preferFallback) {
+      if (!window.pdfjsLib) return;
+      if (preferFallback) {
+        setPdfWorkerSource(PDF_WORKER_CDN_PATH, 'fallback');
+        return;
+      }
+      try {
+        var probe = await fetch(PDF_WORKER_LOCAL_PATH, { method: "HEAD", cache: "no-store" });
+        if (probe.ok) {
+          setPdfWorkerSource(PDF_WORKER_LOCAL_PATH, 'same-origin');
+        } else {
+          debugLog('[PDF] Local worker probe returned HTTP ' + probe.status + '; using pinned CDN fallback', 'warn');
+          setPdfWorkerSource(PDF_WORKER_CDN_PATH, 'cdn fallback');
+        }
+      } catch (err) {
+        debugLog('[PDF] Worker probe failed: ' + err.message + ' — using pinned CDN fallback', 'warn');
+        setPdfWorkerSource(PDF_WORKER_CDN_PATH, 'cdn fallback');
+      }
     }
 
     var db = {
@@ -1953,6 +2027,10 @@
             if (!job.sourceDocuments) job.sourceDocuments = [];
             if (!job.userInstructions) job.userInstructions = [];
             if (!job.derivedArtifacts) job.derivedArtifacts = [];
+            if (!job.diagnostics) job.diagnostics = {};
+            if (job.sourceRevision === undefined) job.sourceRevision = 0;
+            if (!job.sourceFingerprint) job.sourceFingerprint = job.id + ":src:" + job.sourceRevision;
+            job.sourceDocuments.forEach(function(doc) { migrateSourceDocument(doc); });
           });
           // Rehydrate imageData from IndexedDB for messages that have imageRef
           for (var i = 0; i < db.jobs.length; i++) {
@@ -1998,18 +2076,23 @@
       if (activeProvider === "github") {
         token = input;
         localStorage.setItem(TOKEN_KEY, token);
-        fetchModels();
+        invalidateModelCache("github token updated");
+        fetchModels(true);
       } else if (activeProvider === "openai") {
         openaiToken = input;
         localStorage.setItem(OPENAI_TOKEN_KEY, openaiToken);
+        invalidateModelCache("openai key updated");
       } else if (activeProvider === "anthropic") {
         anthropicToken = input;
         localStorage.setItem(ANTHROPIC_TOKEN_KEY, anthropicToken);
+        invalidateModelCache("anthropic key updated");
       } else if (activeProvider === "watsonx") {
         watsonxToken = input;
         localStorage.setItem(WATSONX_TOKEN_KEY, watsonxToken);
+        invalidateModelCache("watsonx token updated");
       }
       document.getElementById("token-status").innerHTML = '<span class="saved">✅ Saved</span>';
+      if (activeProvider !== "watsonx") fetchModels(true);
     }
     function loadToken() {
       var saved = localStorage.getItem(TOKEN_KEY);
@@ -2030,6 +2113,7 @@
       watsonxProjectId = input;
       localStorage.setItem(WATSONX_PROJECT_ID_KEY, watsonxProjectId);
       document.getElementById("watsonx-project-status").innerHTML = '<span class="saved">✅ Saved</span>';
+      invalidateModelCache("watsonx project updated");
     }
 
     // ===== USER NAME =====
@@ -2061,6 +2145,38 @@
       updateProviderUI();
     }
 
+    function getStaticModelsForProvider(provider) {
+      if (provider === "openai") return OPENAI_MODELS;
+      if (provider === "anthropic") return ANTHROPIC_MODELS;
+      if (provider === "watsonx") return WATSONX_MODELS;
+      return FALLBACK_MODELS;
+    }
+
+    function providerSupportsModelListing(provider) {
+      return !!MODEL_LISTING_PROVIDERS[provider];
+    }
+
+    function getCachedModelRecord() {
+      if (modelListCache) return modelListCache;
+      var raw = localStorage.getItem(MODELS_CACHE_KEY);
+      if (!raw) return null;
+      try { modelListCache = JSON.parse(raw); } catch (err) { modelListCache = null; }
+      return modelListCache;
+    }
+
+    function saveCachedModelRecord(record) {
+      modelListCache = record;
+      localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(record));
+    }
+
+    function invalidateModelCache(reason) {
+      if (localStorage.getItem(MODELS_CACHE_KEY)) {
+        debugLog('[MODELS] Cache invalidated' + (reason ? ' (' + reason + ')' : ''), 'info');
+      }
+      modelListCache = null;
+      localStorage.removeItem(MODELS_CACHE_KEY);
+    }
+
     function updateProviderUI() {
       var providerSelect = document.getElementById("provider-select");
       var tokenInput = document.getElementById("tokenInput");
@@ -2070,93 +2186,163 @@
       var watsonxHint = document.getElementById("watsonx-token-hint");
 
       providerSelect.value = activeProvider;
+      refreshBtn.style.display = "";
+      refreshBtn.disabled = false;
 
       if (activeProvider === "github") {
         tokenInput.placeholder = "ghp_xxxxxxxxxxxx";
         tokenInput.value = token;
         tokenStatus.innerHTML = token ? '<span class="saved">✅</span>' : '';
-        refreshBtn.style.display = "";
         watsonxProjectSection.style.display = "none";
         if (watsonxHint) watsonxHint.style.display = "none";
-        loadCachedModels();
       } else if (activeProvider === "openai") {
         tokenInput.placeholder = "sk-...";
         tokenInput.value = openaiToken;
         tokenStatus.innerHTML = openaiToken ? '<span class="saved">✅</span>' : '';
-        refreshBtn.style.display = "none";
         watsonxProjectSection.style.display = "none";
         if (watsonxHint) watsonxHint.style.display = "none";
-        populateModelSelect(OPENAI_MODELS);
       } else if (activeProvider === "anthropic") {
         tokenInput.placeholder = "sk-ant-...";
         tokenInput.value = anthropicToken;
         tokenStatus.innerHTML = anthropicToken ? '<span class="saved">✅</span>' : '';
-        refreshBtn.style.display = "none";
         watsonxProjectSection.style.display = "none";
         if (watsonxHint) watsonxHint.style.display = "none";
-        populateModelSelect(ANTHROPIC_MODELS);
       } else if (activeProvider === "watsonx") {
-        tokenInput.placeholder = "IBM IAM Bearer Token";
+        tokenInput.placeholder = "IBM IAM ******";
         tokenInput.value = watsonxToken;
         tokenStatus.innerHTML = watsonxToken ? '<span class="saved">✅</span>' : '';
-        refreshBtn.style.display = "none";
         watsonxProjectSection.style.display = "";
         if (watsonxHint) watsonxHint.style.display = "";
         var projInput = document.getElementById("watsonxProjectInput");
         if (projInput) projInput.value = watsonxProjectId;
         var projStatus = document.getElementById("watsonx-project-status");
         if (projStatus) projStatus.innerHTML = watsonxProjectId ? '<span class="saved">✅</span>' : '';
-        populateModelSelect(WATSONX_MODELS);
       }
+      loadCachedModels();
     }
 
     // ===== MODELS =====
-    async function fetchModels() {
-      if (activeProvider !== "github") return;
-      if (!token) { populateModelSelect(FALLBACK_MODELS); return; }
+    async function fetchModels(forceRefresh) {
       var btn = document.getElementById("model-refresh-btn");
-      btn.textContent = "⏳";
+      if (btn) { btn.textContent = "⏳"; btn.disabled = true; }
+      var identity = getModelCacheIdentity();
+      var cached = getCachedModelRecord();
+      if (!forceRefresh && cached && WCUtils.isModelCacheFresh && WCUtils.isModelCacheFresh(cached, identity, MODEL_CACHE_MAX_AGE_MS)) {
+        populateModelSelect(cached.models, { reason: "cache" });
+        setModelRefreshStatus("Cached list", "success");
+        debugLog('[MODELS] Cache hit for provider "' + activeProvider + '"', 'info');
+        if (btn) { btn.textContent = "🔄"; btn.disabled = false; }
+        return cached.models;
+      }
       try {
-        var r = await fetch(MODELS_URL, {
-          headers: { "Authorization": "Bearer " + token, "Accept": "application/json" }
-        });
-        if (!r.ok) { populateModelSelect(FALLBACK_MODELS); btn.textContent = "🔄"; return; }
+        var headers = { "Accept": "application/json" };
+        var url = MODELS_URL;
+        if (activeProvider === "github") {
+          if (!token) throw new Error("Save a GitHub token first.");
+          headers.Authorization = "Bearer " + token;
+        } else if (activeProvider === "openai") {
+          if (!openaiToken) throw new Error("Save an OpenAI API key first.");
+          headers.Authorization = "Bearer " + openaiToken;
+          url = OPENAI_MODELS_LIST_URL;
+        } else if (activeProvider === "anthropic") {
+          if (!anthropicToken) throw new Error("Save an Anthropic API key first.");
+          headers["x-api-key"] = anthropicToken;
+          headers["anthropic-version"] = "2023-06-01";
+          headers["anthropic-dangerous-direct-browser-access"] = "true";
+          url = ANTHROPIC_MODELS_LIST_URL;
+        } else {
+          var staticModels = getStaticModelsForProvider(activeProvider);
+          populateModelSelect(staticModels, { reason: "unsupported-provider" });
+          setModelRefreshStatus("Built-in list", "warn");
+          debugLog('[MODELS] Provider "' + activeProvider + '" does not support runtime model listing; using built-in list', 'warn');
+          return staticModels;
+        }
+
+        setModelRefreshStatus("Refreshing…", "");
+        debugLog('[MODELS] Refreshing models for provider "' + activeProvider + '"', 'info');
+        var r = await fetch(url, { headers: headers, cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
         var data = await r.json();
-        var models = [];
         var list = Array.isArray(data) ? data : (data.data || data.models || []);
-        list.forEach(function(m) {
-          var id = m.id || m.name || "";
-          if (!id) return;
-          if (m.task && m.task !== "chat-completion") return;
-          var label = m.friendly_name || m.display_name || id;
-          if (m.publisher) label += " (" + m.publisher + ")";
-          models.push({ id: id, name: label });
-        });
-        if (models.length === 0) models = FALLBACK_MODELS;
-        models.sort(function(a, b) { return a.name.localeCompare(b.name); });
-        localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(models));
-        populateModelSelect(models);
-      } catch(e) { populateModelSelect(FALLBACK_MODELS); }
-      btn.textContent = "🔄";
+        if (activeProvider === "github") {
+          list = list.filter(function(model) { return !model.task || model.task === "chat-completion"; });
+        }
+        var models = WCUtils.normalizeModelEntries ? WCUtils.normalizeModelEntries(activeProvider, list) : list;
+        if (!models.length) {
+          models = getStaticModelsForProvider(activeProvider);
+          setModelRefreshStatus("No models returned", "warn");
+          debugLog('[MODELS] Provider "' + activeProvider + '" returned an empty list; using built-in fallback', 'warn');
+        } else {
+          saveCachedModelRecord({ identity: identity, provider: activeProvider, cachedAt: Date.now(), models: models });
+          setModelRefreshStatus(models.length + " models", "success");
+          debugLog('[MODELS] Loaded ' + models.length + ' model(s) for provider "' + activeProvider + '"', 'info');
+        }
+        populateModelSelect(models, { reason: forceRefresh ? "refreshed" : "loaded" });
+        return models;
+      } catch (e) {
+        var fallback = (cached && cached.identity === identity && cached.models && cached.models.length)
+          ? cached.models
+          : getStaticModelsForProvider(activeProvider);
+        populateModelSelect(fallback, { reason: "error" });
+        if (/HTTP 401|HTTP 403|token/i.test(e.message)) setModelRefreshStatus("Auth failed", "error");
+        else setModelRefreshStatus("Refresh failed", "error");
+        debugLog('[MODELS] Refresh failed for provider "' + activeProvider + '": ' + e.message + (fallback === getStaticModelsForProvider(activeProvider) ? ' (using built-in fallback)' : ' (using cached list)'), 'error');
+        return fallback;
+      } finally {
+        if (btn) { btn.textContent = "🔄"; btn.disabled = false; }
+      }
     }
 
-    function populateModelSelect(models) {
+    function populateModelSelect(models, options) {
+      options = options || {};
       var sel = document.getElementById("model-select");
       sel.innerHTML = "";
       models.forEach(function(m) {
         var o = document.createElement("option");
         o.value = m.id; o.textContent = m.name;
-        if (m.id === selectedModel) o.selected = true;
         sel.appendChild(o);
       });
+      var resolved = WCUtils.resolveModelSelection ? WCUtils.resolveModelSelection({
+        models: models,
+        selectedModel: selectedModel,
+        fallbackModels: getStaticModelsForProvider(activeProvider)
+      }) : { selectedModel: models[0] ? models[0].id : "", reason: "first-available" };
+      if (resolved.selectedModel) sel.value = resolved.selectedModel;
       if (sel.value) selectedModel = sel.value;
       sel.onchange = function() { selectedModel = this.value; };
+      debugLog('[MODELS] Model selection ' + resolved.reason + ' → "' + selectedModel + '"', 'info');
     }
 
     function loadCachedModels() {
-      var c = localStorage.getItem(MODELS_CACHE_KEY);
-      if (c) { try { var m = JSON.parse(c); if (m.length) { populateModelSelect(m); return; } } catch(e) {} }
-      populateModelSelect(FALLBACK_MODELS);
+      var identity = getModelCacheIdentity();
+      var cached = getCachedModelRecord();
+      if (cached && WCUtils.isModelCacheFresh && WCUtils.isModelCacheFresh(cached, identity, MODEL_CACHE_MAX_AGE_MS)) {
+        populateModelSelect(cached.models, { reason: "cache" });
+        setModelRefreshStatus("Cached list", "success");
+        return;
+      }
+      populateModelSelect(getStaticModelsForProvider(activeProvider), { reason: "static" });
+      if (providerSupportsModelListing(activeProvider)) setModelRefreshStatus("Refresh recommended", "");
+      else setModelRefreshStatus("Built-in list", "warn");
+    }
+
+    async function ensureCurrentModelSelection() {
+      var models = providerSupportsModelListing(activeProvider)
+        ? await fetchModels(false)
+        : getStaticModelsForProvider(activeProvider);
+      var resolved = WCUtils.resolveModelSelection ? WCUtils.resolveModelSelection({
+        models: models || [],
+        selectedModel: selectedModel,
+        fallbackModels: getStaticModelsForProvider(activeProvider)
+      }) : { selectedModel: selectedModel, reason: "preserved" };
+      if (resolved.selectedModel && resolved.selectedModel !== selectedModel) {
+        debugLog('[MODELS] Falling back from "' + selectedModel + '" to "' + resolved.selectedModel + '" before request dispatch', 'warn');
+        selectedModel = resolved.selectedModel;
+        populateModelSelect(models, { reason: resolved.reason });
+      } else {
+        debugLog('[MODELS] Using resolved model "' + selectedModel + '" for provider "' + activeProvider + '"', 'info');
+      }
+      return selectedModel;
     }
 
     // ===== SLIDING WINDOW =====
@@ -2183,9 +2369,303 @@
       return prefix + "_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
     }
 
+    function recordJobDiagnostic(job, bucket, payload, limit) {
+      if (!job) return;
+      if (!job.diagnostics) job.diagnostics = {};
+      if (!job.diagnostics[bucket]) job.diagnostics[bucket] = [];
+      job.diagnostics[bucket].push(payload);
+      var keep = limit || 25;
+      if (job.diagnostics[bucket].length > keep) {
+        job.diagnostics[bucket] = job.diagnostics[bucket].slice(-keep);
+      }
+    }
+
+    function touchJobSourceRevision(job, reason) {
+      if (!job) return;
+      job.sourceRevision = (job.sourceRevision || 0) + 1;
+      job.sourceFingerprint = job.id + ":src:" + job.sourceRevision;
+      debugLog('[SRC] Source revision updated to ' + job.sourceRevision + (reason ? ' (' + reason + ')' : ''), 'info');
+    }
+
+    function getModelCacheIdentity() {
+      return WCUtils.computeModelCacheIdentity ? WCUtils.computeModelCacheIdentity({
+        provider: activeProvider,
+        endpoint: activeProvider === "github" ? MODELS_URL : (activeProvider === "openai" ? OPENAI_MODELS_LIST_URL : (activeProvider === "anthropic" ? ANTHROPIC_MODELS_LIST_URL : WATSONX_CHAT_URL)),
+        token: activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "anthropic" ? anthropicToken : watsonxToken)),
+        projectId: watsonxProjectId
+      }) : activeProvider;
+    }
+
+    function getPromptCacheKey(job) {
+      return job && job.sourceFingerprint ? (job.id + "|" + job.sourceFingerprint) : (job ? job.id : "global");
+    }
+
+    function setModelRefreshStatus(message, level) {
+      var el = document.getElementById("model-refresh-status");
+      if (!el) return;
+      el.textContent = message || "";
+      el.className = level ? level : "";
+    }
+
+    function migrateSourceDocument(doc) {
+      if (!doc) return doc;
+      if (WCUtils.ensureStructuredSource) {
+        var structured = WCUtils.ensureStructuredSource(doc, SOURCE_CHUNK_OPTIONS);
+        Object.keys(structured).forEach(function(key) { doc[key] = structured[key]; });
+      } else {
+        if (!doc.blocks) doc.blocks = [];
+        if (!doc.chunks) doc.chunks = [];
+      }
+      return doc;
+    }
+
+    function buildSourceDocumentRecord(meta, blocks, options) {
+      options = options || {};
+      if (WCUtils.buildStructuredSource) {
+        return WCUtils.buildStructuredSource(meta, blocks, {
+          maxChunkChars: (options.maxChunkChars || SOURCE_CHUNK_OPTIONS.maxChunkChars),
+          overlapChars: (options.overlapChars || SOURCE_CHUNK_OPTIONS.overlapChars)
+        });
+      }
+      return {
+        id: meta.id,
+        title: meta.title,
+        type: meta.type || "uploaded_file",
+        parser: meta.parser || "browser",
+        parserVersion: meta.parserVersion || "",
+        rawContent: meta.rawContent || "",
+        normalizedContent: normalizeSourceContent(meta.rawContent || ""),
+        blocks: blocks || [],
+        chunks: [],
+        stats: { headingCount: 0, paragraphCount: 0, listCount: 0, tableCount: 0, tableRowCount: 0, pageCount: 0, sheetCount: 0, chunkCount: 0 },
+        createdAt: meta.createdAt || new Date().toISOString()
+      };
+    }
+
+    function extractDocxBlocksFromHtml(html, plainText) {
+      var blocks = [];
+      var parser = new DOMParser();
+      var doc = parser.parseFromString(html || "", "text/html");
+      var paragraphIndex = 0;
+      var listIndex = 0;
+      var tableIndex = 0;
+      var currentHeading = "";
+
+      function pushBlock(type, text, anchor) {
+        var normalized = (WCUtils.normalizeWhitespace ? WCUtils.normalizeWhitespace(text) : String(text || "").trim());
+        if (!normalized) return;
+        blocks.push({
+          type: type,
+          text: normalized,
+          heading: type === "heading" ? normalized : currentHeading,
+          anchor: anchor || {}
+        });
+        if (type === "heading") currentHeading = normalized;
+      }
+
+      Array.prototype.forEach.call(doc.body ? doc.body.children : [], function(node) {
+        var tag = (node.tagName || "").toLowerCase();
+        if (!tag) return;
+        if (/^h[1-6]$/.test(tag)) {
+          pushBlock("heading", node.textContent, { heading: node.textContent.trim(), headingLevel: parseInt(tag.slice(1), 10) || 1 });
+          return;
+        }
+        if (tag === "p") {
+          paragraphIndex++;
+          var clauseMatch = (node.textContent || "").trim().match(/^((?:\d+\.)+\d*|[A-Z]\)|\([a-z0-9]+\))/);
+          pushBlock("paragraph", node.textContent, { paragraph: paragraphIndex, clauseLabel: clauseMatch ? clauseMatch[1] : "" });
+          return;
+        }
+        if (tag === "ul" || tag === "ol") {
+          Array.prototype.forEach.call(node.children, function(li) {
+            if ((li.tagName || "").toLowerCase() !== "li") return;
+            listIndex++;
+            pushBlock("list_item", li.textContent, { listItem: listIndex, listType: tag === "ol" ? "ordered" : "unordered" });
+          });
+          return;
+        }
+        if (tag === "table") {
+          tableIndex++;
+          var tableName = currentHeading || ("Table " + tableIndex);
+          Array.prototype.forEach.call(node.querySelectorAll("tr"), function(row, rowIndex) {
+            var cells = Array.prototype.slice.call(row.children || []).map(function(cell) {
+              return (cell.textContent || "").trim();
+            }).filter(Boolean);
+            if (!cells.length) return;
+            pushBlock("table_row", cells.join(" | "), { table: tableName, row: rowIndex + 1 });
+          });
+        }
+      });
+
+      if (!blocks.length && plainText) {
+        plainText.split(/\n{2,}/).forEach(function(part) {
+          var trimmed = part.trim();
+          if (!trimmed) return;
+          paragraphIndex++;
+          pushBlock("paragraph", trimmed, { paragraph: paragraphIndex });
+        });
+      }
+      return blocks;
+    }
+
+    function buildSpreadsheetSourceDocument(docId, filename, workbook, rawContent) {
+      var blocks = [];
+      workbook.SheetNames.forEach(function(sheetName) {
+        var rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false });
+        rows.forEach(function(row, rowIndex) {
+          var cellText = (row || []).map(function(cell) { return cell == null ? "" : String(cell); }).join(" | ").trim();
+          if (!cellText) return;
+          blocks.push({
+            type: "table_row",
+            text: cellText,
+            heading: sheetName,
+            anchor: { sheet: sheetName, row: rowIndex + 1 }
+          });
+        });
+      });
+      return buildSourceDocumentRecord({
+        id: docId,
+        title: filename,
+        type: "uploaded_file",
+        parser: "xlsx",
+        parserVersion: (window.XLSX && XLSX.version) ? XLSX.version : "",
+        rawContent: rawContent
+      }, blocks);
+    }
+
+    function buildPdfSourceDocument(docId, filename, pageTexts, rawContent) {
+      var blocks = (pageTexts || []).map(function(pageText, pageIndex) {
+        return {
+          type: "page",
+          text: pageText,
+          anchor: { page: pageIndex + 1 }
+        };
+      }).filter(function(block) { return block.text && block.text.trim(); });
+      return buildSourceDocumentRecord({
+        id: docId,
+        title: filename,
+        type: "uploaded_file",
+        parser: "pdf.js",
+        parserVersion: "3.11.174",
+        rawContent: rawContent
+      }, blocks);
+    }
+
+    function buildFallbackSourceDocument(docId, filename, extractedText, parserName, parserVersion) {
+      var normalized = normalizeSourceContent(extractedText);
+      var parts = normalized.split(/\n{2,}/);
+      var paragraph = 0;
+      var blocks = parts.map(function(part) {
+        var text = (WCUtils.normalizeWhitespace ? WCUtils.normalizeWhitespace(part) : part.trim());
+        if (!text) return null;
+        paragraph++;
+        return { type: "paragraph", text: text, anchor: { paragraph: paragraph } };
+      }).filter(Boolean);
+      return buildSourceDocumentRecord({
+        id: docId,
+        title: filename,
+        type: "uploaded_file",
+        parser: parserName || "browser",
+        parserVersion: parserVersion || "",
+        rawContent: normalized
+      }, blocks);
+    }
+
+    function logSourceIngestionDetails(job, filename, sourceRecord, durationMs) {
+      var stats = sourceRecord && sourceRecord.stats ? sourceRecord.stats : {};
+      debugLog('[DOC] Parsed "' + filename + '" with ' + (sourceRecord.parser || 'browser') + ' in ' + durationMs + 'ms — text=' +
+        ((sourceRecord.normalizedContent || '').length).toLocaleString() + ' chars, headings=' + (stats.headingCount || 0) +
+        ', paragraphs=' + (stats.paragraphCount || 0) + ', lists=' + (stats.listCount || 0) +
+        ', tables=' + (stats.tableCount || 0) + ', rows=' + (stats.tableRowCount || 0) +
+        ', chunks=' + (stats.chunkCount || 0), 'info');
+      recordJobDiagnostic(job, "parse", {
+        ts: new Date().toISOString(),
+        filename: filename,
+        parser: sourceRecord.parser || 'browser',
+        durationMs: durationMs,
+        textLength: (sourceRecord.normalizedContent || '').length,
+        stats: stats
+      });
+    }
+
+    function buildSourceInventoryMessage(job) {
+      var docs = (job && job.sourceDocuments) || [];
+      if (!docs.length) return "";
+      var lines = ["## Source inventory"];
+      docs.forEach(function(doc) {
+        migrateSourceDocument(doc);
+        lines.push("- " + doc.id + " · " + doc.title + " · parser=" + (doc.parser || "legacy") + " · chunks=" + ((doc.chunks && doc.chunks.length) || 0));
+      });
+      return lines.join("\n");
+    }
+
+    function buildRuntimeSourceContext(job, question) {
+      if (!job || !job.sourceDocuments || !job.sourceDocuments.length || !WCUtils.rankRelevantChunks) {
+        return null;
+      }
+      var docs = job.sourceDocuments.map(function(doc) { return migrateSourceDocument(doc); });
+      var start = Date.now();
+      var retrieved = WCUtils.rankRelevantChunks(question, docs, SOURCE_RETRIEVAL_OPTIONS);
+      var duration = Date.now() - start;
+      var evidenceBlock = WCUtils.buildEvidenceContext ? WCUtils.buildEvidenceContext(question, retrieved) : "";
+      recordJobDiagnostic(job, "retrieval", {
+        ts: new Date().toISOString(),
+        questionPreview: String(question || "").slice(0, 140),
+        count: retrieved.length,
+        durationMs: duration,
+        chunks: retrieved.map(function(item) {
+          return { docId: item.docId, chunkId: item.chunkId, score: item.score, anchor: item.anchor };
+        })
+      });
+      debugLog('[RETRIEVAL] Retrieved ' + retrieved.length + ' chunk(s) in ' + duration + 'ms: ' + retrieved.map(function(item) {
+        return item.docId + '/' + item.chunkId + ' score=' + item.score.toFixed(2);
+      }).join(', '), 'info');
+      if (!retrieved.length) {
+        debugLog('[RETRIEVAL] No exact or best-match evidence found for current question', 'warn');
+      }
+      return {
+        retrievedChunks: retrieved,
+        sourceInventory: buildSourceInventoryMessage(job),
+        evidenceBlock: evidenceBlock,
+        responseInstructions: retrieved.length ? (
+          "Use the retrieved source evidence for grounding. Return JSON only with keys answer, confidence, citations[]. " +
+          "Each citation must include sourceId, chunkId, filename, heading, anchor, excerpt, and matchType. " +
+          "Use matchType exact only when the excerpt directly answers the question; otherwise use best-match or inferred. " +
+          "If evidence is absent, say so and return citations: []."
+        ) : "",
+        noEvidence: !retrieved.length
+      };
+    }
+
+    function finalizeAssistantMessage(job, rawReply, runtimeSourceContext) {
+      var parsed = runtimeSourceContext && runtimeSourceContext.retrievedChunks && runtimeSourceContext.retrievedChunks.length && WCUtils.parseStructuredAnswer
+        ? WCUtils.parseStructuredAnswer(rawReply)
+        : null;
+      var replyText = parsed ? parsed.answer : postProcessResponse(rawReply, outputMode);
+      var assistantMsg = { role: "assistant", content: replyText };
+      if (parsed) {
+        assistantMsg.citations = parsed.citations.map(function(citation) {
+          citation.locationLabel = WCUtils.formatCitationLocation ? WCUtils.formatCitationLocation(citation) : "";
+          return citation;
+        });
+        assistantMsg.confidence = parsed.confidence;
+        var exactCount = assistantMsg.citations.filter(function(citation) { return citation.matchType === "exact"; }).length;
+        var inferredCount = assistantMsg.citations.filter(function(citation) { return citation.matchType === "inferred"; }).length;
+        debugLog('[CITE] Parsed structured answer with ' + assistantMsg.citations.length + ' citation(s), confidence=' + assistantMsg.confidence +
+          ', exact=' + exactCount + ', inferred=' + inferredCount, 'info');
+      } else if (runtimeSourceContext && runtimeSourceContext.retrievedChunks && runtimeSourceContext.retrievedChunks.length) {
+        debugLog('[CITE] Provider returned plain text; falling back without structured citations', 'warn');
+      }
+      job.messages.push(assistantMsg);
+      saveDB();
+      addMessageToDOM("assistant", replyText, false, job.messages.length - 2);
+      saveDerivedArtifact(job, replyText);
+      return assistantMsg;
+    }
+
     // buildContextMessages(all, job) — builds the API message array from structured state.
     // job is optional (omitted for backward compatibility when sourceDocuments is unavailable).
-    function buildContextMessages(all, job) {
+    function buildContextMessages(all, job, runtimeSourceContext) {
       var sys = all[0], conv = all.slice(1);
 
       // Filter excluded messages
@@ -2245,20 +2725,39 @@
         debugLog('[CTX] Appended output mode "' + outputMode + '" instruction to system message', 'info');
       }
 
-      // Build source document messages from the structured bucket (injected once, deduplicated)
+      // Build source index / retrieval context instead of injecting full document bodies
       var structuredSourceMsgs = [];
       if (hasStructuredDocs) {
-        job.sourceDocuments.forEach(function(doc) {
-          var content = doc.normalizedContent || doc.rawContent || "";
-          var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
-          if (content.length > maxChars) {
-            debugLog('[CTX] ⚠️ Truncating source doc "' + doc.title + '" from ' + content.length.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars', 'warn');
-            content = content.substring(0, maxChars) + '\n[Content truncated at ' + maxChars.toLocaleString() + ' characters for API submission.]';
+        if (runtimeSourceContext && runtimeSourceContext.sourceInventory) {
+          structuredSourceMsgs.push({ role: "developer", content: runtimeSourceContext.sourceInventory });
+        }
+        if (runtimeSourceContext && runtimeSourceContext.evidenceBlock) {
+          structuredSourceMsgs.push({ role: "developer", content: runtimeSourceContext.evidenceBlock });
+        } else {
+          var retrievalReadyCount = 0;
+          job.sourceDocuments.forEach(function(doc) {
+            migrateSourceDocument(doc);
+            if (doc.chunks && doc.chunks.length) retrievalReadyCount++;
+          });
+          if (!retrievalReadyCount) {
+            job.sourceDocuments.forEach(function(doc) {
+              var content = doc.normalizedContent || doc.rawContent || "";
+              var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
+              if (content.length > maxChars) {
+                debugLog('[CTX] ⚠️ Truncating legacy source doc "' + doc.title + '" from ' + content.length.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars', 'warn');
+                content = content.substring(0, maxChars) + '\n[Content truncated at ' + maxChars.toLocaleString() + ' characters for API submission.]';
+              }
+              var header = "## Source: " + doc.title + (doc.type && doc.type !== "Add Conversation" ? " [" + doc.type + "]" : "");
+              structuredSourceMsgs.push({ role: "user", content: header + "\n\n" + content });
+            });
+            debugLog('[CTX] Injected ' + job.sourceDocuments.length + ' legacy source document(s) because no chunk index was available', 'warn');
+          } else {
+            debugLog('[CTX] Using structured source index (' + retrievalReadyCount + ' indexed document(s)); full document bodies excluded from prompt', 'info');
           }
-          var header = "## Source: " + doc.title + (doc.type && doc.type !== "Add Conversation" ? " [" + doc.type + "]" : "");
-          structuredSourceMsgs.push({ role: "user", content: header + "\n\n" + content });
-        });
-        debugLog('[CTX] Injected ' + job.sourceDocuments.length + ' source document(s) from structured bucket', 'info');
+        }
+        if (runtimeSourceContext && runtimeSourceContext.responseInstructions) {
+          structuredSourceMsgs.push({ role: "developer", content: runtimeSourceContext.responseInstructions });
+        }
       }
 
       // Process old-style pinned source messages (backward compat)
@@ -2449,7 +2948,16 @@
         sourceDocumentCount: (job.sourceDocuments || []).length,
         derivedArtifactCount: (job.derivedArtifacts || []).length,
         sourceDocuments: (job.sourceDocuments || []).map(function(d) {
-          return { id: d.id, title: d.title, type: d.type, chars: (d.rawContent || "").length, createdAt: d.createdAt };
+          return {
+            id: d.id,
+            title: d.title,
+            type: d.type,
+            parser: d.parser,
+            chars: (d.rawContent || "").length,
+            chunkCount: (d.chunks || []).length,
+            stats: d.stats || null,
+            createdAt: d.createdAt
+          };
         }),
         promptConfig: {
           systemPromptChars: (job.messages[0] && job.messages[0].content) ? job.messages[0].content.length : 0,
@@ -2875,6 +3383,46 @@
       showModal("Export Exchange to Word", "Enter a title for the Word document:", job.name + " - Exchange " + (convIdx + 1), false, function(title) {
         if (!title) return;
         generateExchangeWord(job, actualIndex, title);
+      });
+    }
+
+    function exportJobSectionToWord(jobId, btn) {
+      var job = getJob(jobId);
+      if (!job) return;
+      saveCurrentNotes();
+      var payload = WCUtils.buildJobSectionExportPayload ? WCUtils.buildJobSectionExportPayload(job, {
+        sectionTitle: job.name,
+        exportDate: new Date().toISOString().slice(0, 10),
+        templateAnalysis: db.aiTemplateProfile || db.templateStyle || null
+      }) : null;
+      showModal("Export Job Section to Word", "Enter a title for this section export:", job.name, false, async function(title) {
+        if (!title || !payload) return;
+        var original = {
+          summary: db.summary,
+          summaryTitle: db.summaryTitle,
+          jobs: db.jobs,
+          activeJobId: db.activeJobId,
+          activeView: db.activeView
+        };
+        if (btn) { btn.disabled = true; btn.textContent = "⏳"; }
+        try {
+          db.summary = payload.contentMarkdown;
+          db.summaryTitle = title;
+          db.jobs = [];
+          db.activeJobId = null;
+          db.activeView = "summary";
+          debugLog('[WORD-EXPORT] Exporting job section "' + job.name + '" with cached template analysis=' + (!!payload.templateAnalysis), 'info');
+          await exportToWord(btn);
+        } finally {
+          db.summary = original.summary;
+          db.summaryTitle = original.summaryTitle;
+          db.jobs = original.jobs;
+          db.activeJobId = original.activeJobId;
+          db.activeView = original.activeView;
+          if (btn) { btn.disabled = false; btn.textContent = "📝"; }
+          renderSidebar();
+          renderView();
+        }
       });
     }
 
@@ -5922,7 +6470,7 @@
       updateLogoPreview();
     }
 
-    var storedWordTemplateBase64 = null;
+    if (storedWordTemplateBase64 == null) storedWordTemplateBase64 = "";
 
     async function analyzeWorkTemplate(fileContent, fileType) {
       var activeToken = activeProvider === "github" ? token : (activeProvider === "openai" ? openaiToken : (activeProvider === "watsonx" ? watsonxToken : anthropicToken));
@@ -7553,9 +8101,11 @@
           '<span class="job-tab-name">' + escapeHtml(job.name) + '</span>' +
           '<span class="job-tab-info">' + mc + '</span>' +
           '<span class="job-tab-actions">' +
+            '<button class="job-tab-btn" title="Export this section to Word" data-action="export-word" data-id="' + job.id + '">📝</button>' +
             '<button class="job-tab-btn" title="Rename" data-action="rename" data-id="' + job.id + '">✏️</button>' +
             '<button class="job-tab-btn delete" title="Delete" data-action="delete" data-id="' + job.id + '">🗑️</button></span>';
         tab.addEventListener("click", function(e) {
+          if (e.target.dataset.action === "export-word") { exportJobSectionToWord(e.target.dataset.id, e.target); return; }
           if (e.target.dataset.action === "rename") { renameJob(e.target.dataset.id); return; }
           if (e.target.dataset.action === "delete") { deleteJob(e.target.dataset.id); return; }
           switchJob(job.id);
@@ -8046,6 +8596,48 @@
         } else {
           body.innerHTML = marked.parse(content);
         }
+        if (msg && msg.citations && msg.citations.length) {
+          var citeWrap = document.createElement("div");
+          citeWrap.className = "message-citations";
+          var citeHeader = document.createElement("div");
+          citeHeader.className = "message-citations-header";
+          citeHeader.textContent = "Sources" + (msg.confidence ? " · Confidence: " + msg.confidence : "");
+          citeWrap.appendChild(citeHeader);
+          msg.citations.forEach(function(citation) {
+            var card = document.createElement("div");
+            card.className = "message-citation-card";
+            var top = document.createElement("div");
+            top.className = "message-citation-topline";
+            var title = document.createElement("div");
+            title.className = "message-citation-title";
+            title.textContent = (citation.filename || citation.sourceId || "Source") + (citation.chunkId ? " · " + citation.chunkId : "");
+            var tag = document.createElement("span");
+            tag.className = "message-citation-tag";
+            tag.textContent = citation.matchType || "best-match";
+            top.appendChild(title);
+            top.appendChild(tag);
+            card.appendChild(top);
+            var loc = document.createElement("div");
+            loc.className = "message-citation-location";
+            loc.textContent = citation.locationLabel || (WCUtils.formatCitationLocation ? WCUtils.formatCitationLocation(citation) : "");
+            card.appendChild(loc);
+            var toggle = document.createElement("button");
+            toggle.type = "button";
+            toggle.className = "message-citation-toggle";
+            toggle.textContent = "Show excerpt";
+            var excerpt = document.createElement("div");
+            excerpt.className = "message-citation-excerpt";
+            excerpt.textContent = citation.excerpt || "";
+            toggle.onclick = function() {
+              var visible = excerpt.classList.toggle("visible");
+              toggle.textContent = visible ? "Hide excerpt" : "Show excerpt";
+            };
+            card.appendChild(toggle);
+            card.appendChild(excerpt);
+            citeWrap.appendChild(card);
+          });
+          body.appendChild(citeWrap);
+        }
         addCopyButtons(body);
         if (editBtnRef) {
           (function(i, eb, bd) {
@@ -8278,14 +8870,8 @@
         var srcBody  = sourceHeaderMatch[3] || "";
         if (!job.sourceDocuments) job.sourceDocuments = [];
         chatSourceDocId = generateSourceDocId("chat");
-        job.sourceDocuments.push({
-          id: chatSourceDocId,
-          title: srcTitle,
-          rawContent: srcBody,
-          normalizedContent: normalizeSourceContent(srcBody),
-          createdAt: new Date().toISOString(),
-          type: srcType
-        });
+        job.sourceDocuments.push(buildFallbackSourceDocument(chatSourceDocId, srcTitle, srcBody, "chat-source", "1"));
+        touchJobSourceRevision(job, 'chat source added');
         debugLog('[SRC] Auto-detected "## Source:" in chat input — created source doc "' + srcTitle + '" (id=' + chatSourceDocId + ', type="' + srcType + '", ' + srcBody.length.toLocaleString() + ' chars)', 'info');
         chatIsSourceDoc = true;
       }
@@ -8308,8 +8894,11 @@
         ', derivedArtifacts=' + (job.derivedArtifacts || []).length, 'info');
 
       try {
+        await ensureCurrentModelSelection();
         debugLog('[API] Building context messages...', 'log');
-        var ctx = buildContextMessages(job.messages, job);
+        var runtimeSourceContext = buildRuntimeSourceContext(job, ut);
+        lastRetrievedSourceContext = runtimeSourceContext;
+        var ctx = buildContextMessages(job.messages, job, runtimeSourceContext);
         var payloadStr = JSON.stringify(ctx);
         var payloadKB = (payloadStr.length / 1024).toFixed(1);
         var payloadTokens = estimateTokenCount(payloadStr);
@@ -8391,11 +8980,8 @@
               }
             }
             reply = (d.content && d.content[0] && d.content[0].text) || "No response.";
-            reply = postProcessResponse(reply, outputMode);
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
-            job.messages.push({ role: "assistant", content: reply }); saveDB();
-            addMessageToDOM("assistant", reply, false, job.messages.length - 2);
-            saveDerivedArtifact(job, reply);
+            finalizeAssistantMessage(job, reply, runtimeSourceContext);
           }
         } else if (activeProvider === "watsonx") {
           var bearerToken = await getWatsonxBearerToken();
@@ -8432,11 +9018,8 @@
             debugLog('[API] ✅ watsonx response HTTP ' + r.status + ' in ' + elapsed + 'ms', 'info');
             d = await r.json();
             reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
-            reply = postProcessResponse(reply, outputMode);
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens)', 'log');
-            job.messages.push({ role: "assistant", content: reply }); saveDB();
-            addMessageToDOM("assistant", reply, false, job.messages.length - 2);
-            saveDerivedArtifact(job, reply);
+            finalizeAssistantMessage(job, reply, runtimeSourceContext);
           }
         } else {
           var endpoint = activeProvider === "openai" ? OPENAI_DIRECT_URL : API_URL;
@@ -8447,7 +9030,7 @@
           // prompt_cache_retention "24h" extends the cache lifetime on supported models.
           var openaiRequestBody = { model: selectedModel, messages: ctx };
           if (activeProvider === "openai" && db.openaiCacheEnabled !== false) {
-            openaiRequestBody.prompt_cache_key = job.id;
+            openaiRequestBody.prompt_cache_key = getPromptCacheKey(job);
             // Only add 24h retention for models confirmed to support it;
             // other models default to in_memory retention automatically.
             if (openaiSupports24hRetention(selectedModel)) {
@@ -8458,7 +9041,7 @@
           var openaiCacheInfo = "";
           if (activeProvider === "openai" && db.openaiCacheEnabled !== false) {
             var retentionMode = openaiSupports24hRetention(selectedModel) ? "24h" : "in_memory";
-            openaiCacheInfo = ', cache_key="' + job.id + '", retention=' + retentionMode;
+            openaiCacheInfo = ', cache_key="' + getPromptCacheKey(job) + '", retention=' + retentionMode;
           }
           debugLog('[API] Fetching ' + endpoint + ' — payload ' + (openaiBody.length / 1024).toFixed(1) + ' KB' + openaiCacheInfo, 'info');
           var requestStartTime = Date.now();
@@ -8484,14 +9067,13 @@
             d = await r.json();
             var respStr = JSON.stringify(d);
             reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "No response.";
-            reply = postProcessResponse(reply, outputMode);
             debugLog('[API] Reply length: ' + reply.length + ' chars (~' + estimateTokenCount(reply).toLocaleString() + ' tokens), response JSON ' + (respStr.length / 1024).toFixed(1) + ' KB', 'log');
             // Log OpenAI usage/cache stats — mirrors Anthropic usage logging for easy comparison
             if (d.usage) {
               var oaiInput = d.usage.prompt_tokens || 0;
               var oaiOutput = d.usage.completion_tokens || 0;
               var oaiCached = (d.usage.prompt_tokens_details && d.usage.prompt_tokens_details.cached_tokens) || 0;
-              var cacheKeyUsed = (activeProvider === "openai" && db.openaiCacheEnabled !== false) ? job.id : "none";
+              var cacheKeyUsed = (activeProvider === "openai" && db.openaiCacheEnabled !== false) ? getPromptCacheKey(job) : "none";
               debugLog('[API] 📊 OpenAI usage — input: ' + oaiInput + ', output: ' + oaiOutput + ', cached: ' + oaiCached + ', cache_key: ' + cacheKeyUsed, 'info');
               if (oaiCached > 0) {
                 debugLog('[API] ✅ OpenAI prompt cache HIT — ' + oaiCached + '/' + oaiInput + ' input tokens served from cache (50% discount on cached tokens)', 'info');
@@ -8499,9 +9081,7 @@
                 debugLog('[API] 💭 OpenAI prompt cache MISS — ' + oaiInput + ' input tokens, no cached prefix matched', 'info');
               }
             }
-            job.messages.push({ role: "assistant", content: reply }); saveDB();
-            addMessageToDOM("assistant", reply, false, job.messages.length - 2);
-            saveDerivedArtifact(job, reply);
+            finalizeAssistantMessage(job, reply, runtimeSourceContext);
           }
         }
       } catch (err) {
@@ -8819,13 +9399,15 @@
       var filename = file.name;
       var ext = filename.split(".").pop().toLowerCase();
       var reader = new FileReader();
-      debugLog('[DOC] handleDocumentUpload: file="' + filename + '", ext="' + ext + '", size=' + file.size.toLocaleString() + ' bytes (' + (file.size / 1024).toFixed(1) + ' KB)', 'info');
+      var parseStartedAt = Date.now();
+      debugLog('[DOC] parse start: file="' + filename + '", ext="' + ext + '", size=' + file.size.toLocaleString() + ' bytes (' + (file.size / 1024).toFixed(1) + ' KB)', 'info');
 
       reader.onload = function(e) {
         var buffer = e.target.result;
         try {
           var extractedText = "";
           var documentInfo = "";
+          var sourceRecord = null;
 
           if (ext === "xlsx" || ext === "xls" || ext === "csv") {
             debugLog('[DOC] Parsing spreadsheet (' + ext + ')...', 'log');
@@ -8847,6 +9429,7 @@
             });
             extractedText = parts.join("\n");
             documentInfo = sheetCount + " sheet" + (sheetCount !== 1 ? "s" : "") + ", " + totalRows.toLocaleString() + " rows";
+            sourceRecord = buildSpreadsheetSourceDocument(generateSourceDocId("doc"), filename, workbook, extractedText);
             debugLog('[DOC] Spreadsheet extracted: ' + extractedText.length.toLocaleString() + ' chars total', 'info');
           } else if (ext === "docx") {
             debugLog('[DOC] Parsing DOCX with mammoth...', 'log');
@@ -8868,12 +9451,22 @@
                 mammoth.convertToHtml({ arrayBuffer: buffer }, imgConvertOptions)
               ]).then(function(results) {
                 var text = results[0].value;
+                var html = results[1].value || "";
                 var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
                 debugLog('[DOC] DOCX extracted: ' + text.length.toLocaleString() + ' chars, ' + wordCount.toLocaleString() + ' words', 'info');
                 debugLog('[DOC] Found ' + docxImages.length + ' image(s) in DOCX', 'info');
                 var docInfo = wordCount.toLocaleString() + " words";
                 var header = '📄 Uploaded document: "' + filename + '"';
                 var fullText = header + "\n\n" + text;
+                sourceRecord = buildSourceDocumentRecord({
+                  id: generateSourceDocId("doc"),
+                  title: filename,
+                  type: "uploaded_file",
+                  parser: "mammoth",
+                  parserVersion: (window.mammoth && mammoth.version) ? mammoth.version : "browser",
+                  rawContent: text
+                }, extractDocxBlocksFromHtml(html, text));
+                logSourceIngestionDetails(job, filename, sourceRecord, Date.now() - parseStartedAt);
                 var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
                 if (fullText.length > maxChars) {
                   var origLen = fullText.length;
@@ -8882,7 +9475,7 @@
                   debugLog('[DOC] ⚠️ DOCX content truncated from ' + origLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
                 }
                 debugLog('[DOC] Injecting DOCX message: ' + fullText.length.toLocaleString() + ' chars (~' + estimateTokenCount(fullText).toLocaleString() + ' tokens)', 'info');
-                injectDocumentMessage(job, filename, fullText, docInfo);
+                injectDocumentMessage(job, filename, fullText, docInfo, sourceRecord);
                 docxImages.forEach(function(imgObj, idx2) {
                   var sizeKB = Math.round(imgObj.dataUrl.length * 0.75 / 1024);
                   debugLog('[DOC] Image ' + (idx2 + 1) + ': ' + sizeKB + ' KB (' + imgObj.contentType + ')', 'log');
@@ -8898,13 +9491,25 @@
                 if (uploadBtn) uploadBtn.textContent = "📎";
               });
             } else {
-              mammoth.extractRawText({ arrayBuffer: buffer }).then(function(result) {
-                var text = result.value;
+              Promise.all([
+                mammoth.extractRawText({ arrayBuffer: buffer }),
+                mammoth.convertToHtml({ arrayBuffer: buffer })
+              ]).then(function(results) {
+                var text = results[0].value;
+                var html = results[1].value || "";
                 var wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
-                debugLog('[DOC] DOCX extracted: ' + text.length.toLocaleString() + ' chars, ' + wordCount.toLocaleString() + ' words', 'info');
                 var docInfo = wordCount.toLocaleString() + " words";
                 var header = '📄 Uploaded document: "' + filename + '"';
                 var fullText = header + "\n\n" + text;
+                sourceRecord = buildSourceDocumentRecord({
+                  id: generateSourceDocId("doc"),
+                  title: filename,
+                  type: "uploaded_file",
+                  parser: "mammoth",
+                  parserVersion: (window.mammoth && mammoth.version) ? mammoth.version : "browser",
+                  rawContent: text
+                }, extractDocxBlocksFromHtml(html, text));
+                logSourceIngestionDetails(job, filename, sourceRecord, Date.now() - parseStartedAt);
                 var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
                 if (fullText.length > maxChars) {
                   var origLen = fullText.length;
@@ -8913,7 +9518,7 @@
                   debugLog('[DOC] ⚠️ DOCX content truncated from ' + origLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
                 }
                 debugLog('[DOC] Injecting DOCX message: ' + fullText.length.toLocaleString() + ' chars (~' + estimateTokenCount(fullText).toLocaleString() + ' tokens)', 'info');
-                injectDocumentMessage(job, filename, fullText, docInfo);
+                injectDocumentMessage(job, filename, fullText, docInfo, sourceRecord);
                 if (uploadBtn) uploadBtn.textContent = "📎";
               }).catch(function(err) {
                 debugLog('[DOC] ❌ DOCX extraction failed: ' + err.message, 'error');
@@ -8929,9 +9534,20 @@
               if (uploadBtn) uploadBtn.textContent = "📎";
               return;
             }
-            // Use pdf.js to extract text from PDF
+            if (buffer.byteLength > 50 * 1024 * 1024) {
+              injectDocumentError(job, filename, "PDF is too large to parse safely in the browser.");
+              if (uploadBtn) uploadBtn.textContent = "📎";
+              return;
+            }
             debugLog('[PDF] Starting PDF parse: "' + filename + '", buffer size=' + buffer.byteLength.toLocaleString() + ' bytes (' + (buffer.byteLength / 1024).toFixed(1) + ' KB)', 'info');
-            pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise.then(function(pdfDoc) {
+            configurePdfWorker(false).then(function() {
+              return pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+            }).catch(function(workerErr) {
+              debugLog('[PDF] Worker load failed: ' + workerErr.message + ' — retrying with pinned CDN fallback', 'warn');
+              return configurePdfWorker(true).then(function() {
+                return pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+              });
+            }).then(function(pdfDoc) {
               var numPages = pdfDoc.numPages;
               debugLog('[PDF] PDF opened: ' + numPages + ' page' + (numPages !== 1 ? 's' : '') + ' found', 'info');
               var pagePromises = [];
@@ -8955,6 +9571,8 @@
                 var docInfo = numPages + " page" + (numPages !== 1 ? "s" : "") + ", " + wordCount.toLocaleString() + " words";
                 var header = '📄 Uploaded PDF: "' + filename + '"';
                 var fullText = header + "\n\n" + text;
+                sourceRecord = buildPdfSourceDocument(generateSourceDocId("doc"), filename, pageTexts, text);
+                logSourceIngestionDetails(job, filename, sourceRecord, Date.now() - parseStartedAt);
                 var maxChars = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
                 if (fullText.length > maxChars) {
                   var origLen = fullText.length;
@@ -8963,7 +9581,7 @@
                   debugLog('[PDF] ⚠️ Content truncated from ' + origLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
                 }
                 debugLog('[PDF] Injecting PDF message: ' + fullText.length.toLocaleString() + ' chars (~' + estimateTokenCount(fullText).toLocaleString() + ' tokens)', 'info');
-                injectDocumentMessage(job, filename, fullText, docInfo);
+                injectDocumentMessage(job, filename, fullText, docInfo, sourceRecord);
 
                 if (db.extractDocImages) {
                   debugLog('[DOC] Image extraction enabled for PDF — rendering ' + numPages + ' page(s) to canvas', 'info');
@@ -9024,8 +9642,10 @@
               "\n[Content truncated at " + maxChars.toLocaleString() + " characters. The full document contained approximately " + fullLen.toLocaleString() + " characters.]";
             debugLog('[DOC] ⚠️ Content truncated from ' + fullLen.toLocaleString() + ' to ' + maxChars.toLocaleString() + ' chars (limit: ' + maxChars.toLocaleString() + ')', 'warn');
           }
+          if (!sourceRecord) sourceRecord = buildFallbackSourceDocument(generateSourceDocId("doc"), filename, extractedText, ext, "browser");
+          logSourceIngestionDetails(job, filename, sourceRecord, Date.now() - parseStartedAt);
           debugLog('[DOC] Injecting document message: ' + extractedText.length.toLocaleString() + ' chars (~' + estimateTokenCount(extractedText).toLocaleString() + ' tokens)', 'info');
-          injectDocumentMessage(job, filename, extractedText, documentInfo);
+          injectDocumentMessage(job, filename, extractedText, documentInfo, sourceRecord);
           if (uploadBtn) uploadBtn.textContent = "📎";
         } catch (err) {
           debugLog('[DOC] ❌ Exception during document processing: ' + err.message, 'error');
@@ -9043,22 +9663,15 @@
       reader.readAsArrayBuffer(file);
     }
 
-    function injectDocumentMessage(job, filename, extractedText, documentInfo) {
-      // Store in the structured sourceDocuments bucket (normalized once)
+    function injectDocumentMessage(job, filename, extractedText, documentInfo, sourceDocRecord) {
       if (!job.sourceDocuments) job.sourceDocuments = [];
-      var docId = generateSourceDocId("doc");
-      job.sourceDocuments.push({
-        id: docId,
-        title: filename,
-        rawContent: extractedText,
-        normalizedContent: normalizeSourceContent(extractedText),
-        createdAt: new Date().toISOString(),
-        type: "uploaded_file"
-      });
-      debugLog('[SRC] Stored source document "' + filename + '" (id=' + docId + ', ' + extractedText.length.toLocaleString() + ' chars)', 'info');
-      // Keep in job.messages for UI display; sourceDocId links it to the sourceDocuments entry
+      var docRecord = sourceDocRecord || buildFallbackSourceDocument(generateSourceDocId("doc"), filename, extractedText, "browser", "1");
+      migrateSourceDocument(docRecord);
+      job.sourceDocuments.push(docRecord);
+      touchJobSourceRevision(job, 'document uploaded');
+      debugLog('[SRC] Stored source document "' + filename + '" (id=' + docRecord.id + ', chunks=' + ((docRecord.chunks && docRecord.chunks.length) || 0) + ')', 'info');
       var contentMessage = "I've uploaded a file called '" + filename + "'. Please analyze it.\n\n" + extractedText;
-      job.messages.push({ role: "user", content: contentMessage, isDocument: true, documentName: filename, documentInfo: documentInfo || "", sourceDocId: docId });
+      job.messages.push({ role: "user", content: contentMessage, isDocument: true, documentName: filename, documentInfo: documentInfo || "", sourceDocId: docRecord.id });
       saveDB();
       addMessageToDOM("user", contentMessage, false, job.messages.length - 2);
       updateContextBar();
@@ -9405,14 +10018,9 @@
       // Store in the structured sourceDocuments bucket (normalized once)
       if (!job.sourceDocuments) job.sourceDocuments = [];
       var docId = generateSourceDocId("src");
-      job.sourceDocuments.push({
-        id: docId,
-        title: title,
-        rawContent: content,
-        normalizedContent: normalizeSourceContent(content),
-        createdAt: new Date().toISOString(),
-        type: type
-      });
+      job.sourceDocuments.push(buildFallbackSourceDocument(docId, title, content, "manual-content", "1"));
+      job.sourceDocuments[job.sourceDocuments.length - 1].type = type;
+      touchJobSourceRevision(job, 'manual content added');
       debugLog('[SRC] Stored manual content "' + title + '" as source document (id=' + docId + ', type="' + type + '", ' + content.length.toLocaleString() + ' chars)', 'info');
       var lineCount = content.split("\n").length;
       var contentInfo = lineCount + " line" + (lineCount !== 1 ? "s" : "");
@@ -10541,6 +11149,7 @@
     // ===== INIT =====
     (async function() {
       loadUIThemeSetting();
+      await configurePdfWorker(false);
       await loadDB(); loadToken(); loadName(); renderSidebar(); renderView();
       var _mdci = document.getElementById("max-doc-chars-input");
       if (_mdci) _mdci.value = db.maxDocChars || DEFAULT_MAX_DOC_CHARS;
